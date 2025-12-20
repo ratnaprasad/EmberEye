@@ -1,0 +1,30 @@
+{
+    "groups": [
+        "Default"
+    ],
+    "streams": [
+        {
+            "loc_id": "demo_room",
+            "name": "Demo Room (Simulator)",
+            "url": "rtsp://127.0.0.1:8554/demo",
+            "group": "Default"
+        },
+        {
+            "loc_id": "cam01",
+            "name": "Mac Built-in Camera",
+            "url": "0",
+            "group": "Default"
+        }
+    ],
+    "tcp_port": 4888,
+    "grafana_url": "http://localhost:3000",
+    "enable_grafana": false,
+    "thermal_calibration": {
+        "signed": true,
+        "scale": 0.01,
+        "offset": 0.0,
+        "description": "signed=true: interpret as two's complement. Raw values in centi-degrees. Offset is 0 because 27\u00b0C is built into the formula."
+    },
+    "thermal_use_eeprom": true,
+    "tcp_mode": "async"
+}

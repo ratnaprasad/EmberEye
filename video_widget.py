@@ -621,6 +621,15 @@ class VideoWidget(QWidget):
         br_y = self.height() - self.bottom_right_status.height() - margin
         self.bottom_right_status.move(br_x, br_y)
 
+        # Setup opacity effect for top-left controls (fade support)
+        try:
+            from PyQt5.QtWidgets import QGraphicsOpacityEffect
+            self._controls_opacity_effect = QGraphicsOpacityEffect(self.top_left_controls)
+            self.top_left_controls.setGraphicsEffect(self._controls_opacity_effect)
+            self._controls_opacity_effect.setOpacity(1.0)
+        except Exception:
+            self._controls_opacity_effect = None
+
     def resizeEvent(self, event):
         """Handle widget resizing"""
         self.video_label.resize(event.size())
@@ -641,7 +650,13 @@ class VideoWidget(QWidget):
     
     def mouseMoveEvent(self, event):
         """Fade in/out controls on mouse movement for cleaner UI"""
-        self.top_left_controls.setOpacity(0.8 if self.top_left_controls.opacity() < 0.5 else 1.0)
+        try:
+            if hasattr(self, '_controls_opacity_effect') and self._controls_opacity_effect is not None:
+                current = float(self._controls_opacity_effect.opacity())
+                new_opacity = 0.8 if current < 0.5 else 1.0
+                self._controls_opacity_effect.setOpacity(new_opacity)
+        except Exception:
+            pass
         super().mouseMoveEvent(event)
         super().resizeEvent(event)
 

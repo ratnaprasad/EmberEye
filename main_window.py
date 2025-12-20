@@ -401,7 +401,19 @@ class BEMainWindow(QMainWindow):
         except Exception as e:
             print(f"apply_sensor_config error: {e}")
 
-    def __init__(self, theme_manager=None):
+    def __init__(self, theme_manager=None, tcp_server=None, tcp_sensor_server=None, 
+                 pfds=None, async_loop=None, async_thread=None):
+        """
+        Initialize MainWindow with optional server reuse for efficiency.
+        
+        Args:
+            theme_manager: Theme manager instance
+            tcp_server: Existing TCP server to reuse (avoids port conflicts)
+            tcp_sensor_server: Alias for tcp_server
+            pfds: Existing PFDS manager instance
+            async_loop: Shared asyncio event loop
+            async_thread: Shared async thread
+        """
         super().__init__()
         # Optional theme manager support for Modern/Classic themes
         self.theme_manager = theme_manager
@@ -413,12 +425,25 @@ class BEMainWindow(QMainWindow):
                     self.theme_manager.apply_theme(app)
         except Exception as _theme_err:
             print(f"Theme apply error (non-fatal): {_theme_err}")
+        
+        # X-ray Effect: Cursor auto-hide configuration
+        self.cursor_hide_seconds = 3  # Hide cursor after 3 seconds of inactivity
+        self.cursor_visible = True
+        self.cursor_hide_timer = QTimer()
+        self.cursor_hide_timer.timeout.connect(self._hide_cursor)
+        self.cursor_hide_timer.setSingleShot(True)
+        
+        # X-ray Effect: Header/status bar auto-hide state
+        self.header_visible = True
+        self.statusbar_visible = True
+        
         self.maximized_widget = None
         self.original_layout = None
         self.original_grid_size = None
         self.config = StreamConfig.load_config()
         self.video_widgets = {}  # loc_id -> VideoWidget
-        self.tcp_server = None
+        self.tcp_server = tcp_server  # Reuse existing or create new
+        self.tcp_sensor_server = tcp_sensor_server or tcp_server
         self.current_group = "Default"
         self.current_rtsp_page = 1
         self.current_graph_page = 1
@@ -435,6 +460,12 @@ class BEMainWindow(QMainWindow):
         # EEPROM calibration tracking
         self.eeprom_last_update = None  # Track when EEPROM was last fetched
         self.eeprom_offset = 0.0  # Current calibration offset
+        
+        # Reusable async infrastructure
+        self._async_loop = async_loop
+        self._async_thread = async_thread
+        self._pfds = pfds  # Reuse PFDS manager if provided
+        
         self.initUI()
         self.ws_client = WebSocketClient()
         if self.ws_client:
@@ -477,39 +508,63 @@ class BEMainWindow(QMainWindow):
         except Exception as e:
             print(f"Metrics server start failed: {e}")
         
-        # PFDS manager + scheduler
-        self.pfds = PFDSManager()
-        self.pfds.set_dispatcher(self.dispatch_pfds_command)
-        self.pfds.start_scheduler()
+        # PFDS manager + scheduler (reuse if provided)
+        if self._pfds is not None:
+            self.pfds = self._pfds
+            print("Reusing existing PFDS manager")
+        else:
+            self.pfds = PFDSManager()
+            self.pfds.set_dispatcher(self.dispatch_pfds_command)
+            self.pfds.start_scheduler()
+        
         # Connect TCP packet signal to handler (QueuedConnection ensures execution on GUI thread)
         self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
-        tcp_mode = self.config.get('tcp_mode', 'threaded')
+        
+        # TCP Server initialization (reuse if provided, otherwise create new)
+        if self.tcp_server is not None:
+            print(f"Reusing existing TCP server on port {self.tcp_server_port}")
+            self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} (reused)")
+        else:
+            tcp_mode = self.config.get('tcp_mode', 'threaded')
+            try:
+                if tcp_mode == 'async':
+                    from tcp_async_server import TCPAsyncSensorServer
+                    import asyncio, threading
+                    # Create dedicated event loop thread if not already present
+                    if self._async_loop is None:
+                        self._async_loop = asyncio.new_event_loop()
+                        def _run_loop(loop):
+                            asyncio.set_event_loop(loop)
+                            loop.run_forever()
+                        self._async_thread = threading.Thread(target=_run_loop, args=(self._async_loop,), daemon=True)
+                        self._async_thread.start()
+                    self.tcp_server = TCPAsyncSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
+                    self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
+                    if self.tcp_server:
+                        asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
+                else:
+                    from tcp_sensor_server import TCPSensorServer
+                    self.tcp_server = TCPSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
+                    if self.tcp_server:
+                        self.tcp_server.start()
+                self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} ({tcp_mode})")
+            except Exception as e:
+                import traceback
+                error_detail = traceback.format_exc()
+                log_server_error(f"TCP server start failed: {e}\n{error_detail}")
+                self.update_tcp_status(False, f"TCP Server: Failed to start - {e}")
+        
+        # Install X-ray effect event filter for global mouse tracking
         try:
-            if tcp_mode == 'async':
-                from tcp_async_server import TCPAsyncSensorServer
-                import asyncio, threading
-                # Create dedicated event loop thread if not already present
-                self._async_loop = asyncio.new_event_loop()
-                def _run_loop(loop):
-                    asyncio.set_event_loop(loop)
-                    loop.run_forever()
-                self._async_thread = threading.Thread(target=_run_loop, args=(self._async_loop,), daemon=True)
-                self._async_thread.start()
-                self.tcp_server = TCPAsyncSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
-                self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
-                if self.tcp_server:
-                    asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
-            else:
-                from tcp_sensor_server import TCPSensorServer
-                self.tcp_server = TCPSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
-                if self.tcp_server:
-                    self.tcp_server.start()
-            self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} ({tcp_mode})")
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+                print("✨ X-ray effect event filter installed")
+                # Start cursor auto-hide timer
+                self.cursor_hide_timer.start(self.cursor_hide_seconds * 1000)
         except Exception as e:
-            import traceback
-            error_detail = traceback.format_exc()
-            log_server_error(f"TCP server start failed: {e}\n{error_detail}")
-            self.update_tcp_status(False, f"TCP Server: Failed to start - {e}")
+            print(f"Event filter installation error: {e}")
     
     def _emit_tcp_packet(self, packet):
         """Thread-safe wrapper to emit TCP packet signal."""
@@ -2434,64 +2489,178 @@ class BEMainWindow(QMainWindow):
             print(f"❌ Countdown update error: {e}")
             pass
 
-    def closeEvent(self, event):
-        """Ensure all background threads and resources stop cleanly before window closes"""
+    
+    # ==================== X-RAY EFFECT FEATURES ====================
+    
+    def eventFilter(self, obj, event):
+        """
+        Global event filter for X-ray effect:
+        - Tracks mouse movement to auto-show/hide header and status bar
+        - Implements cursor auto-hide after inactivity
+        """
         try:
-            # Save baselines/events
-            self.baseline_manager.save_to_disk()
+            from PyQt5.QtCore import QEvent
+            from PyQt5.QtGui import QCursor
+            
+            if event.type() == QEvent.MouseMove:
+                # Reset cursor hide timer on any mouse movement
+                if hasattr(self, 'cursor_hide_timer'):
+                    self.cursor_hide_timer.stop()
+                    self._show_cursor()
+                    self.cursor_hide_timer.start(self.cursor_hide_seconds * 1000)
+                
+                # X-ray effect: Show header (overlay_header) when mouse near edges
+                if hasattr(self, 'overlay_header') and hasattr(self, 'header_visible'):
+                    cursor_pos = QCursor.pos()
+                    window_pos = self.mapFromGlobal(cursor_pos)
+
+                    # Show header if mouse within 50px of top OR bottom zone is active
+                    if (window_pos.y() < 50 or window_pos.y() > (self.height() - 50)) and not self.header_visible:
+                        try:
+                            self.overlay_header.show()
+                            self.overlay_header.raise_()
+                        except Exception:
+                            pass
+                        self.header_visible = True
+                    # Hide header if mouse moves away and not in maximized view
+                    elif window_pos.y() > 150 and self.header_visible and self.maximized_widget is None:
+                        try:
+                            self.overlay_header.hide()
+                        except Exception:
+                            pass
+                        self.header_visible = False
+                
+                # X-ray effect: Show status bar when mouse near bottom (also show header)
+                if hasattr(self, 'statusBar') and hasattr(self, 'statusbar_visible'):
+                    cursor_pos = QCursor.pos()
+                    window_pos = self.mapFromGlobal(cursor_pos)
+                    window_height = self.height()
+                    
+                    # Show status bar if mouse within 50px of bottom
+                    if window_pos.y() > window_height - 50 and not self.statusbar_visible:
+                        self.statusBar().show()
+                        self.statusbar_visible = True
+                        # Also ensure header is visible when bottom bar shows
+                        if hasattr(self, 'overlay_header') and hasattr(self, 'header_visible') and not self.header_visible:
+                            try:
+                                self.overlay_header.show()
+                                self.overlay_header.raise_()
+                            except Exception:
+                                pass
+                            self.header_visible = True
+                    # Hide status bar if mouse moves away
+                    elif window_pos.y() < window_height - 100 and self.statusbar_visible:
+                        self.statusBar().hide()
+                        self.statusbar_visible = False
+            
+            elif event.type() == QEvent.KeyPress:
+                # Any key press resets cursor timer
+                if hasattr(self, 'cursor_hide_timer'):
+                    self.cursor_hide_timer.stop()
+                    self._show_cursor()
+                    self.cursor_hide_timer.start(self.cursor_hide_seconds * 1000)
+        
         except Exception as e:
-            print(f"Baseline save error: {e}")
+            print(f"Event filter error: {e}")
+        
+        # Always pass event to parent handler
+        return super().eventFilter(obj, event)
+    
+    def _show_cursor(self):
+        """Show cursor if currently hidden."""
+        if not self.cursor_visible:
+            self.unsetCursor()
+            self.cursor_visible = True
+    
+    def _hide_cursor(self):
+        """Hide cursor after inactivity (X-ray effect)."""
+        from PyQt5.QtCore import Qt
+        self.setCursor(Qt.BlankCursor)
+        self.cursor_visible = False
+    
+    def cleanup_all_workers(self):
+        """
+        Comprehensive cleanup of all background workers and threads.
+        Used for resource cleanup before window destruction.
+        """
+        print("Starting comprehensive resource cleanup...")
+        
+        # Stop video widgets
         try:
-            # Stop all video worker threads first
             self.shutdown_video_widgets()
         except Exception as e:
-            print(f"Video widget shutdown error: {e}")
+            print(f"Video widget cleanup error: {e}")
+        
+        # Stop WebSocket client
         try:
-            # Stop websocket client
             if hasattr(self, 'ws_client') and self.ws_client:
                 self.ws_client.stop()
         except Exception as e:
-            print(f"WebSocket client stop error: {e}")
+            print(f"WebSocket cleanup error: {e}")
+        
+        # Stop TCP server
         try:
-            # Stop sensor server if present on parent
-            if hasattr(self.parent(), 'server') and getattr(self.parent(), 'server'):
-                self.parent().server.stop()
-        except Exception as e:
-            print(f"Sensor server stop error: {e}")
-        try:
-            # Stop TCP sensor server (async or threaded)
             if hasattr(self, 'tcp_server') and self.tcp_server:
-                tcp_mode_ce = self.config.get('tcp_mode', 'threaded')
-                if tcp_mode_ce == 'async':
+                tcp_mode = self.config.get('tcp_mode', 'threaded')
+                if tcp_mode == 'async':
                     import asyncio
                     if hasattr(self, '_async_loop') and self._async_loop:
                         fut = asyncio.run_coroutine_threadsafe(self.tcp_server.stop(), self._async_loop)
                         try:
-                            fut.result(timeout=3)
-                        except Exception as e2:
-                            print(f"Async TCP stop wait error: {e2}")
-                        try:
-                            self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                            fut.result(timeout=2)
                         except Exception:
                             pass
-                    if hasattr(self, '_async_thread') and self._async_thread:
-                        self._async_thread.join(timeout=3)
                 else:
                     self.tcp_server.stop()
         except Exception as e:
-            print(f"TCP Sensor Server stop error: {e}")
+            print(f"TCP server cleanup error: {e}")
+        
+        # Stop PFDS scheduler
         try:
-            # Stop PFDS scheduler
             if hasattr(self, 'pfds') and self.pfds:
                 self.pfds.stop_scheduler()
         except Exception as e:
-            print(f"PFDS scheduler stop error: {e}")
+            print(f"PFDS cleanup error: {e}")
+        
+        # Stop metrics server
         try:
-            # Stop metrics server
             if hasattr(self, 'metrics_server') and self.metrics_server:
                 self.metrics_server.stop()
         except Exception as e:
-            print(f"Metrics server stop error: {e}")
+            print(f"Metrics server cleanup error: {e}")
+        
+        # Stop cursor hide timer
+        try:
+            if hasattr(self, 'cursor_hide_timer'):
+                self.cursor_hide_timer.stop()
+        except Exception as e:
+            print(f"Cursor timer cleanup error: {e}")
+        
+        print("Resource cleanup complete")
+    
+    def __del__(self):
+        """Destructor: Ensure all resources released when object is destroyed."""
+        try:
+            self.cleanup_all_workers()
+        except Exception as e:
+            print(f"Destructor cleanup error: {e}")
+    
+    # ==================== END X-RAY EFFECT FEATURES ====================
+
+    def closeEvent(self, event):
+        """Ensure all background threads and resources stop cleanly before window closes"""
+        # Use comprehensive cleanup first
+        try:
+            self.cleanup_all_workers()
+        except Exception as e:
+            print(f"Comprehensive cleanup error: {e}")
+        
+        # Save baselines/events
+        try:
+            self.baseline_manager.save_to_disk()
+        except Exception as e:
+            print(f"Baseline save error: {e}")
+        
         super().closeEvent(event)
 
 
