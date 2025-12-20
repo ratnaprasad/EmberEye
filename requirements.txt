@@ -1,0 +1,15 @@
+PyQt5
+PyQtWebEngine
+bcrypt
+pyinstaller
+numpy
+opencv-python
+passlib
+matplotlib
+cryptography
+websockets
+onvif-zeep
+wsdiscovery
+Pillow
+packaging
+ultralytics

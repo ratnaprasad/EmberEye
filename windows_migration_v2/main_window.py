@@ -1,0 +1,1613 @@
+import numpy as np
+import websockets
+import json
+import asyncio
+from threading import Thread, Event
+from stream_config import StreamConfig
+from resource_helper import get_resource_path
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
+                             QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog
+                             )
+from PyQt5.QtCore import (
+    Qt, pyqtSignal, QMutex, QObject
+)
+from PyQt5.QtGui import (
+    QPixmap
+)
+from datetime import datetime
+from streamconfig_dialog import StreamConfigDialog
+from video_widget import VideoWidget
+from sensor_fusion import SensorFusion
+from baseline_manager import BaselineManager
+from pfds_manager import PFDSManager, is_valid_ip
+
+# bem_main_window.py
+class WebSocketClient(QObject):
+    data_received = pyqtSignal(dict)
+    
+    def __init__(self):
+        super().__init__()
+        self.websocket = None
+        self.running = False
+        self.loop = None
+        self.thread = None
+        self.connect_event = Event()
+        self.mutex = QMutex()
+
+    def start(self):
+        self.running = True
+        self.thread = Thread(target=self.run_client, daemon=True)
+        self.thread.start()
+        self.connect_event.wait(5)
+
+    def run_client(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop.run_until_complete(self.client_main())
+        finally:
+            self.loop.close()
+
+    async def client_main(self):
+        uri = "ws://localhost:8765"
+        try:
+            async with websockets.connect(uri) as ws:
+                self.mutex.lock()
+                self.websocket = ws
+                self.connect_event.set()
+                self.mutex.unlock()
+                
+                while self.running:
+                    try:
+                        message = await asyncio.wait_for(ws.recv(), timeout=1)
+                        data = json.loads(message)
+                        self.data_received.emit(data)
+                    except asyncio.TimeoutError:
+                        continue
+        except Exception as e:
+            print(f"WebSocket error: {str(e)}")
+        finally:
+            self.connect_event.clear()
+
+    def stop(self):
+        """Stop the WebSocket client properly."""
+        self.mutex.lock()
+        self.running = False
+        self.mutex.unlock()
+        
+        # Close websocket properly in the event loop
+        if self.websocket and self.loop:
+            try:
+                # Schedule the close coroutine in the event loop
+                future = asyncio.run_coroutine_threadsafe(self._close_websocket(), self.loop)
+                future.result(timeout=2)  # Wait up to 2 seconds
+            except Exception as e:
+                print(f"WebSocket close error: {e}")
+        
+        # Wait for thread to finish
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=3)
+    
+    async def _close_websocket(self):
+        """Async helper to close websocket properly."""
+        if self.websocket:
+            try:
+                await self.websocket.close()
+            except Exception as e:
+                print(f"WebSocket close exception: {e}")
+
+class BEMainWindow(QMainWindow):
+    def show_pending_baseline_changes(self):
+        """Display notification panel for all pending baseline candidates with thumbnail and timestamp."""
+        if not hasattr(self, 'notification_panel'):
+            self.notification_panel = QWidget()
+            self.notification_layout = QVBoxLayout(self.notification_panel)
+            self.notification_panel.setStyleSheet("background-color: #fffbe6; border: 1px solid #e6c200; padding: 8px;")
+            self.centralWidget().layout().insertWidget(0, self.notification_panel)
+        self.notification_layout.setSpacing(6)
+        # Clear previous
+        while self.notification_layout.count():
+            item = self.notification_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        # Add new candidates
+        for loc_id, cand in self.baseline_manager.candidates.items():
+            # Thumbnail
+            import cv2
+            from PyQt5.QtGui import QImage, QPixmap
+            frame = cand['frame']
+            # Convert to RGB if needed
+            if len(frame.shape) == 2:
+                frame_rgb = cv2.cvtColor(frame.astype('uint8'), cv2.COLOR_GRAY2RGB)
+            else:
+                frame_rgb = frame.astype('uint8')
+            h, w, ch = frame_rgb.shape
+            bytes_per_line = ch * w
+            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            thumb = QPixmap.fromImage(q_img).scaled(64, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            thumb_label = QLabel()
+            thumb_label.setPixmap(thumb)
+            # Timestamp
+            import datetime
+            ts = datetime.datetime.fromtimestamp(cand['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+            ts_label = QLabel(f"Detected: {ts}")
+            # Approve button
+            approve_btn = QPushButton("Approve")
+            approve_btn.clicked.connect(lambda checked, lid=loc_id: self.approve_and_refresh(lid))
+            # Adaptive feedback placeholder
+            feedback_btn = QPushButton("Mark as Nuisance")
+            feedback_btn.setEnabled(False)  # Placeholder for future logic
+            # Layout
+            row = QHBoxLayout()
+            row.addWidget(thumb_label)
+            row.addWidget(QLabel(f"Pending baseline change for {loc_id}"))
+            row.addWidget(ts_label)
+            row.addWidget(approve_btn)
+            row.addWidget(feedback_btn)
+            row_widget = QWidget()
+            row_widget.setLayout(row)
+            self.notification_layout.addWidget(row_widget)
+        if self.baseline_manager.candidates:
+            self.notification_panel.show()
+        else:
+            self.notification_panel.hide()
+
+    def approve_and_refresh(self, loc_id):
+        self.approve_baseline_candidate(loc_id)
+        self.show_pending_baseline_changes()
+
+    def handle_vision_score_from_widget(self, loc_id, score):
+        """Run fusion for this loc_id with vision score and update alarm indicator."""
+        # Find widget for loc_id
+        for widget in self.get_video_widgets():
+            if getattr(widget, 'loc_id', None) == loc_id:
+                # Run fusion with only vision score (other sources can be cached for full fusion)
+                fusion_result = self.sensor_fusion.fuse(vision_score=score)
+                if hasattr(widget, 'update_fire_alarm'):
+                    try:
+                        widget.update_fire_alarm(fusion_result['alarm'])
+                    except Exception as e:
+                        print(f"Alarm update error (vision): {e}")
+                break
+
+    def __init__(self):
+        super().__init__()
+        self.maximized_widget = None
+        self.original_layout = None
+        self.original_grid_size = None
+        self.config = StreamConfig.load_config()
+        self.video_widgets = {}  # loc_id -> VideoWidget
+        self.tcp_server = None
+        self.current_group = "Default"
+        self.current_rtsp_page = 1
+        self.current_graph_page = 1
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.initUI()
+        self.ws_client = WebSocketClient()
+        self.ws_client.data_received.connect(self.handle_sensor_data)
+        self.ws_client.start()
+
+        # --- Sensor Fusion ---
+        self.sensor_fusion = SensorFusion()
+        self.baseline_manager = BaselineManager()
+        self.baseline_manager.load_from_disk()
+        
+        # --- Gas Sensor ---
+        from gas_sensor import MQ135GasSensor
+        self.gas_sensor = MQ135GasSensor()
+        # TODO: Load R0 calibration from config or calibrate on startup
+        
+        # Start TCP sensor server
+        self.tcp_server = None
+        self.tcp_server_port = self.config.get('tcp_port', 9001)
+        self.tcp_message_count = 0
+        # PFDS manager + scheduler
+        self.pfds = PFDSManager()
+        self.pfds.set_dispatcher(self.dispatch_pfds_command)
+        self.pfds.start_scheduler()
+        try:
+            from tcp_sensor_server import TCPSensorServer
+            self.tcp_server = TCPSensorServer(port=self.tcp_server_port, packet_callback=self.handle_tcp_packet)
+            self.tcp_server.start()
+            self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port}")
+        except Exception as e:
+            print(f"TCP server start failed: {e}")
+            self.update_tcp_status(False, f"TCP Server: Failed to start - {e}")
+    def handle_frame_for_baseline(self, loc_id, frame):
+        """Send frame to baseline manager, handle candidate changes."""
+        candidate = self.baseline_manager.update(loc_id, frame)
+        if candidate:
+            print(f"Candidate baseline change detected for {loc_id}")
+            self.show_pending_baseline_changes()
+
+    def approve_baseline_candidate(self, loc_id):
+        """Approve candidate change for loc_id."""
+        success = self.baseline_manager.approve_candidate(loc_id)
+        if success:
+            print(f"Baseline for {loc_id} updated.")
+        else:
+            print(f"No candidate to approve for {loc_id}.")
+
+    def handle_tcp_packet(self, packet):
+        """Route parsed TCP sensor packets to sensor data handler, overlay, and fusion."""
+        # Increment message counter and update status
+        self.tcp_message_count += 1
+        self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} | Messages: {self.tcp_message_count}")
+        
+        if isinstance(packet, dict):
+            fusion_args = {}
+            loc_id = packet.get('loc_id')  # Extract loc_id from packet
+            
+            # Overlay for #frame packets
+            if packet.get('type') == 'frame':
+                fusion_args['thermal_matrix'] = packet['matrix']
+                # Route to specific widget by loc_id, or broadcast to all
+                target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
+                for widget in target_widgets:
+                    if widget and hasattr(widget, 'set_thermal_overlay'):
+                        try:
+                            widget.set_thermal_overlay(packet['matrix'])
+                        except Exception as e:
+                            print(f"Overlay error: {e}")
+            elif packet.get('type') == 'sensor':
+                # Store raw sensor values
+                adc1 = packet.get('ADC1')
+                adc2 = packet.get('ADC2')
+                mpy30 = packet.get('MPY30')
+                
+                # Convert ADC1 to gas concentration using MQ-135
+                if adc1:
+                    try:
+                        gas_ppm = self.gas_sensor.get_ppm(adc1, 'CO2')
+                        aqi_index, aqi_desc, _ = self.gas_sensor.get_air_quality_index(adc1)
+                        fusion_args['gas_ppm'] = gas_ppm
+                        fusion_args['adc1_raw'] = adc1
+                        fusion_args['adc1_aqi'] = aqi_desc
+                        print(f"Gas: ADC1={adc1} -> {gas_ppm:.1f}ppm CO2, AQI={aqi_desc}")
+                    except Exception as e:
+                        print(f"Gas calculation error: {e}")
+                
+                # ADC2 - Secondary sensor (could be temperature, humidity, or backup gas sensor)
+                if adc2:
+                    # Convert ADC2 based on sensor type
+                    # For MQ-135 backup or MQ-2 (smoke/LPG sensor)
+                    try:
+                        # Assume ADC2 is smoke sensor (MQ-2)
+                        adc2_voltage = (adc2 / 1024.0) * 5.0
+                        # Simple smoke detection: higher voltage = more smoke
+                        smoke_level = (adc2 / 1024.0) * 100  # 0-100%
+                        fusion_args['adc2_raw'] = adc2
+                        fusion_args['smoke_level'] = smoke_level
+                        print(f"Smoke: ADC2={adc2} -> {smoke_level:.1f}% (Voltage: {adc2_voltage:.2f}V)")
+                    except Exception as e:
+                        print(f"ADC2 calculation error: {e}")
+                
+                # Flame sensor (digital)
+                fusion_args['flame'] = mpy30
+                if mpy30 is not None:
+                    fusion_args['flame_raw'] = mpy30
+                    print(f"Flame: MPY30={mpy30} -> {'DETECTED' if mpy30 == 1 else 'Clear'}")
+            elif packet.get('type') == 'locid':
+                # Store loc_id mapping for future reference
+                print(f"Sensor registered for loc_id: {packet.get('loc_id')}")
+                return
+            
+            # Run fusion if any relevant data
+            if fusion_args:
+                fusion_result = self.sensor_fusion.fuse(**fusion_args)
+                
+                # Update alarm status and hot cells on target widget(s)
+                target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
+                for widget in target_widgets:
+                    if widget:
+                        # Update fire alarm status
+                        if hasattr(widget, 'update_fire_alarm'):
+                            try:
+                                widget.update_fire_alarm(fusion_result['alarm'])
+                            except Exception as e:
+                                print(f"Alarm update error: {e}")
+                        
+                        # Update thermal grid overlay with hot cells
+                        if hasattr(widget, 'set_hot_cells') and 'hot_cells' in fusion_result:
+                            try:
+                                widget.set_hot_cells(fusion_result['hot_cells'])
+                            except Exception as e:
+                                print(f"Hot cells update error: {e}")
+                        
+                        # Update fusion data overlay
+                        if hasattr(widget, 'set_fusion_data'):
+                            try:
+                                widget.set_fusion_data(fusion_result)
+                            except Exception as e:
+                                print(f"Fusion data update error: {e}")
+            
+            # Forward other packets to sensor handler
+            # Ensure loc_id resolved via client_ip mapping if missing
+            if not loc_id:
+                ip = packet.get('client_ip')
+                if ip:
+                    try:
+                        from ip_loc_resolver import get_loc_id
+                        resolved = get_loc_id(ip)
+                        if resolved:
+                            packet['loc_id'] = resolved
+                    except Exception as e:
+                        print(f"IP→loc resolve error: {e}")
+            self.handle_sensor_data(packet)
+
+    def initUI(self):
+        try:
+            self.setWindowTitle("Main")
+            self.setGeometry(100, 100, 1024, 768)
+            central_widget = QWidget()
+            self.setCentralWidget(central_widget)
+            main_layout = QVBoxLayout(central_widget)
+            
+            # Title Bar
+            title_bar = QHBoxLayout()
+            self.init_logo(title_bar)
+            
+            self.group_combo = QComboBox()
+            self.group_combo.addItems(self.config["groups"])
+            self.group_combo.currentTextChanged.connect(self.group_changed)
+            title_bar.addWidget(self.group_combo)
+            
+            title = QLabel("Dashboard")
+            title.setStyleSheet("font-size: 20px; font-weight: bold;")
+            title_bar.addWidget(title)
+            title_bar.addStretch()
+            self.init_settings_menu(title_bar)
+            main_layout.addLayout(title_bar)
+            
+            # Tab Widget
+            self.tabs = QTabWidget()
+            main_layout.addWidget(self.tabs)
+            
+            self.init_rtsp_tab()
+            # self.init_graph_tab()
+            
+            # Initialize TCP status indicator
+            self.init_tcp_status_indicator()
+            self.statusBar().showMessage("System Ready")
+            
+        except Exception as e:
+            QMessageBox.critical(None, "Error", f"Initialization failed: {str(e)}")
+
+    def init_logo(self, title_bar):
+        self.logo = QLabel()
+        self.logo.setFixedSize(50, 50)
+        
+        # Try to load logo.png first, then fallback to phoenix symbol
+        logo_loaded = False
+        try:
+            from pathlib import Path
+            logo_path = get_resource_path("logo.png")
+            if Path(logo_path).exists():
+                pixmap = QPixmap(logo_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self.logo.setPixmap(scaled_pixmap)
+                    logo_loaded = True
+        except Exception as e:
+            print(f"Logo loading error: {e}")
+        
+        # Fallback to phoenix symbol
+        if not logo_loaded:
+            self.logo.setText("🦅")  # Phoenix/Eagle symbol
+            self.logo.setStyleSheet("""
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #ff6b35, stop:0.5 #ff8c42, stop:1 #ffa600);
+                border: 2px solid #ff4500;
+                border-radius: 25px;
+                font-size: 28px;
+                color: #fff;
+                qproperty-alignment: AlignCenter;
+            """)
+        
+        title_bar.addWidget(self.logo)
+
+    def init_settings_menu(self, title_bar):
+        menu_btn = QToolButton()
+        menu_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        menu_btn.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu()
+        menu.addAction("Profile", self.show_profile)
+        menu.addAction("Configure Streams", self.configure_streams)
+        menu.addAction("Reset Streams", self.reset_streams)
+        # Add backup/restore actions
+        menu.addSeparator()
+        menu.addAction("Backup Configuration", self.backup_config)
+        menu.addAction("Restore Configuration", self.restore_config)
+        menu.addSeparator()
+        menu.addAction("TCP Server Port...", self.show_tcp_port_dialog)
+        menu.addAction("Thermal Grid Settings...", self.show_thermal_grid_config)
+        menu.addAction("Sensor Configuration...", self.show_sensor_config)
+        menu.addAction("Log Viewer...", self.show_log_viewer_dialog)
+        # Configure PFDS Device submenu
+        pfds_menu = QMenu("Configure PFDS Device", menu)
+        pfds_menu.addAction("Add Device...", self.show_pfds_add_dialog)
+        pfds_menu.addAction("View Devices...", self.show_pfds_view_dialog)
+        menu.addMenu(pfds_menu)
+        menu.addAction("Inject Test Stream Error", self.inject_test_stream_error)
+        menu.addSeparator()
+        menu.addAction("Logout", self.logout)
+        menu_btn.setMenu(menu)
+        title_bar.addWidget(menu_btn)
+
+    def init_tcp_status_indicator(self):
+        """Initialize TCP server status indicator in status bar."""
+        from PyQt5.QtWidgets import QLabel, QPushButton, QWidget, QHBoxLayout
+        from PyQt5.QtCore import Qt
+        
+        # Create a container widget for the status indicator
+        status_widget = QWidget()
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(5, 0, 5, 0)
+        status_layout.setSpacing(8)
+        
+        # LED indicator (colored circle)
+        self.tcp_led = QLabel()
+        self.tcp_led.setFixedSize(12, 12)
+        self.tcp_led.setStyleSheet("""
+            QLabel {
+                background-color: #ff0000;
+                border-radius: 6px;
+                border: 1px solid #333;
+            }
+        """)
+        status_layout.addWidget(self.tcp_led)
+        
+        # Status text label
+        self.tcp_status_label = QLabel("TCP Server: Initializing...")
+        self.tcp_status_label.setStyleSheet("QLabel { color: #333; font-size: 11px; }")
+        status_layout.addWidget(self.tcp_status_label)
+        
+        # Restart button
+        restart_btn = QPushButton("↻ Restart")
+        restart_btn.setFixedHeight(20)
+        restart_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 2px 8px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+        """)
+        restart_btn.clicked.connect(self.show_tcp_port_dialog)
+        status_layout.addWidget(restart_btn)
+        
+        status_widget.setLayout(status_layout)
+        
+        # Add to status bar (permanent widget on the left)
+        self.statusBar().addPermanentWidget(status_widget, 0)
+    
+    def update_tcp_status(self, is_running, message):
+        """Update TCP server status indicator.
+        
+        Args:
+            is_running (bool): True if server is running, False otherwise
+            message (str): Status message to display
+        """
+        if not hasattr(self, 'tcp_led') or not hasattr(self, 'tcp_status_label'):
+            return
+        
+        try:
+            # Update LED color
+            if is_running:
+                self.tcp_led.setStyleSheet("""
+                    QLabel {
+                        background-color: #00ff00;
+                        border-radius: 6px;
+                        border: 1px solid #333;
+                    }
+                """)
+            else:
+                self.tcp_led.setStyleSheet("""
+                    QLabel {
+                        background-color: #ff0000;
+                        border-radius: 6px;
+                        border: 1px solid #333;
+                    }
+                """)
+            
+            # Update status text
+            self.tcp_status_label.setText(message)
+            
+        except Exception as e:
+            print(f"TCP status update error: {e}")
+
+    def show_tcp_port_dialog(self):
+        from PyQt5.QtWidgets import QInputDialog
+        current_port = self.config.get('tcp_port', 9001)
+        port, ok = QInputDialog.getInt(self, "TCP Server Port", "Enter TCP server port:", value=current_port, min=1024, max=65535)
+        if ok and port != current_port:
+            # Stop existing server
+            if hasattr(self, 'tcp_server') and self.tcp_server:
+                try:
+                    self.tcp_server.stop()
+                    self.update_tcp_status(False, "TCP Server: Stopped for restart")
+                except Exception as e:
+                    print(f"TCP server stop error: {e}")
+            
+            # Update config
+            self.config['tcp_port'] = port
+            self.tcp_server_port = port
+            from stream_config import StreamConfig
+            StreamConfig.save_config(self.config)
+            
+            # Restart with new port
+            try:
+                from tcp_sensor_server import TCPSensorServer
+                self.tcp_message_count = 0
+                self.tcp_server = TCPSensorServer(port=port, packet_callback=self.handle_tcp_packet)
+                self.tcp_server.start()
+                self.update_tcp_status(True, f"TCP Server: Running on port {port}")
+                QMessageBox.information(self, "TCP Server Restarted", f"TCP server successfully restarted on port {port}.")
+            except Exception as e:
+                error_msg = str(e)
+                self.update_tcp_status(False, f"TCP Server: Failed - {error_msg}")
+                if "Address already in use" in error_msg or "already in use" in error_msg:
+                    QMessageBox.critical(self, "Port Already in Use", f"Port {port} is already in use by another application. Please choose a different port.")
+                else:
+                    QMessageBox.critical(self, "TCP Server Error", f"Failed to start TCP server on port {port}:\n{error_msg}")
+
+    def show_thermal_grid_config(self):
+        """Show thermal grid configuration dialog."""
+        from thermal_grid_config import ThermalGridConfigDialog
+        
+        # Get current settings from first widget (all widgets will share same config)
+        current_settings = None
+        if self.video_widgets:
+            first_widget = next(iter(self.video_widgets.values()))
+            current_settings = {
+                'enabled': first_widget.thermal_grid_enabled,
+                'rows': first_widget.thermal_grid_rows,
+                'cols': first_widget.thermal_grid_cols,
+                'cell_color': first_widget.thermal_grid_color,
+                'border_color': first_widget.thermal_grid_border,
+                'border_width': 2,  # Add border width to VideoWidget if needed
+                'temp_threshold': self.sensor_fusion.temp_threshold
+            }
+        
+        dialog = ThermalGridConfigDialog(self, current_settings)
+        dialog.settings_changed.connect(self.apply_thermal_grid_settings)
+        
+        if dialog.exec_():
+            # Settings already applied via signal
+            QMessageBox.information(self, "Settings Applied", "Thermal grid configuration has been updated.")
+    
+    def apply_thermal_grid_settings(self, settings):
+        """Apply thermal grid settings to all video widgets."""
+        # Update sensor fusion threshold
+        self.sensor_fusion.temp_threshold = settings['temp_threshold']
+        
+        # Update all video widgets
+        for widget in self.video_widgets.values():
+            widget.thermal_grid_enabled = settings['enabled']
+            widget.thermal_grid_rows = settings['rows']
+            widget.thermal_grid_cols = settings['cols']
+            widget.thermal_grid_color = settings['cell_color']
+            widget.thermal_grid_border = settings['border_color']
+            # Trigger redraw if hot cells exist
+            if widget.hot_cells:
+                widget._redraw_with_grid()
+
+    def show_sensor_config(self):
+        """Show sensor configuration dialog."""
+        from sensor_config_dialog import SensorConfigDialog
+        
+        # Get current settings
+        current_settings = {
+            # Fusion parameters
+            'temp_threshold': self.sensor_fusion.temp_threshold,
+            'gas_ppm_threshold': self.sensor_fusion.gas_ppm_threshold,
+            'flame_active_value': self.sensor_fusion.flame_active_value,
+            'min_sources': self.sensor_fusion.min_sources,
+            
+            # Gas sensor calibration
+            'gas_r0': getattr(self.gas_sensor, 'r0', 76.63),
+            'gas_rl': getattr(self.gas_sensor, 'rl', 1.0),
+            'gas_vcc': getattr(self.gas_sensor, 'vcc', 5.0),
+            
+            # Display settings
+            'hot_cell_decay_time': 5.0,
+            'freeze_on_alarm': True,
+            'show_fusion_overlay': True,
+            'vision_threshold': 0.7,
+            'vision_confidence_weight': 0.5
+        }
+        
+        # Get display settings from first widget if available
+        if self.video_widgets:
+            first_widget = next(iter(self.video_widgets.values()))
+            current_settings['hot_cell_decay_time'] = first_widget.hot_cells_decay_time
+            current_settings['freeze_on_alarm'] = first_widget.freeze_on_alarm
+            current_settings['show_fusion_overlay'] = first_widget.show_fusion_overlay
+        
+        dialog = SensorConfigDialog(self, current_settings)
+        dialog.settings_changed.connect(self.apply_sensor_config)
+        
+        if dialog.exec_():
+            QMessageBox.information(self, "Settings Applied", "Sensor configuration has been updated.")
+    
+    def apply_sensor_config(self, settings):
+        """Apply sensor configuration settings."""
+        # Update sensor fusion
+        self.sensor_fusion.temp_threshold = settings['temp_threshold']
+        self.sensor_fusion.gas_ppm_threshold = settings['gas_ppm_threshold']
+        self.sensor_fusion.flame_active_value = settings['flame_active_value']
+        self.sensor_fusion.min_sources = settings['min_sources']
+        
+        # Update gas sensor calibration
+        if hasattr(self.gas_sensor, 'set_calibration'):
+            self.gas_sensor.set_calibration(
+                r0=settings['gas_r0'],
+                rl=settings['gas_rl'],
+                vcc=settings['gas_vcc']
+            )
+        else:
+            # Update attributes directly
+            self.gas_sensor.r0 = settings['gas_r0']
+            self.gas_sensor.rl = settings['gas_rl']
+            self.gas_sensor.vcc = settings['gas_vcc']
+        
+        # Update display settings for all video widgets
+        for widget in self.video_widgets.values():
+            widget.hot_cells_decay_time = settings['hot_cell_decay_time']
+            widget.freeze_on_alarm = settings['freeze_on_alarm']
+            widget.show_fusion_overlay = settings['show_fusion_overlay']
+        
+        print(f"Sensor config updated: Temp={settings['temp_threshold']}, Gas={settings['gas_ppm_threshold']}, "
+              f"R0={settings['gas_r0']}, MinSources={settings['min_sources']}")
+
+    def show_pfds_add_dialog(self):
+        """Stub dialog for adding a PFDS device. Will be wired to SQLite and scheduler."""
+        from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox, QDialogButtonBox, QMessageBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add PFDS Device")
+        layout = QFormLayout(dlg)
+
+        name_edit = QLineEdit(); name_edit.setPlaceholderText("Device Name")
+        ip_edit = QLineEdit(); ip_edit.setPlaceholderText("IP Address (e.g., 192.168.1.50)")
+        loc_combo = QComboBox(); loc_combo.addItem("")
+        # Populate location IDs from stream config
+        try:
+            loc_ids = set()
+            for g in self.config.get('groups', []):
+                streams = self.config.get('streams', {}).get(g, []) if isinstance(self.config.get('streams'), dict) else self.config.get('streams', [])
+                for s in streams:
+                    lid = s.get('location_id') or s.get('loc_id') or s.get('name')
+                    if lid:
+                        loc_ids.add(lid)
+            for lid in sorted(loc_ids):
+                loc_combo.addItem(lid)
+        except Exception:
+            pass
+
+        mode_combo = QComboBox(); mode_combo.addItems(["Continuous", "On Demand"])
+        poll_spin = QSpinBox(); poll_spin.setRange(1, 3600); poll_spin.setValue(10)
+        poll_spin.setSuffix(" s")
+
+        layout.addRow("Name", name_edit)
+        layout.addRow("IP Address", ip_edit)
+        layout.addRow("Location Id", loc_combo)
+        layout.addRow("Mode", mode_combo)
+        layout.addRow("Poll Frequency", poll_spin)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addRow(buttons)
+
+        def on_ok():
+            name = name_edit.text().strip()
+            ip = ip_edit.text().strip()
+            loc = loc_combo.currentText().strip()
+            mode = mode_combo.currentText()
+            poll = poll_spin.value()
+            if not name or not ip:
+                QMessageBox.warning(dlg, "Missing Data", "Please enter device name and IP address.")
+                return
+            if not is_valid_ip(ip):
+                QMessageBox.warning(dlg, "Invalid IP", "Please enter a valid IP address.")
+                return
+            try:
+                self.pfds.add_device(name, ip, loc if loc else None, mode, int(poll))
+                # Persist IP→Loc mapping if loc provided
+                if loc:
+                    try:
+                        from ip_loc_resolver import set_mapping
+                        set_mapping(ip, loc)
+                    except Exception:
+                        pass
+                QMessageBox.information(dlg, "Saved", f"PFDS device '{name}' saved.\nIP: {ip}\nLocation: {loc or 'N/A'}\nMode: {mode}\nPoll: {poll}s")
+            except Exception as e:
+                QMessageBox.critical(dlg, "Save Failed", f"Could not save device: {e}")
+            dlg.accept()
+
+        buttons.accepted.connect(on_ok)
+        buttons.rejected.connect(dlg.reject)
+        dlg.exec_()
+
+    def show_pfds_view_dialog(self):
+        """View configured PFDS devices (loaded from SQLite)."""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHBoxLayout, QPushButton, QMessageBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("PFDS Devices")
+        layout = QVBoxLayout(dlg)
+
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(["ID", "Name", "IP", "Location Id", "Mode", "Poll (s)"])
+        layout.addWidget(table)
+
+        def load_rows():
+            table.setRowCount(0)
+            try:
+                devices = self.pfds.list_devices()
+                for d in devices:
+                    row = table.rowCount()
+                    table.insertRow(row)
+                    # Resolve missing location via IP→Loc resolver
+                    loc_val = d.get('location_id') or ''
+                    if not loc_val:
+                        try:
+                            from ip_loc_resolver import get_loc_id
+                            resolved = get_loc_id(d['ip'])
+                            if resolved:
+                                loc_val = resolved
+                        except Exception:
+                            pass
+                    vals = [d['id'], d['name'], d['ip'], loc_val, d['mode'], d['poll_seconds']]
+                    for c, val in enumerate(vals):
+                        table.setItem(row, c, QTableWidgetItem(str(val)))
+            except Exception as e:
+                QMessageBox.critical(dlg, "Load Failed", f"Could not load devices: {e}")
+
+        load_rows()
+
+        btn_row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        remove_btn = QPushButton("Remove Selected")
+        close_btn = QPushButton("Close")
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        refresh_btn.clicked.connect(load_rows)
+        def remove_selected():
+            row = table.currentRow()
+            if row < 0:
+                QMessageBox.information(dlg, "No Selection", "Select a device row to remove.")
+                return
+            did_item = table.item(row, 0)
+            if not did_item:
+                return
+            did = int(did_item.text())
+            try:
+                self.pfds.remove_device(did)
+                load_rows()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Remove Failed", f"Could not remove device: {e}")
+        remove_btn.clicked.connect(remove_selected)
+        close_btn.clicked.connect(dlg.accept)
+        dlg.resize(700, 400)
+        dlg.exec_()
+
+    def show_log_viewer_dialog(self):
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QFileDialog, QLineEdit, QComboBox
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QTabWidget
+        from error_logger import get_error_logger
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Log Viewer")
+        layout = QVBoxLayout(dlg)
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # --- App Error Log Tab ---
+        app_tab = QDialog(dlg)
+        app_layout = QVBoxLayout(app_tab)
+
+        # Search and filter row
+        filter_row = QHBoxLayout()
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText("Search message...")
+        source_combo = QComboBox()
+        source_combo.addItem("All Sources")
+        # Populate sources
+        sources = {e['source'] for e in get_error_logger().get_entries()}
+        for s in sorted(sources):
+            source_combo.addItem(s)
+        filter_row.addWidget(search_edit)
+        filter_row.addWidget(source_combo)
+        app_layout.addLayout(filter_row)
+
+        list_widget = QListWidget()
+        app_layout.addWidget(list_widget)
+
+        def refresh():
+            entries = get_error_logger().get_entries()
+            # Dynamic source update
+            existing_sources = set(source_combo.itemText(i) for i in range(source_combo.count()))
+            new_sources = {e['source'] for e in entries}
+            if not new_sources.issubset(existing_sources):
+                current_sel = source_combo.currentText()
+                source_combo.clear()
+                source_combo.addItem('All Sources')
+                for s in sorted(new_sources):
+                    source_combo.addItem(s)
+                # Restore selection if possible
+                idx = source_combo.findText(current_sel)
+                if idx >= 0:
+                    source_combo.setCurrentIndex(idx)
+            list_widget.clear()
+            term = search_edit.text().strip().lower()
+            sel_source = source_combo.currentText()
+            for e in entries:
+                if sel_source != 'All Sources' and e['source'] != sel_source:
+                    continue
+                line = f"{e['timestamp']} | {e['source']} | {e['message']}"
+                if term and term not in line.lower():
+                    continue
+                list_widget.addItem(line)
+
+        # Initial load
+        refresh()
+
+        # Auto-refresh timer
+        timer = QTimer(app_tab)
+        timer.setInterval(2000)
+        timer.timeout.connect(refresh)
+        timer.start()
+
+        search_edit.textChanged.connect(refresh)
+        source_combo.currentIndexChanged.connect(refresh)
+
+        btn_row = QHBoxLayout()
+        export_btn = QPushButton("Export")
+        clear_btn = QPushButton("Clear")
+        copy_btn = QPushButton("Copy Selected")
+        close_btn = QPushButton("Close")
+
+        def do_export():
+            path, _ = QFileDialog.getSaveFileName(dlg, "Export Error Log", "error_log_export.json", "JSON Files (*.json)")
+            if path:
+                if get_error_logger().export(path):
+                    QMessageBox.information(dlg, "Export", "Error log exported successfully")
+                else:
+                    QMessageBox.critical(dlg, "Export", "Failed to export log")
+
+        def do_clear():
+            get_error_logger().clear()
+            refresh()
+
+        def do_copy():
+            items = list_widget.selectedItems()
+            if items:
+                from PyQt5.QtWidgets import QApplication
+                QApplication.clipboard().setText('\n'.join(i.text() for i in items))
+                QMessageBox.information(dlg, "Copied", "Selected entries copied to clipboard")
+
+        export_btn.clicked.connect(do_export)
+        clear_btn.clicked.connect(do_clear)
+        copy_btn.clicked.connect(do_copy)
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(export_btn)
+        btn_row.addWidget(clear_btn)
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(close_btn)
+        app_layout.addLayout(btn_row)
+
+        tabs.addTab(app_tab, "App Error Log")
+
+        # --- TCP Log Viewer Tab ---
+        tcp_tab = QDialog(dlg)
+        from PyQt5.QtWidgets import QTextEdit, QLabel
+        tcp_layout = QVBoxLayout(tcp_tab)
+        # Controls: Mode + Location Id filter
+        ctrl_row = QHBoxLayout()
+        mode_combo = QComboBox(); mode_combo.addItems(["Debug", "Error"])
+        loc_combo = QComboBox(); loc_combo.addItem("All Locations")
+        # Populate location IDs from stream config
+        try:
+            loc_ids = set()
+            for g in self.config.get('groups', []):
+                streams = self.config.get('streams', {}).get(g, [])
+                for s in streams:
+                    lid = s.get('location_id') or s.get('loc_id') or s.get('name')
+                    if lid:
+                        loc_ids.add(lid)
+            for lid in sorted(loc_ids):
+                loc_combo.addItem(lid)
+        except Exception:
+            pass
+        ctrl_row.addWidget(QLabel("Mode:")); ctrl_row.addWidget(mode_combo)
+        ctrl_row.addWidget(QLabel("Location:")); ctrl_row.addWidget(loc_combo)
+        tcp_layout.addLayout(ctrl_row)
+
+        tcp_view = QTextEdit(); tcp_view.setReadOnly(True)
+        tcp_layout.addWidget(tcp_view)
+
+        # Load logs periodically
+        import os
+        from tcp_logger import DEBUG_LOG, ERROR_LOG
+        def load_tcp_log():
+            path = DEBUG_LOG if mode_combo.currentText() == 'Debug' else ERROR_LOG
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()[-1000:]
+                    sel = loc_combo.currentText()
+                    if sel == 'All Locations':
+                        tcp_view.setPlainText(''.join(lines))
+                    else:
+                        filtered = []
+                        for ln in lines:
+                            parts = ln.split('\t')
+                            # ts \t loc \t type \t ...
+                            if len(parts) >= 2 and parts[1] == sel:
+                                filtered.append(ln)
+                        tcp_view.setPlainText(''.join(filtered))
+                except Exception:
+                    tcp_view.setPlainText('')
+            else:
+                tcp_view.setPlainText('')
+        tcp_timer = QTimer(tcp_tab); tcp_timer.setInterval(2000); tcp_timer.timeout.connect(load_tcp_log); tcp_timer.start()
+        mode_combo.currentIndexChanged.connect(load_tcp_log)
+        loc_combo.currentIndexChanged.connect(load_tcp_log)
+        load_tcp_log()
+
+        tabs.addTab(tcp_tab, "TCP Log Viewer")
+
+        # --- IP→Loc Mappings Admin Tab ---
+        map_tab = QDialog(dlg)
+        from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
+        map_layout = QVBoxLayout(map_tab)
+        map_table = QTableWidget(0, 2)
+        map_table.setHorizontalHeaderLabels(["IP", "Location Id"])
+        map_layout.addWidget(map_table)
+
+        btn_row2 = QHBoxLayout()
+        add_btn = QPushButton("Add/Update Mapping")
+        del_btn = QPushButton("Delete Selected")
+        refresh_btn2 = QPushButton("Refresh")
+        import_btn = QPushButton("Import…")
+        export_btn2 = QPushButton("Export…")
+        btn_row2.addWidget(add_btn)
+        btn_row2.addWidget(del_btn)
+        btn_row2.addWidget(refresh_btn2)
+        btn_row2.addWidget(import_btn)
+        btn_row2.addWidget(export_btn2)
+        map_layout.addLayout(btn_row2)
+
+        def load_mappings():
+            try:
+                from ip_loc_resolver import _db_conn, _json_load
+                rows = []
+                conn = _db_conn()
+                if conn:
+                    for ip, loc in conn.execute("SELECT ip, loc_id FROM mappings").fetchall():
+                        rows.append((ip, loc))
+                    conn.close()
+                else:
+                    for ip, loc in _json_load().items():
+                        rows.append((ip, loc))
+                map_table.setRowCount(0)
+                for ip, loc in rows:
+                    r = map_table.rowCount(); map_table.insertRow(r)
+                    map_table.setItem(r, 0, QTableWidgetItem(ip))
+                    map_table.setItem(r, 1, QTableWidgetItem(loc))
+            except Exception as e:
+                print(f"Load mappings error: {e}")
+
+        def add_update_mapping():
+            from PyQt5.QtWidgets import QInputDialog
+            ip, ok1 = QInputDialog.getText(dlg, "IP", "Enter IP:")
+            if not ok1 or not ip:
+                return
+            loc, ok2 = QInputDialog.getText(dlg, "Location Id", "Enter Location Id:")
+            if not ok2 or not loc:
+                return
+            try:
+                from ip_loc_resolver import set_mapping
+                set_mapping(ip.strip(), loc.strip())
+                load_mappings()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Save Failed", f"Could not save mapping: {e}")
+
+        def delete_selected_mapping():
+            r = map_table.currentRow()
+            if r < 0:
+                QMessageBox.information(dlg, "No Selection", "Select a mapping row to delete.")
+                return
+            ip_item = map_table.item(r, 0)
+            if not ip_item:
+                return
+            ip = ip_item.text()
+            try:
+                from ip_loc_resolver import clear_mapping
+                clear_mapping(ip)
+                load_mappings()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Delete Failed", f"Could not delete mapping: {e}")
+
+        add_btn.clicked.connect(add_update_mapping)
+        del_btn.clicked.connect(delete_selected_mapping)
+        refresh_btn2.clicked.connect(load_mappings)
+        def do_import():
+            path, _ = QFileDialog.getOpenFileName(dlg, "Import Mappings", "", "JSON (*.json);;CSV (*.csv)")
+            if not path:
+                return
+            try:
+                from ip_loc_resolver import import_json, import_csv
+                ok = import_json(path) if path.lower().endswith('.json') else import_csv(path)
+                if ok:
+                    load_mappings()
+                    QMessageBox.information(dlg, "Import", "Mappings imported successfully.")
+                else:
+                    QMessageBox.critical(dlg, "Import", "Failed to import mappings.")
+            except Exception as e:
+                QMessageBox.critical(dlg, "Import", f"Error: {e}")
+        def do_export():
+            path, _ = QFileDialog.getSaveFileName(dlg, "Export Mappings", "ip_loc_mappings.json", "JSON (*.json);;CSV (*.csv)")
+            if not path:
+                return
+            try:
+                from ip_loc_resolver import export_json, export_csv
+                ok = export_json(path) if path.lower().endswith('.json') else export_csv(path)
+                if ok:
+                    QMessageBox.information(dlg, "Export", "Mappings exported successfully.")
+                else:
+                    QMessageBox.critical(dlg, "Export", "Failed to export mappings.")
+            except Exception as e:
+                QMessageBox.critical(dlg, "Export", f"Error: {e}")
+        import_btn.clicked.connect(do_import)
+        export_btn2.clicked.connect(do_export)
+        load_mappings()
+
+        tabs.addTab(map_tab, "IP→Loc Mappings")
+
+        dlg.resize(900, 600)
+        dlg.exec_()
+
+    def dispatch_pfds_command(self, cmd: dict):
+        """Dispatch PFDS commands over TCP to device IP on current TCP port.
+        Sends plain text command (e.g., PERIOD_ON, REQUEST1) followed by newline.
+        Logs success/failure to TCP logs."""
+        from tcp_logger import log_raw_packet, log_error_packet
+        ip = cmd.get('ip')
+        loc = cmd.get('location_id') or ''
+        name = cmd.get('name') or ''
+        command = cmd.get('command')
+        if not ip or not command:
+            return
+        import socket
+        msg = f"PFDS_CMD {command} to {ip} ({name})"
+        try:
+            with socket.create_connection((ip, self.tcp_server_port), timeout=2) as s:
+                s.sendall((command + "\n").encode('utf-8'))
+            log_raw_packet(loc, msg + " | sent")
+        except Exception as e:
+            log_error_packet(loc, f"PFDS_CMD_FAIL {command} to {ip} ({name}) | {e}")
+
+    def inject_test_stream_error(self):
+        # Force a test error on first available video widget
+        from error_logger import get_error_logger
+        get_error_logger().log('TEST', 'Injected test stream error')
+        # Attempt to locate a VideoWidget and call its handle_error
+        for w in self.findChildren(QWidget):
+            if w.__class__.__name__ == 'VideoWidget' and hasattr(w, 'handle_error'):
+                w.handle_error('Injected test stream error')
+                break
+
+    def backup_config(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Backup",
+            f"stream_config_backup_{datetime.now().strftime('%Y%m%d')}.json",
+            "JSON Files (*.json)"
+        )
+        if path:
+            if StreamConfig.export_config(path):
+                QMessageBox.information(self, "Success", "Configuration backup created successfully!")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to create backup")
+    
+    def restore_config(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Restore",
+            "This will overwrite current configuration. Continue?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.No:
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Backup File",
+            "",
+            "JSON Files (*.json)"
+        )
+        if path:
+            if StreamConfig.import_config(path):
+                # Reload configuration
+                self.config = StreamConfig.load_config()
+                self.group_combo.clear()
+                self.group_combo.addItems(self.config["groups"])
+                self.update_rtsp_grid()
+                QMessageBox.information(self, "Success", "Configuration restored successfully!")
+            else:
+                QMessageBox.critical(self, "Error", "Invalid backup file or restore failed")
+
+    def start_websocket_client(self):
+        """Start WebSocket client in background thread"""
+        def run_loop():
+            asyncio.run(self.websocket_client())
+
+        self.ws_thread = Thread(target=run_loop, daemon=True)
+        self.ws_thread.start()
+
+    async def websocket_client(self):
+        uri = "ws://localhost:8765"
+        async with websockets.connect(uri) as websocket:
+            self.ws_client = websocket
+            try:
+                async for message in websocket:
+                    data = json.loads(message)
+                    self.handle_sensor_data(data)
+            except Exception as e:
+                print(f"WebSocket error: {str(e)}")
+
+    def handle_sensor_data(self, data):
+        """Route sensor data to appropriate VideoWidget"""
+        print("Received sensor data:", data)
+        loc_id = data.get('loc_id')
+        print("Camera id:", loc_id)
+        if not loc_id:
+            return
+            
+        for widget in self.get_video_widgets():
+            if widget.loc_id == loc_id:
+                print(f"Updating widget {loc_id} with data: {data}")
+                
+                # Update temperature if available (calculated from thermal matrix)
+                if 'temperature' in data:
+                    widget.set_temperature(data['temperature'])
+                elif 'matrix' in data:
+                    # Calculate max temperature from thermal matrix
+                    import numpy as np
+                    matrix = np.array(data['matrix'])
+                    max_temp = matrix.max()
+                    # Convert 0-255 scale to Celsius (approximate)
+                    temp_c = max_temp * 100 / 255
+                    widget.set_temperature(temp_c)
+                
+                # Update fire alarm if available
+                if 'fire_alarm' in data:
+                    widget.update_fire_alarm(data['fire_alarm'])
+                
+                break
+
+    def get_video_widgets(self):
+        """Get all VideoWidget instances in the grid"""
+        widgets = []
+        for i in range(self.rtsp_grid.count()):
+            item = self.rtsp_grid.itemAt(i)
+            if item and (widget := item.widget()):
+                if isinstance(widget, VideoWidget):
+                    widgets.append(widget)
+        return widgets
+    
+    def init_rtsp_tab(self):
+        rtsp_tab = QWidget()
+        layout = QVBoxLayout(rtsp_tab)
+        
+        size_layout = QHBoxLayout()
+        self.grid_size = QComboBox()
+        self.grid_size.addItems(["2x2", "3x3", "4x4"])
+        self.grid_size.currentIndexChanged.connect(self.update_rtsp_grid)
+        size_layout.addWidget(QLabel("Grid Size:"))
+        size_layout.addWidget(self.grid_size)
+        size_layout.addStretch()
+        
+        self.rtsp_grid = QGridLayout()
+        grid_widget = QWidget()
+        grid_widget.setLayout(self.rtsp_grid)
+        
+        page_layout = QHBoxLayout()
+        self.prev_rtsp = QPushButton("Previous", clicked=self.prev_rtsp_page)
+        self.next_rtsp = QPushButton("Next", clicked=self.next_rtsp_page)
+        self.page_label = QLabel()
+        page_layout.addWidget(self.prev_rtsp)
+        page_layout.addWidget(self.page_label)
+        page_layout.addWidget(self.next_rtsp)
+        
+        layout.addLayout(size_layout)
+        layout.addWidget(grid_widget)
+        layout.addLayout(page_layout)
+        self.tabs.addTab(rtsp_tab, "Camera Feeds")
+        self.update_rtsp_grid()
+
+    def init_graph_tab(self):
+        graph_tab = QWidget()
+        layout = QVBoxLayout(graph_tab)
+        self.graph_stack = QVBoxLayout()
+        layout.addLayout(self.graph_stack)
+        
+        page_layout = QHBoxLayout()
+        self.prev_graph = QPushButton("Previous", clicked=self.prev_graph_page)
+        self.next_graph = QPushButton("Next", clicked=self.next_graph_page)
+        self.graph_label = QLabel()
+        page_layout.addWidget(self.prev_graph)
+        page_layout.addWidget(self.graph_label)
+        page_layout.addWidget(self.next_graph)
+        layout.addLayout(page_layout)
+        
+        self.tabs.addTab(graph_tab, "Analytics")
+        self.update_graph()
+
+    def showEvent(self, event):
+        """Start WebSocket client when window is shown"""
+        super().showEvent(event)
+        self.ws_client.start()
+
+    def closeEvent(self, event):
+        """Ensure all background threads and resources stop cleanly before window closes"""
+        try:
+            # Save baselines/events
+            self.baseline_manager.save_to_disk()
+        except Exception as e:
+            print(f"Baseline save error: {e}")
+        try:
+            # Stop all video worker threads first
+            self.shutdown_video_widgets()
+        except Exception as e:
+            print(f"Video widget shutdown error: {e}")
+        try:
+            # Stop websocket client
+            if hasattr(self, 'ws_client') and self.ws_client:
+                self.ws_client.stop()
+        except Exception as e:
+            print(f"WebSocket client stop error: {e}")
+        try:
+            # Stop sensor server if present on parent
+            if hasattr(self.parent(), 'server') and getattr(self.parent(), 'server'):
+                self.parent().server.stop()
+        except Exception as e:
+            print(f"Sensor server stop error: {e}")
+        try:
+            # Stop TCP sensor server
+            if hasattr(self, 'tcp_server') and self.tcp_server:
+                self.tcp_server.stop()
+        except Exception as e:
+            print(f"TCP Sensor Server stop error: {e}")
+        try:
+            # Stop PFDS scheduler
+            if hasattr(self, 'pfds') and self.pfds:
+                self.pfds.stop_scheduler()
+        except Exception as e:
+            print(f"PFDS scheduler stop error: {e}")
+        super().closeEvent(event)
+
+
+    def update_rtsp_grid(self):
+        try:
+            # Clear existing widgets safely
+            while self.rtsp_grid.count():
+                item = self.rtsp_grid.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    # Ensure underlying thread/capture stops before deletion
+                    if hasattr(widget, 'stop'):
+                        try:
+                            widget.stop()
+                        except Exception as e:
+                            print(f"Error stopping widget: {e}")
+                    widget.deleteLater()
+
+            filtered_streams = [
+                s for s in self.config["streams"]
+                if s["group"] == self.current_group
+            ]
+            
+            if not filtered_streams:
+                no_streams_label = QLabel(f"No streams in {self.current_group} group")
+                no_streams_label.setAlignment(Qt.AlignCenter)
+                self.rtsp_grid.addWidget(no_streams_label, 0, 0)
+                self.page_label.setText("Page 0 of 0")
+                return
+
+            rows, cols = map(int, self.grid_size.currentText().split("x"))
+            feeds_per_page = rows * cols
+            total_streams = len(filtered_streams)
+            total_pages = max(1, (total_streams + feeds_per_page - 1) // feeds_per_page)
+            self.current_rtsp_page = max(1, min(self.current_rtsp_page, total_pages))
+            start = (self.current_rtsp_page - 1) * feeds_per_page
+            end = min(start + feeds_per_page, total_streams)
+
+            for idx in range(start, end):
+                stream = filtered_streams[idx]
+                position = idx - start
+                row = position // cols
+                col = position % cols
+                
+                try:
+                    video_widget = VideoWidget(stream["url"], stream['name'], stream['loc_id'])
+                    self.video_widgets[stream['loc_id']] = video_widget
+                    video_widget.setToolTip(f"{stream['name']}\n{stream['url']}")
+                    name_label = QLabel(stream["name"], video_widget)
+                    name_label.setStyleSheet("""
+                        background-color: rgba(0, 0, 0, 150);
+                        color: white;
+                        padding: 2px;
+                        border-radius: 3px;
+                    """)
+                    name_label.move(5, 5)
+
+                    # Connect signals
+                    # video_widget.maximize_requested.connect(self.handle_maximize)
+                    # video_widget.minimize_requested.connect(self.handle_minimize)
+                    video_widget.maximize_requested.connect(
+                        self.handle_maximize, 
+                        Qt.QueuedConnection
+                    )
+                    video_widget.minimize_requested.connect(
+                        self.handle_minimize, 
+                        Qt.QueuedConnection
+                    )
+                    # Update status
+                    video_widget.update_fire_alarm(True)
+                    video_widget.set_temperature(22.5)
+
+
+                    self.rtsp_grid.addWidget(video_widget, row, col)
+                except Exception as e:
+                    error_label = QLabel(f"{stream['name']}\nError: {str(e)}")
+                    error_label.setAlignment(Qt.AlignCenter)
+                    error_label.setStyleSheet("color: red; background-color: black;")
+                    self.rtsp_grid.addWidget(error_label, row, col)
+
+            self.page_label.setText(f"Page {self.current_rtsp_page} of {total_pages}")
+            self.prev_rtsp.setEnabled(self.current_rtsp_page > 1)
+            self.next_rtsp.setEnabled(end < total_streams)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Grid update failed: {str(e)}")
+            self.current_rtsp_page = 1
+            self.update_rtsp_grid()
+
+    def update_graph(self):
+        try:
+            # Lazy import matplotlib only when needed
+            import matplotlib
+            matplotlib.use('Qt5Agg')
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            import matplotlib.pyplot as plt
+            
+            for i in reversed(range(self.graph_stack.count())): 
+                self.graph_stack.itemAt(i).widget().deleteLater()
+            
+            figure = plt.figure()
+            canvas = FigureCanvas(figure)
+            ax = figure.add_subplot(111)
+            
+            if self.current_graph_page == 1:
+                x = np.linspace(0, 10, 100)
+                ax.plot(x, np.sin(x))
+                ax.set_title("Sine Wave")
+            else:
+                categories = ["A", "B", "C"]
+                values = np.random.randint(1, 10, 3)
+                ax.bar(categories, values)
+                ax.set_title("Random Data")
+            
+            canvas.draw()
+            self.graph_stack.addWidget(canvas)
+            self.graph_label.setText(f"Graph {self.current_graph_page}/2")
+            self.prev_graph.setEnabled(self.current_graph_page > 1)
+            self.next_graph.setEnabled(self.current_graph_page < 2)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Graph update failed: {str(e)}")
+
+    def handle_maximize(self):
+        """Handle maximize with button state management"""
+        try:
+            sender = self.sender()
+            if not sender or not isinstance(sender, VideoWidget):
+                return
+
+            if self.maximized_widget:
+                if self.maximized_widget == sender:
+                    # Toggle back to grid view
+                    self.restore_layout()
+                    return
+                # Restore previous maximized widget
+                self.restore_layout()
+
+            # Store original state
+            self.original_layout = {
+                'visible': [],
+                'hidden': []
+            }
+
+            # Disable maximize button for clicked widget
+            sender.maximize_btn.setEnabled(False)
+            
+            # Update minimize button visibility
+            sender.minimize_btn.setVisible(True)
+
+            # Hide other widgets
+            for i in range(self.rtsp_grid.count()):
+                item = self.rtsp_grid.itemAt(i)
+                if item and (widget := item.widget()):
+                    if widget == sender:
+                        widget.raise_()
+                        self.maximized_widget = widget
+                    else:
+                        widget.hide()
+                        self.original_layout['hidden'].append(widget)
+                    self.original_layout['visible'].append(widget)
+
+            self.rtsp_grid.setContentsMargins(0, 0, 0, 0)
+            self.rtsp_grid.update()
+
+        except Exception as e:
+            print(f"Maximize error: {str(e)}")
+
+    def handle_minimize(self):
+        """Safe restore implementation with button states"""
+        try:
+            if not self.maximized_widget:
+                return
+
+            # Re-enable maximize button
+            self.maximized_widget.maximize_btn.setEnabled(True)
+            self.maximized_widget.minimize_btn.setVisible(False)
+
+            # Restore visibility
+            for widget in self.original_layout.get('hidden', []):
+                if widget and widget.parent():
+                    widget.show()
+
+            self.maximized_widget = None
+            self.rtsp_grid.setContentsMargins(2, 2, 2, 2)
+            self.rtsp_grid.update()
+
+        except Exception as e:
+            print(f"Minimize error: {str(e)}")
+
+    def restore_layout(self):
+        try:
+            # Clear layout safely
+            while self.rtsp_grid.count():
+                item = self.rtsp_grid.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.setParent(None)
+                    widget.deleteLater()
+            
+            # Recreate widgets from config
+            self.update_rtsp_grid()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Restore error: {str(e)}")    
+
+    def group_changed(self, group):
+        self.current_group = group
+        self.current_rtsp_page = 1
+        self.update_rtsp_grid()
+
+    def configure_streams(self):
+        dialog = StreamConfigDialog(self.config, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.config = dialog.get_config()
+            StreamConfig.save_config(self.config)
+            self.group_combo.clear()
+            self.group_combo.addItems(self.config["groups"])
+            self.update_rtsp_grid()
+
+    def reset_streams(self):
+        """Clear all configured streams and reset to default group layout."""
+        reply = QMessageBox.question(
+            self,
+            "Reset Streams",
+            "This will remove all configured streams and reset to a blank default configuration. Continue?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.No:
+            return
+        # Build default empty configuration
+        default_config = {"groups": ["Default"], "streams": [], "tcp_port": self.config.get("tcp_port", 9000)}
+        if StreamConfig.save_config(default_config):
+            self.config = default_config
+            self.group_combo.clear()
+            self.group_combo.addItems(self.config["groups"])
+            self.current_group = "Default"
+            self.current_rtsp_page = 1
+            self.update_rtsp_grid()
+            QMessageBox.information(self, "Streams Reset", "Stream configuration has been cleared.")
+        else:
+            QMessageBox.critical(self, "Error", "Failed to reset stream configuration.")
+
+    def show_profile(self):
+        profile_dialog = QDialog(self)
+        profile_dialog.setWindowTitle("User Profile")
+        profile_dialog.setFixedSize(300, 200)
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Username: admin"))
+        layout.addWidget(QLabel("Email: admin@example.com"))
+        close_btn = QPushButton("Close", clicked=profile_dialog.close)
+        layout.addWidget(close_btn)
+        profile_dialog.setLayout(layout)
+        profile_dialog.exec_()
+
+    def prev_rtsp_page(self):
+        self.current_rtsp_page = max(1, self.current_rtsp_page - 1)
+        self.update_rtsp_grid()
+
+    def next_rtsp_page(self):
+        self.current_rtsp_page += 1
+        self.update_rtsp_grid()
+
+    def prev_graph_page(self):
+        self.current_graph_page = max(1, self.current_graph_page - 1)
+        self.update_graph()
+
+    def next_graph_page(self):
+        self.current_graph_page = min(2, self.current_graph_page + 1)
+        self.update_graph()
+
+    def logout(self):
+        """Perform orderly shutdown before closing and returning to login."""
+        print("Logout initiated - shutting down components...")
+        
+        # Stop video widgets first
+        self.shutdown_video_widgets()
+        
+        # Stop WebSocket client
+        if hasattr(self, 'ws_client'):
+            try:
+                print("Stopping WebSocket client...")
+                self.ws_client.stop()
+            except Exception as e:
+                print(f"WebSocket stop during logout error: {e}")
+        
+        # Stop TCP sensor server
+        if hasattr(self, 'tcp_server') and self.tcp_server:
+            try:
+                print("Stopping TCP sensor server...")
+                self.tcp_server.stop()
+            except Exception as e:
+                print(f"TCP server stop during logout error: {e}")
+        
+        # Stop baseline manager sensor server if it exists
+        if hasattr(self.parent(), 'server') and getattr(self.parent(), 'server'):
+            try:
+                print("Stopping parent sensor server...")
+                self.parent().server.stop()
+            except Exception as e:
+                print(f"Parent sensor server stop during logout error: {e}")
+        
+        print("Cleanup complete, returning to login...")
+        self.close()
+        
+        # Show login window
+        from ee_loginwindow import EELoginWindow
+        login_window = EELoginWindow()
+        login_window.show()
+
+    def shutdown_video_widgets(self):
+        """Iterate all video widgets and ensure their worker threads stop."""
+        for widget in self.get_video_widgets():
+            if hasattr(widget, 'stop'):
+                try:
+                    widget.stop()
+                except Exception as e:
+                    print(f"Error stopping video widget ({getattr(widget, 'loc_id', 'unknown')}): {e}")

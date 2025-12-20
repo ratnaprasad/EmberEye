@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+app_pid.txt
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Model files (large)
+models/*.pt
+!models/README.md
+
+# Data files
+*.npy
+*.dat
+
+# Backup folders
+backup_*/
+EmberEye_Checkpoint_*/
+EmberEye_migration_*/
+EmberEye_Windows_*/
+
+# Error logs
+error_log*.json
+
+# Output logs
+*_output.log
+simulator_*.log
+
+# Tar archives
+*.tar.gz
