@@ -1,23 +1,25 @@
 import os
 import time
+import shutil
 import numpy as np
 import websockets
 import json
 import asyncio
 import cv2
 from typing import List
+from pathlib import Path
 from threading import Thread, Event
 from stream_config import StreamConfig
-from resource_helper import get_resource_path
+from resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
 from tcp_server_logger import log_info as log_server_info, log_error as log_server_error
 from debug_config import debug_print, is_debug_enabled, set_debug_enabled
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
                              QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
                              QListWidget, QListWidgetItem, QProgressBar, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QSlider, QGroupBox, QCompleter,
-                             QCheckBox, QDoubleSpinBox
+                             QCheckBox, QDoubleSpinBox, QFormLayout
                              )
 from PyQt5.QtCore import (
-    Qt, pyqtSignal, QMutex, QObject, QTimer, QUrl
+    Qt, pyqtSignal, QMutex, QObject, QTimer, QUrl, QThread
 )
 from PyQt5.QtGui import (
     QPixmap, QImage
@@ -466,14 +468,8 @@ class BEMainWindow(QMainWindow):
         self._async_thread = async_thread
         self._pfds = pfds  # Reuse PFDS manager if provided
         
-        self.initUI()
-        self.ws_client = WebSocketClient()
-        if self.ws_client:
-            self.ws_client.data_received.connect(self.handle_sensor_data)
-            self.ws_client.start()
-
         # --- Sensor Fusion ---
-        # Initialize SensorFusion with config-loaded percentage thresholds
+        # Initialize SensorFusion BEFORE initUI to avoid AttributeError
         smoke_thr = float(self.config.get('smoke_threshold_pct', 25.0))
         flame_thr = float(self.config.get('flame_threshold_pct', 25.0))
         temp_thr = float(self.config.get('temp_threshold', 40.0))
@@ -490,6 +486,13 @@ class BEMainWindow(QMainWindow):
         from gas_sensor import MQ135GasSensor
         self.gas_sensor = MQ135GasSensor()
         # TODO: Load R0 calibration from config or calibrate on startup
+        
+        # Initialize UI after sensor fusion to prevent AttributeError
+        self.initUI()
+        self.ws_client = WebSocketClient()
+        if self.ws_client:
+            self.ws_client.data_received.connect(self.handle_sensor_data)
+            self.ws_client.start()
         
         # Start TCP sensor server (supports 'threaded' or 'async' via config key 'tcp_mode')
         self.tcp_server = None
@@ -890,6 +893,8 @@ class BEMainWindow(QMainWindow):
                 self.init_grafana_tab()
             # Always initialize Anomalies tab
             self.init_anomalies_tab()
+            # Initialize Training Manager tab
+            self.init_training_manager_tab()
             # Initialize Failed Devices tab if available
             if hasattr(self, 'device_status_manager'):
                 try:
@@ -1007,12 +1012,1149 @@ class BEMainWindow(QMainWindow):
         is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
         self.tabs.addTab(anomalies_tab, "ANOMALIES" if is_modern else "Anomalies")
 
-    def _update_anomaly_count(self):
+    def init_training_manager_tab(self):
+        """Create Training Manager tab for YOLO model training."""
+        from PyQt5.QtWidgets import (QFileDialog, QProgressBar, QSpinBox, QCheckBox, 
+                                     QDateEdit, QTextEdit, QPushButton)
+        from PyQt5.QtCore import QDate
+        
+        training_tab = QWidget()
+        main_layout = QVBoxLayout(training_tab)
+        
+        # Header with training stats
+        header_layout = QHBoxLayout()
+        self.training_completed_label = QLabel("Completed Training: 0")
+        self.training_active_label = QLabel("Training: 0")
+        header_layout.addWidget(self.training_completed_label)
+        header_layout.addWidget(self.training_active_label)
+        header_layout.addStretch(1)
+        main_layout.addLayout(header_layout)
+        
+        # Sub-tabs: Training and Sandbox
+        training_subtabs = QTabWidget()
+        
+        # --- Training Sub-tab ---
+        training_widget = QWidget()
+        training_layout = QHBoxLayout(training_widget)
+        
+        # Left panel: Class selection and data management
+        left_panel = QVBoxLayout()
+        
+        class_layout = QHBoxLayout()
+        class_layout.addWidget(QLabel("Class"))
+        self.training_class_combo = QComboBox()
+        self.training_class_combo.setMinimumWidth(300)
+        self.training_class_combo.setEditable(True)
+        self.training_class_combo.setInsertPolicy(QComboBox.NoInsert)
+        # Populate from master classes using hierarchical labels: root → category → class
         try:
-            if hasattr(self, 'anomaly_count_label'):
-                self.anomaly_count_label.setText(f"Captured: {len(self._anomalies_store)}")
+            from master_class_config import get_hierarchical_class_labels
+            self.training_classes = get_hierarchical_class_labels()
+            self.training_class_combo.addItems(self.training_classes)
+            # Add search filter with QCompleter
+            completer = QCompleter(self.training_classes)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchContains)
+            self.training_class_combo.setCompleter(completer)
         except Exception:
             pass
+        class_layout.addWidget(self.training_class_combo)
+        class_layout.addStretch(1)
+        left_panel.addLayout(class_layout)
+        
+        # Import and Annotate buttons
+        btn_layout = QHBoxLayout()
+        import_btn = QPushButton("Import Video → Training")
+        self.import_training_btn = import_btn
+        import_btn.clicked.connect(self.import_training_video)
+        btn_layout.addWidget(import_btn)
+        
+        annotate_btn = QPushButton("📹 Annotate Video")
+        self.annotate_btn = annotate_btn
+        annotate_btn.clicked.connect(self.open_annotation_tool)
+        btn_layout.addWidget(annotate_btn)
+        btn_layout.addStretch(1)
+        left_panel.addLayout(btn_layout)
+        
+        # Ready for Training count display
+        training_ready_group = QWidget()
+        training_ready_layout = QVBoxLayout(training_ready_group)
+        training_ready_layout.setContentsMargins(10, 10, 10, 10)
+        training_ready_group.setStyleSheet("""
+            QWidget {
+                background: rgba(0, 188, 212, 0.1);
+                border: 2px solid #00bcd4;
+                border-radius: 8px;
+            }
+        """)
+        ready_label = QLabel("📦 Ready for Training")
+        ready_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #00bcd4; border: none; background: transparent;")
+        training_ready_layout.addWidget(ready_label)
+        
+        self.training_ready_count_label = QLabel("0 annotation files")
+        self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fff; border: none; background: transparent;")
+        training_ready_layout.addWidget(self.training_ready_count_label)
+        
+        left_panel.addWidget(training_ready_group)
+        left_panel.addStretch(1)
+        
+        # Move to Training and Delete buttons
+        action_btn_layout = QHBoxLayout()
+        move_btn = QPushButton("→ Move to Training")
+        move_btn.clicked.connect(self.move_to_training)
+        action_btn_layout.addWidget(move_btn)
+        
+        delete_btn = QPushButton("🗑 Delete")
+        delete_btn.clicked.connect(self.delete_training_data)
+        action_btn_layout.addWidget(delete_btn)
+        action_btn_layout.addStretch(1)
+        left_panel.addLayout(action_btn_layout)
+        
+        training_layout.addLayout(left_panel, 1)
+        
+        # Right panel: Training configuration
+        right_panel = QVBoxLayout()
+        right_panel.addWidget(QLabel("Training Configuration"))
+        
+        config_form = QFormLayout()
+        
+        self.epochs_spin = QSpinBox()
+        self.epochs_spin.setRange(1, 1000)
+        self.epochs_spin.setValue(50)
+        config_form.addRow("Epochs:", self.epochs_spin)
+        
+        self.batch_size_spin = QSpinBox()
+        self.batch_size_spin.setRange(1, 128)
+        self.batch_size_spin.setValue(16)
+        config_form.addRow("Batch Size:", self.batch_size_spin)
+        
+        right_panel.addLayout(config_form)
+        
+        # Training Status
+        right_panel.addWidget(QLabel("Training Status"))
+        self.training_progress = QProgressBar()
+        self.training_progress.setValue(0)
+        right_panel.addWidget(self.training_progress)
+        
+        self.training_status_label = QLabel("Ready")
+        right_panel.addWidget(self.training_status_label)
+        
+        self.training_epoch_label = QLabel("Epoch: 0/0")
+        right_panel.addWidget(self.training_epoch_label)
+        
+        # Training control buttons
+        train_btn_layout = QHBoxLayout()
+        self.start_training_btn = QPushButton("▶ Start Training")
+        self.start_training_btn.clicked.connect(self.start_model_training)
+        train_btn_layout.addWidget(self.start_training_btn)
+        
+        self.cancel_training_btn = QPushButton("Cancel")
+        self.cancel_training_btn.setEnabled(False)
+        self.cancel_training_btn.clicked.connect(self.cancel_model_training)
+        train_btn_layout.addWidget(self.cancel_training_btn)
+        train_btn_layout.addStretch(1)
+        right_panel.addLayout(train_btn_layout)
+        
+        # Model Versions
+        right_panel.addWidget(QLabel("Model Versions"))
+        self.model_versions_list = QListWidget()
+        self.model_versions_list.setMaximumHeight(140)
+        right_panel.addWidget(self.model_versions_list)
+        
+        version_btn_layout = QHBoxLayout()
+        rollback_btn = QPushButton("↶ Rollback to Selected")
+        rollback_btn.clicked.connect(self.rollback_model_version)
+        version_btn_layout.addWidget(rollback_btn)
+        
+        delete_version_btn = QPushButton("🗑 Delete Version")
+        delete_version_btn.clicked.connect(self.delete_model_version)
+        version_btn_layout.addWidget(delete_version_btn)
+        version_btn_layout.addStretch(1)
+        right_panel.addLayout(version_btn_layout)
+        
+        right_panel.addStretch(1)
+        training_layout.addLayout(right_panel, 1)
+        
+        # Populate versions on load
+        self._refresh_model_versions()
+        
+        training_subtabs.addTab(training_widget, "Training")
+        
+        # --- Sandbox Sub-tab ---
+        sandbox_widget = self._create_sandbox_tab()
+        training_subtabs.addTab(sandbox_widget, "Sandbox")
+        
+        main_layout.addWidget(training_subtabs)
+        
+        # Determine tab label based on theme
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
+        self.tabs.addTab(training_tab, "TRAINING" if is_modern else "Training")
+        
+        # Store reference
+        self.training_manager_tab = training_tab
+        self._training_video_path = None
+        self.training_selected_video_path = None
+        self.training_has_annotations = False
+        
+        # Initial count update
+        self._refresh_training_ready_count()
+
+    # Training Manager methods
+    def import_training_video(self):
+        """Import or register a training video.
+
+        If annotations already exist for the selected video, we skip re-import
+        and treat it as an "Add existing annotated frames" operation.
+        """
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Training Video", "", "Videos (*.mp4 *.avi *.mov)")
+        if file_path:
+            # Store for annotation tool use
+            self.training_selected_video_path = file_path
+            annotations_dir = self._annotations_dir_for_video(file_path)
+            has_ann = self._has_annotations(annotations_dir)
+            self.training_has_annotations = has_ann
+
+            if has_ann:
+                # Switch button label to reflect we're registering existing annotations
+                if hasattr(self, 'import_training_btn'):
+                    self.import_training_btn.setText("Register Annotated Frames")
+                QMessageBox.information(
+                    self,
+                    "Annotations Found",
+                    f"Annotations already exist for this video.\n\n"
+                    f"Video: {file_path}\n"
+                    f"Annotations folder: {annotations_dir}\n\n"
+                    "You can now add them directly to the training set or open the annotation tool to review."
+                )
+                # Update status label if available
+                if hasattr(self, 'training_status_label'):
+                    self.training_status_label.setText("Ready: annotated frames detected")
+            else:
+                if hasattr(self, 'import_training_btn'):
+                    self.import_training_btn.setText("Import Video → Training")
+                QMessageBox.information(
+                    self,
+                    "Import",
+                    f"Video imported:\n{file_path}\n\nClick 'Annotate Video' to label frames."
+                )
+                if hasattr(self, 'training_status_label'):
+                    self.training_status_label.setText("Ready: import complete, needs annotation")
+    
+    def open_annotation_tool(self):
+        """Open annotation tool for labeling frames."""
+        try:
+            # Build class label sets
+            from master_class_config import get_hierarchical_class_labels, load_master_classes
+            classes = load_master_classes()
+            hierarchical = get_hierarchical_class_labels()
+            leaf_classes = []
+            # Collect leaf class names from categories
+            for category in classes.get("IncidentEnvironment", []) or []:
+                for leaf in classes.get(category, []) or []:
+                    leaf_classes.append(leaf)
+
+            from annotation_tool import AnnotationToolDialog
+            video_path = getattr(self, 'training_selected_video_path', None)
+            print(f"[DEBUG] Opening annotation tool with video_path: {video_path}")
+            if not video_path:
+                QMessageBox.warning(self, "Annotation", "Please import a video first.")
+                return
+            dlg = AnnotationToolDialog(self, video_path=video_path, class_labels=hierarchical, leaf_classes=leaf_classes)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Annotation", f"Failed to open annotation tool: {e}")
+    
+    def move_to_training(self):
+        """Register annotated frames into training_data/annotations for training."""
+        if not getattr(self, 'training_selected_video_path', None):
+            QMessageBox.warning(self, "Training", "Select or import a video first.")
+            return
+        annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
+        ann_count = self._count_annotation_files(annotations_dir)
+        if ann_count == 0:
+            QMessageBox.warning(self, "Training", "No annotations found. Annotate or ensure labels exist before moving to training.")
+            return
+        target_dir = self._copy_annotations_to_training(annotations_dir)
+        if target_dir:
+            self._refresh_training_ready_count()
+            QMessageBox.information(
+                self,
+                "Training",
+                f"Registered annotated frames for training.\n"
+                f"Annotations: {ann_count} files\n"
+                f"Copied to: {target_dir}"
+            )
+        else:
+            QMessageBox.warning(self, "Training", "Failed to copy annotations to training_data.")
+            QMessageBox.warning(self, "Training", "Failed to copy annotations to training_data.")
+
+    def delete_training_data(self):
+        """Delete selected training data."""
+        reply = QMessageBox.question(self, "Delete", "Delete selected training data?",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            QMessageBox.information(self, "Delete", "Training data deleted.")
+
+    def start_model_training(self):
+        """Start YOLO model training using training_pipeline."""
+        training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
+        ann_total = self._count_annotation_files(training_ann_base)
+        if ann_total == 0:
+            QMessageBox.warning(self, "Training", "No annotations found in training_data/annotations. Import/register annotated frames first.")
+            return
+
+        from training_pipeline import TrainingConfig
+        project_name = f"embereye_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        config = TrainingConfig(
+            project_name=project_name,
+            epochs=self.epochs_spin.value(),
+            batch_size=self.batch_size_spin.value(),
+            imgsz=640,
+            device="auto",
+        )
+
+        self.start_training_btn.setEnabled(False)
+        self.cancel_training_btn.setEnabled(False)
+        self.training_status_label.setText("Training…")
+        self.training_progress.setValue(0)
+
+        self.training_worker = TrainingWorker(config)
+        self.training_worker.finished_signal.connect(self._on_training_finished)
+        self.training_worker.progress_signal.connect(self._on_training_progress)
+        self.training_worker.epoch_progress_signal.connect(self._on_epoch_progress)
+        self.training_worker.start()
+
+    def cancel_model_training(self):
+        """Cancel ongoing training (not supported in pipeline yet)."""
+        QMessageBox.information(self, "Training", "Cancel is not supported in this pipeline yet.")
+        self.start_training_btn.setEnabled(True)
+        self.cancel_training_btn.setEnabled(False)
+    
+    def rollback_model_version(self):
+        """Rollback to selected model version."""
+        selected = self.model_versions_list.selectedItems()
+        if selected:
+            QMessageBox.information(self, "Rollback", f"Rolling back to:\n{selected[0].text()}")
+        else:
+            QMessageBox.warning(self, "No Selection", "Select a model version to rollback.")
+    
+    def delete_model_version(self):
+        """Delete selected model version."""
+        selected = self.model_versions_list.selectedItems()
+        if selected:
+            reply = QMessageBox.question(self, "Delete", f"Delete version:\n{selected[0].text()}?",
+                                        QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.model_versions_list.takeItem(self.model_versions_list.row(selected[0]))
+        else:
+            QMessageBox.warning(self, "No Selection", "Select a model version to delete.")
+
+    # Helpers for training manager
+    def _annotations_dir_for_video(self, video_path: str) -> str:
+        """Return workspace-relative annotations directory for a video."""
+        base = os.path.splitext(os.path.basename(video_path or "video"))[0]
+        return get_data_path(os.path.join("annotations", base))
+
+    def _has_annotations(self, annotations_dir: str) -> bool:
+        try:
+            if not annotations_dir or not os.path.exists(annotations_dir):
+                return False
+            for fname in os.listdir(annotations_dir):
+                if fname.endswith(".txt"):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _count_annotation_files(self, annotations_dir: str) -> int:
+        """Count all .txt annotation files recursively in directory tree."""
+        try:
+            if not annotations_dir or not os.path.exists(annotations_dir):
+                return 0
+            count = 0
+            for root, dirs, files in os.walk(annotations_dir):
+                count += sum(1 for f in files if f.endswith('.txt'))
+            return count
+        except Exception:
+            return 0
+            return 0
+
+    def _create_sandbox_tab(self) -> QWidget:
+        """Create sandbox testing UI for model evaluation."""
+        from PyQt5.QtWidgets import QScrollArea
+        
+        # Main container with scroll area
+        sandbox_widget = QWidget()
+        main_layout = QVBoxLayout(sandbox_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Scrollable content area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        scroll_content = QWidget()
+        sandbox_layout = QVBoxLayout(scroll_content)
+        sandbox_layout.setSpacing(5)
+        
+        # Compact header
+        header = QLabel("🧪 Sandbox - Test models safely")
+        header.setStyleSheet("font-weight: bold; padding: 5px;")
+        sandbox_layout.addWidget(header)
+        
+        # Horizontal layout for compact space usage
+        top_section = QHBoxLayout()
+        
+        # Model selection (left column)
+        model_group = QGroupBox("Model")
+        model_layout = QVBoxLayout()
+        model_layout.setSpacing(3)
+        
+        model_select_layout = QHBoxLayout()
+        model_select_layout.addWidget(QLabel("Version:"))
+        self.sandbox_model_combo = QComboBox()
+        self.sandbox_model_combo.setMinimumWidth(120)
+        model_select_layout.addWidget(self.sandbox_model_combo, 1)
+        refresh_btn = QPushButton("🔄")
+        refresh_btn.setMaximumWidth(35)
+        refresh_btn.clicked.connect(self._refresh_sandbox_models)
+        model_select_layout.addWidget(refresh_btn)
+        model_layout.addLayout(model_select_layout)
+        
+        # Model info display
+        self.sandbox_model_info = QLabel("No model")
+        self.sandbox_model_info.setStyleSheet("font-size: 10px; color: #666;")
+        self.sandbox_model_info.setWordWrap(True)
+        model_layout.addWidget(self.sandbox_model_info)
+
+        verify_btn = QPushButton("Verify model")
+        verify_btn.setMaximumWidth(120)
+        verify_btn.clicked.connect(self._sandbox_verify_model)
+        model_layout.addWidget(verify_btn)
+        
+        model_group.setLayout(model_layout)
+        top_section.addWidget(model_group)
+        
+        # Inference controls (right column)
+        control_group = QGroupBox("Settings")
+        control_layout = QVBoxLayout()
+        control_layout.setSpacing(3)
+        
+        conf_layout = QHBoxLayout()
+        conf_layout.addWidget(QLabel("Conf:"))
+        self.sandbox_conf_spin = QDoubleSpinBox()
+        self.sandbox_conf_spin.setRange(0.0, 1.0)
+        self.sandbox_conf_spin.setSingleStep(0.05)
+        self.sandbox_conf_spin.setValue(0.15)
+        self.sandbox_conf_spin.setDecimals(2)
+        self.sandbox_conf_spin.setMaximumWidth(70)
+        conf_layout.addWidget(self.sandbox_conf_spin)
+        control_layout.addLayout(conf_layout)
+        
+        iou_layout = QHBoxLayout()
+        iou_layout.addWidget(QLabel("IoU:"))
+        self.sandbox_iou_spin = QDoubleSpinBox()
+        self.sandbox_iou_spin.setRange(0.0, 1.0)
+        self.sandbox_iou_spin.setSingleStep(0.05)
+        self.sandbox_iou_spin.setValue(0.45)
+        self.sandbox_iou_spin.setDecimals(2)
+        self.sandbox_iou_spin.setMaximumWidth(70)
+        iou_layout.addWidget(self.sandbox_iou_spin)
+        control_layout.addLayout(iou_layout)
+        
+        control_group.setLayout(control_layout)
+        top_section.addWidget(control_group)
+        
+        sandbox_layout.addLayout(top_section)
+
+        # --- Compact body: icons left, previews right ---
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(8)
+
+        # Left: stacked icon buttons
+        icon_column = QVBoxLayout()
+        icon_column.setSpacing(6)
+
+        def _make_icon_btn(text, slot, tip):
+            btn = QPushButton(text)
+            btn.setFixedSize(44, 44)
+            btn.setStyleSheet("font-size: 16px;")
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            return btn
+
+        icon_column.addWidget(_make_icon_btn("🖼", self._sandbox_upload_image, "Select image"))
+        icon_column.addWidget(_make_icon_btn("🎥", self._sandbox_upload_video, "Select video (first frame)"))
+        icon_column.addWidget(_make_icon_btn("📸", self._sandbox_select_annotated_frame, "Pick from annotations"))
+        # Keep a reference for external access
+        self.sandbox_run_btn = _make_icon_btn("▶", self._sandbox_run_inference, "Run inference")
+        icon_column.addWidget(self.sandbox_run_btn)
+        icon_column.addStretch(1)
+        body_layout.addLayout(icon_column)
+
+        # Right: input + output previews on one line
+        previews_column = QVBoxLayout()
+        previews_column.setSpacing(6)
+
+        previews_row = QHBoxLayout()
+        previews_row.setSpacing(6)
+
+        input_group = QGroupBox("Input")
+        input_layout = QVBoxLayout()
+        input_layout.setSpacing(3)
+        self.sandbox_input_label = QLabel("No input")
+        self.sandbox_input_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_input_label.setStyleSheet("border: 1px dashed #ccc; background: #f9f9f9;")
+        self.sandbox_input_label.setScaledContents(False)
+        self.sandbox_input_label.setFixedHeight(350)
+        input_layout.addWidget(self.sandbox_input_label)
+        input_group.setLayout(input_layout)
+        previews_row.addWidget(input_group)
+
+        results_group = QGroupBox("Result")
+        results_group.setMaximumWidth(700)
+        results_layout = QVBoxLayout()
+        results_layout.setSpacing(3)
+        self.sandbox_progress = QProgressBar()
+        self.sandbox_progress.setVisible(False)
+        self.sandbox_progress.setMaximumHeight(16)
+        results_layout.addWidget(self.sandbox_progress)
+        
+        # Horizontal layout for image + stats
+        results_inner = QHBoxLayout()
+        results_inner.setSpacing(6)
+        
+        self.sandbox_results_label = QLabel("Results appear here")
+        self.sandbox_results_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_results_label.setStyleSheet("border: 1px solid #ccc; background: #fff;")
+        self.sandbox_results_label.setScaledContents(False)
+        self.sandbox_results_label.setFixedHeight(350)
+        self.sandbox_results_label.setMaximumWidth(300)
+        results_inner.addWidget(self.sandbox_results_label)
+        
+        # Real-time stats panel
+        self.sandbox_stats_panel = QLabel("Waiting for inference...")
+        self.sandbox_stats_panel.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.sandbox_stats_panel.setStyleSheet("border: 1px solid #ddd; background: #f5f5f5; padding: 8px; font-family: monospace; font-size: 11px;")
+        self.sandbox_stats_panel.setFixedHeight(350)
+        self.sandbox_stats_panel.setMaximumWidth(350)
+        self.sandbox_stats_panel.setWordWrap(True)
+        results_inner.addWidget(self.sandbox_stats_panel)
+        
+        results_layout.addLayout(results_inner)
+        results_group.setLayout(results_layout)
+        previews_row.addWidget(results_group)
+
+        previews_column.addLayout(previews_row)
+
+        # Stats and detections below previews
+        self.sandbox_stats_label = QLabel("Detections: - | Time: -")
+        self.sandbox_stats_label.setStyleSheet("font-size: 10px; font-family: monospace;")
+        previews_column.addWidget(self.sandbox_stats_label)
+        self.sandbox_detections_list = QListWidget()
+        self.sandbox_detections_list.setMaximumHeight(90)
+        previews_column.addWidget(self.sandbox_detections_list)
+
+        body_layout.addLayout(previews_column)
+        sandbox_layout.addLayout(body_layout)
+        
+        # Set scroll content
+        scroll_area.setWidget(scroll_content)
+        main_layout.addWidget(scroll_area)
+        
+        # Initialize with available models
+        self._refresh_sandbox_models()
+        
+        return sandbox_widget
+    
+    def _refresh_sandbox_models(self):
+        """Refresh available model versions in sandbox."""
+        try:
+            from embereye.core.model_versioning import ModelVersionManager
+            version_mgr = ModelVersionManager()
+            versions = version_mgr.list_versions()
+            
+            self.sandbox_model_combo.clear()
+            if not versions:
+                self.sandbox_model_combo.addItem("No models available")
+                self.sandbox_model_info.setText("Train a model first in the Training tab")
+                return
+            
+            for version in reversed(versions):  # Show newest first
+                self.sandbox_model_combo.addItem(version)
+            
+            # Update info for first model
+            self._update_sandbox_model_info()
+            self.sandbox_model_combo.currentIndexChanged.connect(self._update_sandbox_model_info)
+            
+        except Exception as e:
+            self.sandbox_model_combo.clear()
+            self.sandbox_model_combo.addItem("Error loading models")
+            self.sandbox_model_info.setText(f"Error: {e}")
+    
+    def _update_sandbox_model_info(self):
+        """Update model info display when selection changes."""
+        try:
+            version = self.sandbox_model_combo.currentText()
+            if not version or version in ["No models available", "Error loading models"]:
+                return
+            
+            from embereye.core.model_versioning import ModelVersionManager
+            version_mgr = ModelVersionManager()
+            metadata_path = version_mgr.models_dir / version / "metadata.json"
+            
+            if metadata_path.exists():
+                from model_versioning import ModelMetadata
+                metadata = ModelMetadata.load(metadata_path)
+                info_text = (f"📊 Training Images: {metadata.training_images} | "
+                           f"Accuracy: {metadata.best_accuracy:.2%} | "
+                           f"Epochs: {metadata.total_epochs} | "
+                           f"Time: {metadata.training_time_hours:.1f}h")
+                self.sandbox_model_info.setText(info_text)
+            else:
+                self.sandbox_model_info.setText(f"Model: {version} (metadata not found)")
+        except Exception as e:
+            self.sandbox_model_info.setText(f"Error: {e}")
+    
+    def _sandbox_upload_image(self):
+        """Upload an image for testing."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Test Image", "", 
+            "Image Files (*.jpg *.jpeg *.png *.bmp)"
+        )
+        if file_path:
+            self._load_sandbox_input(file_path)
+    
+    def _sandbox_upload_video(self):
+        """Upload a video for testing (will process multiple frames)."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Test Video", "", 
+            "Video Files (*.mp4 *.avi *.mov *.mkv)"
+        )
+        if file_path:
+            # Store video path for frame sampling during inference
+            self.sandbox_input_path = file_path
+            self.sandbox_is_video = True
+            
+            # Show preview thumbnail (first frame)
+            try:
+                cap = cv2.VideoCapture(file_path)
+                ret, frame = cap.read()
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap.release()
+                
+                if ret:
+                    # Save temp preview
+                    temp_path = get_data_path("temp_sandbox_preview.jpg")
+                    cv2.imwrite(temp_path, frame)
+                    
+                    # Display with info about video
+                    pixmap = QPixmap(temp_path)
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(520, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        self.sandbox_input_label.setPixmap(scaled)
+                        self.sandbox_input_label.setText("")
+                    
+                    # Update label with video info
+                    video_name = os.path.basename(file_path)
+                    self.sandbox_model_info.setText(f"Video: {video_name} ({total_frames} frames)")
+                else:
+                    QMessageBox.warning(self, "Error", "Could not read video")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Video loading error: {e}")
+
+    def _sandbox_verify_model(self):
+        """Show quick info about the selected model weights and classes."""
+        version = self.sandbox_model_combo.currentText()
+        if not version or version in ["No models available", "Error loading models"]:
+            QMessageBox.information(self, "Verify Model", "Select a model version first.")
+            return
+        try:
+            from embereye.core.model_versioning import ModelVersionManager
+            from ultralytics import YOLO
+            mgr = ModelVersionManager()
+            weights_dir = mgr.models_dir / version / "weights"
+            weight_path = weights_dir / "best.pt"
+            if not weight_path.exists():
+                alt_path = weights_dir / "EmberEye.pt"
+                if alt_path.exists():
+                    weight_path = alt_path
+                else:
+                    QMessageBox.warning(self, "Verify Model", f"Weights not found for {version}")
+                    return
+            size_mb = weight_path.stat().st_size / (1024 * 1024)
+            size_note = "OK" if size_mb >= 7 else "Small (likely base yolov8n, training may not have run)"
+            model = YOLO(str(weight_path))
+            names = model.names
+            if isinstance(names, dict):
+                class_list = list(names.values())
+            else:
+                class_list = names if isinstance(names, list) else []
+            msg = (
+                f"Version: {version}\n"
+                f"Path: {weight_path}\n"
+                f"Size: {size_mb:.2f} MB ({size_note})\n"
+                f"Classes ({len(class_list)}): {', '.join(class_list) if class_list else 'None'}"
+            )
+            QMessageBox.information(self, "Verify Model", msg)
+        except Exception as e:
+            QMessageBox.warning(self, "Verify Model", f"Error: {e}")
+    
+    
+    def _sandbox_select_annotated_frame(self):
+        """Select a frame from existing annotations."""
+        annotations_dir = get_data_path("annotations")
+        if not os.path.exists(annotations_dir):
+            QMessageBox.information(self, "No Annotations", 
+                                   "No annotated frames found. Create annotations first.")
+            return
+        
+        # Find image files
+        image_files = []
+        for root, dirs, files in os.walk(annotations_dir):
+            for f in files:
+                if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    image_files.append(os.path.join(root, f))
+        
+        if not image_files:
+            QMessageBox.information(self, "No Images", "No image files found in annotations")
+            return
+        
+        # Show selection dialog
+        from PyQt5.QtWidgets import QInputDialog
+        items = [os.path.basename(f) for f in image_files]
+        item, ok = QInputDialog.getItem(self, "Select Frame", 
+                                       "Choose annotated frame:", items, 0, False)
+        if ok and item:
+            selected_path = image_files[items.index(item)]
+            self._load_sandbox_input(selected_path)
+    
+    def _load_sandbox_input(self, image_path: str):
+        """Load image into sandbox input display."""
+        try:
+            self.sandbox_input_path = image_path
+            pixmap = QPixmap(image_path)
+            if not pixmap.isNull():
+                # Scale to fit label constraints (~350px tall)
+                scaled = pixmap.scaled(520, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.sandbox_input_label.setPixmap(scaled)
+                self.sandbox_input_label.setText("")
+            else:
+                self.sandbox_input_label.setText("Failed to load")
+        except Exception as e:
+            self.sandbox_input_label.setText(f"Error: {e}")
+    
+    def _sandbox_run_inference(self):
+        """Run inference on selected image or video with selected model."""
+        # Validate inputs
+        if not hasattr(self, 'sandbox_input_path') or not os.path.exists(self.sandbox_input_path):
+            QMessageBox.warning(self, "No Input", "Please select an input image or video first")
+            return
+        
+        version = self.sandbox_model_combo.currentText()
+        if not version or version in ["No models available", "Error loading models"]:
+            QMessageBox.warning(self, "No Model", "Please select a valid model version")
+            return
+        
+        # Run inference in background thread
+        self.sandbox_run_btn.setEnabled(False)
+        self.sandbox_progress.setVisible(True)
+        self.sandbox_progress.setRange(0, 0)  # Indeterminate
+        
+        # Start inference worker
+        from PyQt5.QtCore import QThread, pyqtSignal
+        
+        class InferenceWorker(QThread):
+            finished = pyqtSignal(bool, object, str)  # success, results_dict, message
+            progress = pyqtSignal(int, int, int, int, str)  # current_frame, total_frames, detections_so_far, elapsed_ms, frame_path
+            
+            def __init__(self, model_version, input_path, conf, iou, is_video=False):
+                super().__init__()
+                self.model_version = model_version
+                self.input_path = input_path
+                self.conf = conf
+                self.iou = iou
+                self.is_video = is_video
+            
+            def run(self):
+                try:
+                    from embereye.core.model_versioning import ModelVersionManager
+                    from ultralytics import YOLO
+                    import time
+                    import cv2
+                    
+                    # Load model
+                    version_mgr = ModelVersionManager()
+                    model_path = version_mgr.models_dir / self.model_version / "weights" / "best.pt"
+                    
+                    if not model_path.exists():
+                        self.finished.emit(False, None, f"Model weights not found: {model_path}")
+                        return
+                    
+                    model = YOLO(str(model_path))
+                    
+                    if not self.is_video:
+                        # Single image inference
+                        start_time = time.time()
+                        results = model.predict(
+                            self.input_path,
+                            conf=self.conf,
+                            iou=self.iou,
+                            verbose=False
+                        )
+                        inference_time = time.time() - start_time
+                        
+                        # Parse results
+                        if results and len(results) > 0:
+                            result = results[0]
+                            result_dict = {
+                                'inference_time': inference_time,
+                                'detections': [],
+                                'annotated_image': result.plot(),
+                                'frame_count': 1,
+                                'total_detections': 0
+                            }
+                            
+                            # Extract detections
+                            if result.boxes:
+                                for box in result.boxes:
+                                    det = {
+                                        'class_id': int(box.cls[0]),
+                                        'class_name': result.names[int(box.cls[0])],
+                                        'confidence': float(box.conf[0]),
+                                        'bbox': box.xyxy[0].tolist()
+                                    }
+                                    result_dict['detections'].append(det)
+                            
+                            result_dict['total_detections'] = len(result_dict['detections'])
+                            self.finished.emit(True, result_dict, "Inference completed")
+                        else:
+                            self.finished.emit(False, None, "No results returned from model")
+                    else:
+                        # Video inference - process all frames
+                        cap = cv2.VideoCapture(self.input_path)
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        
+                        # Process all frames
+                        sample_indices = list(range(total_frames))
+                        
+                        # Process sampled frames
+                        all_detections = []
+                        best_result = None
+                        best_frame_img = None
+                        max_detections = 0
+                        start_time = time.time()
+                        processed_frames = 0
+                        
+                        for frame_idx in sample_indices:
+                            try:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                                ret, frame = cap.read()
+                                
+                                if not ret:
+                                    print(f"[Sandbox] Failed to read frame {frame_idx}")
+                                    continue
+                                
+                                # Save temp frame
+                                temp_path = get_data_path(f"temp_sandbox_frame_{frame_idx}.jpg")
+                                success = cv2.imwrite(temp_path, frame)
+                                if not success:
+                                    continue
+                                
+                                # Run inference on this frame
+                                results = model.predict(temp_path, conf=self.conf, iou=self.iou, verbose=False)
+                                processed_frames += 1
+                                num_boxes = len(results[0].boxes) if results and results[0].boxes else 0
+                                print(f"[Sandbox] Frame {frame_idx}: {num_boxes} detections (conf={self.conf})")
+                                
+                                # Emit progress signal (includes frame preview path)
+                                elapsed_ms = int((time.time() - start_time) * 1000)
+                                self.progress.emit(processed_frames, total_frames, len(all_detections), elapsed_ms, temp_path)
+                                
+                                if results and len(results) > 0:
+                                    result = results[0]
+                                    frame_detections = []
+                                    
+                                    if result.boxes:
+                                        for box in result.boxes:
+                                            det = {
+                                                'class_id': int(box.cls[0]),
+                                                'class_name': result.names[int(box.cls[0])],
+                                                'confidence': float(box.conf[0]),
+                                                'frame': frame_idx
+                                            }
+                                            frame_detections.append(det)
+                                            all_detections.append(det)
+                                    
+                                    # Track frame with most detections
+                                    if len(frame_detections) > max_detections:
+                                        max_detections = len(frame_detections)
+                                        best_result = result
+                                        best_frame_img = result.plot()
+                                
+                                # Clean up temp file
+                                try:
+                                    os.remove(temp_path)
+                                except:
+                                    pass
+                            except Exception as frame_error:
+                                # Continue processing other frames even if one fails
+                                continue
+                        
+                        cap.release()
+                        inference_time = time.time() - start_time
+                        
+                        if processed_frames == 0:
+                            self.finished.emit(False, None, f"Could not process any frames from video")
+                            return
+                        
+                        result_dict = {
+                            'inference_time': inference_time,
+                            'detections': all_detections,
+                            'annotated_image': best_frame_img if best_frame_img is not None else None,
+                            'frame_count': processed_frames,
+                            'total_detections': len(all_detections)
+                        }
+                        
+                        if best_frame_img is not None:
+                            self.finished.emit(True, result_dict, f"Video analyzed ({processed_frames} frames processed, {len(all_detections)} detections)")
+                        else:
+                            self.finished.emit(False, None, f"No detections found in {processed_frames} frames")
+                        
+                except Exception as e:
+                    import traceback
+                    self.finished.emit(False, None, f"Error: {str(e)}\n{traceback.format_exc()}")
+        
+        is_video = getattr(self, 'sandbox_is_video', False)
+        self.sandbox_worker = InferenceWorker(
+            version, 
+            self.sandbox_input_path,
+            self.sandbox_conf_spin.value(),
+            self.sandbox_iou_spin.value(),
+            is_video=is_video
+        )
+        self.sandbox_worker.finished.connect(self._on_sandbox_inference_finished)
+        self.sandbox_worker.progress.connect(self._on_sandbox_progress)
+        self.sandbox_worker.start()
+
+    def _on_sandbox_progress(self, current_frame: int, total_frames: int, detections_so_far: int, elapsed_ms: int, frame_path: str):
+        """Update real-time progress statistics during inference."""
+        percent = int((current_frame / total_frames) * 100) if total_frames else 0
+        elapsed_sec = elapsed_ms / 1000.0 if elapsed_ms else 0.0
+        fps = current_frame / elapsed_sec if elapsed_sec > 0 else 0
+        remaining = (elapsed_sec / current_frame * (total_frames - current_frame)) if current_frame > 0 else 0
+
+        stats_text = (
+            f"Processing: {current_frame}/{total_frames}\n"
+            f"Progress: {percent}%\n\n"
+            f"Detections: {detections_so_far}\n"
+            f"Elapsed: {elapsed_sec:.1f}s\n"
+            f"FPS: {fps:.1f}\n\n"
+            f"Est. Remaining: {remaining:.1f}s"
+        )
+        self.sandbox_stats_panel.setText(stats_text)
+
+        # Show the current frame being processed in the input preview
+        if frame_path and os.path.exists(frame_path):
+            pixmap = QPixmap(frame_path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(520, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.sandbox_input_label.setPixmap(scaled)
+
+    def _on_sandbox_inference_finished(self, success: bool, results: dict, message: str):
+        """Handle inference completion."""
+        self.sandbox_run_btn.setEnabled(True)
+        self.sandbox_progress.setVisible(False)
+        
+        if not success:
+            QMessageBox.warning(self, "Inference Error", message)
+            self.sandbox_stats_label.setText("Inference failed")
+            return
+        
+        try:
+            # Display annotated image (constrained size)
+            annotated_img = results['annotated_image']
+            height, width, channel = annotated_img.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(annotated_img.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img.rgbSwapped())
+            
+            # Scale to fit label constraints (max 200px height set earlier)
+            scaled = pixmap.scaled(420, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.sandbox_results_label.setPixmap(scaled)
+            self.sandbox_results_label.setText("")
+            
+            # Update stats with video info if available
+            num_detections = results['total_detections']
+            frame_count = results.get('frame_count', 1)
+            inference_time = results['inference_time'] * 1000  # Convert to ms
+            
+            if frame_count > 1:
+                # Video analysis stats
+                self.sandbox_stats_label.setText(
+                    f"Frames: {frame_count} | Detections: {num_detections} | Time: {inference_time:.1f}ms"
+                )
+            else:
+                # Image analysis stats
+                self.sandbox_stats_label.setText(
+                    f"Detections: {num_detections} | Time: {inference_time:.1f}ms"
+                )
+            
+            # Populate detections list
+            self.sandbox_detections_list.clear()
+            if frame_count > 1:
+                # Group by class for videos
+                from collections import defaultdict
+                by_class = defaultdict(int)
+                for det in results['detections']:
+                    by_class[det['class_name']] += 1
+                
+                for class_name, count in sorted(by_class.items()):
+                    self.sandbox_detections_list.addItem(f"{class_name}: {count} detections")
+            else:
+                # Individual detections for images
+                for det in results['detections']:
+                    item_text = f"{det['class_name']} ({det['confidence']:.2f})"
+                    self.sandbox_detections_list.addItem(item_text)
+            
+            if num_detections == 0:
+                self.sandbox_detections_list.addItem("No objects detected")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Display Error", f"Error displaying results: {e}")
+
+
+    def _copy_annotations_to_training(self, source_dir: str) -> str:
+        """Copy annotated frames (images + txt) into training_data/annotations."""
+        try:
+            if not source_dir or not os.path.exists(source_dir):
+                return ""
+            base = os.path.basename(source_dir)
+            target_root = get_data_path(os.path.join("training_data", "annotations", base))
+            os.makedirs(target_root, exist_ok=True)
+            for root, dirs, files in os.walk(source_dir):
+                rel = os.path.relpath(root, source_dir)
+                dest_dir = os.path.join(target_root, rel) if rel != '.' else target_root
+                os.makedirs(dest_dir, exist_ok=True)
+                for fname in files:
+                    if fname.lower().endswith((".txt", ".jpg", ".png", ".jpeg")):
+                        shutil.copy2(os.path.join(root, fname), os.path.join(dest_dir, fname))
+            return target_root
+        except Exception:
+            return ""
+
+    def _refresh_model_versions(self):
+        """Reload model versions list from disk."""
+        try:
+            from embereye.core.model_versioning import ModelVersionManager
+            manager = ModelVersionManager()
+            versions = manager.list_versions()
+            current_best = manager.get_current_best()
+            current_version = None
+            if current_best:
+                parts = Path(current_best).parts
+                for p in parts:
+                    if p.startswith('v') and p[1:].isdigit():
+                        current_version = p
+                        break
+            self.model_versions_list.clear()
+            for v in versions:
+                label = v
+                if current_version == v:
+                    label = f"✓ {v} [ACTIVE]"
+                self.model_versions_list.addItem(label)
+        except Exception as e:
+            self.model_versions_list.clear()
+            self.model_versions_list.addItem(f"Error loading versions: {e}")
+
+    def _refresh_training_ready_count(self):
+        """Update the 'Ready for Training' count display."""
+        try:
+            training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
+            total = self._count_annotation_files(training_ann_base)
+            if total == 0:
+                self.training_ready_count_label.setText("0 annotation files")
+                self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #888; border: none; background: transparent;")
+            else:
+                self.training_ready_count_label.setText(f"{total} annotation files")
+                self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;")
+        except Exception:
+            self.training_ready_count_label.setText("Error")
+            self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #f44336; border: none; background: transparent;")
+
+    def _on_training_progress(self, percent: int, message: str):
+        """Update overall training progress bar."""
+        self.training_progress.setValue(max(0, min(100, percent)))
+        if message:
+            self.training_status_label.setText(message)
+    
+    def _on_epoch_progress(self, current: int, total: int):
+        """Update epoch counter display."""
+        self.training_epoch_label.setText(f"Epoch: {current}/{total}")
+
+    def _on_training_finished(self, ok: bool, msg: str, best_model_path: str):
+        """Handle training completion."""
+        # Re-enable UI
+        self.start_training_btn.setEnabled(True)
+        self.cancel_training_btn.setEnabled(False)
+        self.training_progress.setValue(100 if ok else 0)
+        
+        if not ok:
+            self.training_status_label.setText(f"Error: {msg}")
+            self.training_epoch_label.setText("Epoch: 0/0")
+            QMessageBox.critical(self, "Training", msg or "Training failed")
+            return
+        
+        # Training successful
+        self.training_status_label.setText("✓ Training Complete")
+
+        # Create model version
+        try:
+            from embereye.core.model_versioning import ModelVersionManager, ModelMetadata
+            from training_pipeline import TrainingConfig
+            manager = ModelVersionManager()
+            version = manager.get_next_version()
+
+            training_images = self._count_annotation_files(get_data_path(os.path.join("training_data", "annotations")))
+            config_snapshot = getattr(self, 'training_worker', None)
+            if config_snapshot and hasattr(config_snapshot, 'config'):
+                cfg = config_snapshot.config
+            else:
+                cfg = TrainingConfig()
+            
+            # Update status to show model version instead of "Ready for Training"
+            self.training_ready_count_label.setText(f"Model {version}")
+            self.training_ready_count_label.setStyleSheet(
+                "font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;"
+            )
+            
+            weights_dir = Path(best_model_path).parent if best_model_path else None
+            metadata = ModelMetadata(
+                version=version,
+                timestamp=datetime.utcnow().isoformat(),
+                training_images=training_images,
+                new_images=training_images,
+                total_epochs=cfg.epochs,
+                best_accuracy=0.0,
+                loss=0.0,
+                training_time_hours=0.0,
+                base_model=f"yolov8{cfg.model_size}",
+                config_snapshot=cfg.to_dict(),
+                previous_version=None,
+                notes="Trained via UI",
+                training_strategy="full_retrain",
+            )
+            if weights_dir and weights_dir.exists():
+                manager.create_version(metadata, weights_dir)
+                self._refresh_model_versions()
+        except Exception as e:
+            QMessageBox.warning(self, "Versioning", f"Training done, but versioning failed: {e}")
+
+    def _update_anomaly_count(self):
+        pass
 
     def handle_anomaly_frame_from_widget(self, loc_id, qimage, score):
         """Add a captured anomaly to the Anomalies tab."""
@@ -3060,3 +4202,50 @@ class BEMainWindow(QMainWindow):
                     widget.stop()
                 except Exception as e:
                     print(f"Error stopping video widget ({getattr(widget, 'loc_id', 'unknown')}): {e}")
+
+
+# Training worker thread
+class TrainingWorker(QThread):
+    finished_signal = pyqtSignal(bool, str, object)
+    progress_signal = pyqtSignal(int, str)  # (progress_percent, message)
+    epoch_progress_signal = pyqtSignal(int, int)  # (current_epoch, total_epochs)
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    def run(self):
+        try:
+            self.progress_signal.emit(5, "Preparing dataset…")
+            self.epoch_progress_signal.emit(0, self.config.epochs)
+            
+            from training_pipeline import YOLOTrainingPipeline
+            pipeline = YOLOTrainingPipeline(base_dir="training_data", config=self.config)
+            
+            # Set up epoch progress callback
+            def epoch_callback(current, total):
+                """Called after each epoch completes."""
+                self.epoch_progress_signal.emit(current, total)
+                # Update progress bar based on epoch completion
+                progress_pct = int((current / total) * 90) + 5  # 5-95% range during training
+                self.progress_signal.emit(progress_pct, f"Training epoch {current}/{total}")
+            
+            pipeline.set_epoch_callback(epoch_callback)
+            
+            # Start training with periodic progress updates
+            ok, msg = pipeline.run_full_pipeline()
+            best_model = pipeline.get_best_model_path()
+            
+            # Get final epoch count from pipeline
+            final_epochs = getattr(pipeline.progress, 'current_epoch', self.config.epochs)
+            self.epoch_progress_signal.emit(final_epochs, self.config.epochs)
+            
+            # Emit final progress
+            status_msg = f"Training complete - {final_epochs} epochs" if ok else "Training failed"
+            self.progress_signal.emit(100 if ok else 0, status_msg)
+            self.finished_signal.emit(ok, msg, str(best_model) if best_model else None)
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"TrainingWorker error: {error_detail}")
+            self.finished_signal.emit(False, str(e), None)

@@ -17,6 +17,11 @@ warnings.filterwarnings('ignore')
 from crash_logger import setup_crash_logger
 setup_crash_logger()
 
+# Ensure runtime folders exist (for both source and packaged modes)
+from embereye.utils.resource_helper import ensure_runtime_folders
+workspace_dir = ensure_runtime_folders()
+print(f"[INIT] Workspace directory: {workspace_dir}")
+
 # Check for updates in background (non-blocking) - DISABLED FOR OFFLINE MODE
 try:
     from auto_updater import auto_check_updates_background
@@ -35,7 +40,7 @@ from PyQt5.QtCore import (
     Qt, QThread
 )
 from ee_loginwindow import EELoginWindow
-from error_logger import get_error_logger
+from embereye.utils.error_logger import get_error_logger
 # License module may be absent in checkpoint; guard imports
 try:
     from license_module.core import LicenseClient, LicenseNotFoundError
