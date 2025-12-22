@@ -272,3 +272,195 @@ _global_metrics = MetricsCollector()
 def get_metrics() -> MetricsCollector:
     """Get global metrics collector instance."""
     return _global_metrics
+
+
+# =====================================================
+# Performance Logging for Training and Inference
+# =====================================================
+
+import json
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
+
+def get_performance_log_file() -> Path:
+    """Get the path to the performance metrics log file."""
+    metrics_dir = Path("training_data") / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    return metrics_dir / "performance_log.jsonl"
+
+
+def log_performance_metric(
+    metric_type: str,
+    model_version: str,
+    fps_avg: float,
+    latency_ms: int,
+    frame_count: int,
+    detections: int,
+    conf: float,
+    iou: float,
+    fps_min: Optional[float] = None,
+    fps_max: Optional[float] = None,
+    **kwargs
+) -> None:
+    """
+    Log a performance metric entry.
+    
+    Args:
+        metric_type: Type of metric (e.g., 'sandbox_video_inference', 'sandbox_image_inference')
+        model_version: Version of the model used
+        fps_avg: Average frames per second
+        latency_ms: Average latency in milliseconds
+        frame_count: Number of frames processed
+        detections: Total number of detections
+        conf: Confidence threshold used
+        iou: IOU threshold used
+        fps_min: Minimum FPS (for videos)
+        fps_max: Maximum FPS (for videos)
+        **kwargs: Additional metadata
+    """
+    metrics_file = get_performance_log_file()
+    
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "type": metric_type,
+        "model_version": model_version,
+        "fps_avg": round(fps_avg, 2),
+        "latency_ms": latency_ms,
+        "frame_count": frame_count,
+        "detections": detections,
+        "conf_threshold": conf,
+        "iou_threshold": iou,
+    }
+    
+    if fps_min is not None:
+        entry["fps_min"] = round(fps_min, 2)
+    if fps_max is not None:
+        entry["fps_max"] = round(fps_max, 2)
+    
+    # Add any additional metadata
+    entry.update(kwargs)
+    
+    # Append to JSONL file
+    try:
+        with open(metrics_file, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+    except Exception as e:
+        print(f"Warning: Failed to log performance metric: {e}")
+
+
+def get_performance_summary(
+    model_version: Optional[str] = None,
+    metric_type: Optional[str] = None,
+    limit: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Get a summary of performance metrics.
+    
+    Args:
+        model_version: Filter by model version (None for all)
+        metric_type: Filter by metric type (None for all)
+        limit: Maximum number of entries to consider (None for all)
+    
+    Returns:
+        Dictionary with summary statistics (avg/min/max FPS, avg latency, etc.)
+    """
+    metrics_file = get_performance_log_file()
+    
+    if not metrics_file.exists():
+        return {
+            "total_entries": 0,
+            "avg_fps": 0.0,
+            "min_fps": 0.0,
+            "max_fps": 0.0,
+            "avg_latency_ms": 0,
+        }
+    
+    # Read and filter entries
+    entries = []
+    try:
+        with open(metrics_file, 'r') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    
+                    # Apply filters
+                    if model_version and entry.get("model_version") != model_version:
+                        continue
+                    if metric_type and entry.get("type") != metric_type:
+                        continue
+                    
+                    entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        return {
+            "total_entries": 0,
+            "avg_fps": 0.0,
+            "min_fps": 0.0,
+            "max_fps": 0.0,
+            "avg_latency_ms": 0,
+        }
+    
+    # Apply limit
+    if limit and len(entries) > limit:
+        entries = entries[-limit:]
+    
+    if not entries:
+        return {
+            "total_entries": 0,
+            "avg_fps": 0.0,
+            "min_fps": 0.0,
+            "max_fps": 0.0,
+            "avg_latency_ms": 0,
+        }
+    
+    # Calculate summary statistics
+    fps_values = [e["fps_avg"] for e in entries]
+    latency_values = [e["latency_ms"] for e in entries]
+    
+    return {
+        "total_entries": len(entries),
+        "avg_fps": round(sum(fps_values) / len(fps_values), 2),
+        "min_fps": round(min(fps_values), 2),
+        "max_fps": round(max(fps_values), 2),
+        "avg_latency_ms": int(sum(latency_values) / len(latency_values)),
+        "total_frames": sum(e["frame_count"] for e in entries),
+        "total_detections": sum(e["detections"] for e in entries),
+    }
+
+
+def get_recent_performance_metrics(limit: int = 10) -> list:
+    """
+    Get the most recent performance metrics.
+    
+    Args:
+        limit: Maximum number of entries to return
+    
+    Returns:
+        List of recent metric entries (most recent first)
+    """
+    metrics_file = get_performance_log_file()
+    
+    if not metrics_file.exists():
+        return []
+    
+    entries = []
+    try:
+        with open(metrics_file, 'r') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        return []
+    
+    # Return most recent entries
+    return list(reversed(entries[-limit:]))

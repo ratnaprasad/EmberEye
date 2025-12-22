@@ -1881,6 +1881,19 @@ class BEMainWindow(QMainWindow):
                     
                     model = YOLO(str(model_path))
                     
+                    # Performance tracking
+                    perf_metrics = {
+                        'model_version': self.model_version,
+                        'conf_threshold': self.conf,
+                        'iou_threshold': self.iou,
+                        'total_inference_time': 0.0,
+                        'frame_times': [],
+                        'avg_fps': 0.0,
+                        'min_fps': 0.0,
+                        'max_fps': 0.0,
+                        'avg_latency_ms': 0,
+                    }
+                    
                     if not self.is_video:
                         # Single image inference
                         start_time = time.time()
@@ -1892,6 +1905,11 @@ class BEMainWindow(QMainWindow):
                         )
                         inference_time = time.time() - start_time
                         
+                        # Performance metrics
+                        perf_metrics['total_inference_time'] = inference_time
+                        perf_metrics['avg_latency_ms'] = int(inference_time * 1000)
+                        perf_metrics['avg_fps'] = 1.0 / inference_time if inference_time > 0 else 0
+                        
                         # Parse results
                         if results and len(results) > 0:
                             result = results[0]
@@ -1900,7 +1918,8 @@ class BEMainWindow(QMainWindow):
                                 'detections': [],
                                 'annotated_image': result.plot(),
                                 'frame_count': 1,
-                                'total_detections': 0
+                                'total_detections': 0,
+                                'performance': perf_metrics
                             }
                             
                             # Extract detections
@@ -1933,6 +1952,7 @@ class BEMainWindow(QMainWindow):
                         max_detections = 0
                         start_time = time.time()
                         processed_frames = 0
+                        frame_times = []
                         
                         for frame_idx in sample_indices:
                             try:
@@ -1949,11 +1969,15 @@ class BEMainWindow(QMainWindow):
                                 if not success:
                                     continue
                                 
-                                # Run inference on this frame
+                                # Run inference on this frame with timing
+                                frame_start = time.time()
                                 results = model.predict(temp_path, conf=self.conf, iou=self.iou, verbose=False)
+                                frame_time = time.time() - frame_start
+                                frame_times.append(frame_time)
+                                
                                 processed_frames += 1
                                 num_boxes = len(results[0].boxes) if results and results[0].boxes else 0
-                                print(f"[Sandbox] Frame {frame_idx}: {num_boxes} detections (conf={self.conf})")
+                                print(f"[Sandbox] Frame {frame_idx}: {num_boxes} detections (conf={self.conf}, {frame_time*1000:.1f}ms)")
                                 
                                 # Emit progress signal (includes frame preview path)
                                 elapsed_ms = int((time.time() - start_time) * 1000)
@@ -1992,6 +2016,16 @@ class BEMainWindow(QMainWindow):
                         cap.release()
                         inference_time = time.time() - start_time
                         
+                        # Calculate performance metrics
+                        if frame_times:
+                            fps_values = [1.0 / t for t in frame_times if t > 0]
+                            perf_metrics['total_inference_time'] = inference_time
+                            perf_metrics['frame_times'] = frame_times
+                            perf_metrics['avg_fps'] = sum(fps_values) / len(fps_values) if fps_values else 0
+                            perf_metrics['min_fps'] = min(fps_values) if fps_values else 0
+                            perf_metrics['max_fps'] = max(fps_values) if fps_values else 0
+                            perf_metrics['avg_latency_ms'] = int((sum(frame_times) / len(frame_times)) * 1000)
+                        
                         if processed_frames == 0:
                             self.finished.emit(False, None, f"Could not process any frames from video")
                             return
@@ -2001,7 +2035,8 @@ class BEMainWindow(QMainWindow):
                             'detections': all_detections,
                             'annotated_image': best_frame_img if best_frame_img is not None else None,
                             'frame_count': processed_frames,
-                            'total_detections': len(all_detections)
+                            'total_detections': len(all_detections),
+                            'performance': perf_metrics
                         }
                         
                         if best_frame_img is not None:
@@ -2072,21 +2107,65 @@ class BEMainWindow(QMainWindow):
             self.sandbox_results_label.setPixmap(scaled)
             self.sandbox_results_label.setText("")
             
-            # Update stats with video info if available
+            # Update stats with performance metrics
             num_detections = results['total_detections']
             frame_count = results.get('frame_count', 1)
             inference_time = results['inference_time'] * 1000  # Convert to ms
+            perf = results.get('performance', {})
             
             if frame_count > 1:
-                # Video analysis stats
+                # Video analysis stats with performance
+                avg_fps = perf.get('avg_fps', 0.0)
+                min_fps = perf.get('min_fps', 0.0)
+                max_fps = perf.get('max_fps', 0.0)
+                avg_latency = perf.get('avg_latency_ms', 0)
+                
                 self.sandbox_stats_label.setText(
-                    f"Frames: {frame_count} | Detections: {num_detections} | Time: {inference_time:.1f}ms"
+                    f"Frames: {frame_count} | Detections: {num_detections} | Total: {inference_time:.1f}ms\n"
+                    f"FPS: {avg_fps:.1f} avg ({min_fps:.1f}-{max_fps:.1f}) | Latency: {avg_latency}ms avg"
                 )
+                
+                # Log performance to metrics file
+                try:
+                    from embereye.utils.metrics import log_performance_metric
+                    log_performance_metric(
+                        metric_type='sandbox_video_inference',
+                        model_version=perf.get('model_version', 'unknown'),
+                        fps_avg=avg_fps,
+                        fps_min=min_fps,
+                        fps_max=max_fps,
+                        latency_ms=avg_latency,
+                        frame_count=frame_count,
+                        detections=num_detections,
+                        conf=perf.get('conf_threshold', 0.25),
+                        iou=perf.get('iou_threshold', 0.45)
+                    )
+                except Exception:
+                    pass
             else:
-                # Image analysis stats
+                # Image analysis stats with performance
+                fps = perf.get('avg_fps', 0.0)
+                latency = perf.get('avg_latency_ms', 0)
+                
                 self.sandbox_stats_label.setText(
-                    f"Detections: {num_detections} | Time: {inference_time:.1f}ms"
+                    f"Detections: {num_detections} | Time: {inference_time:.1f}ms | FPS: {fps:.1f} | Latency: {latency}ms"
                 )
+                
+                # Log performance to metrics file
+                try:
+                    from embereye.utils.metrics import log_performance_metric
+                    log_performance_metric(
+                        metric_type='sandbox_image_inference',
+                        model_version=perf.get('model_version', 'unknown'),
+                        fps_avg=fps,
+                        latency_ms=latency,
+                        frame_count=1,
+                        detections=num_detections,
+                        conf=perf.get('conf_threshold', 0.25),
+                        iou=perf.get('iou_threshold', 0.45)
+                    )
+                except Exception:
+                    pass
             
             # Populate detections list
             self.sandbox_detections_list.clear()
