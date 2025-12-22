@@ -4232,6 +4232,25 @@ class TrainingWorker(QThread):
             
             pipeline.set_epoch_callback(epoch_callback)
             
+            # Set up rich progress callback (loss/mAP/ETA) if available
+            try:
+                def on_progress(p):
+                    # p is TrainingProgress from pipeline; compute progress percent
+                    total = getattr(p, 'total_epochs', self.config.epochs) or self.config.epochs
+                    current = getattr(p, 'current_epoch', 0)
+                    progress_pct = int((current / total) * 90) + 5 if total else 5
+                    # Build concise status message with metrics when present
+                    loss = getattr(p, 'loss', 0.0) or 0.0
+                    map50 = getattr(p, 'map50', 0.0) or 0.0
+                    eta = getattr(p, 'eta_seconds', 0) or 0
+                    # Format ETA mm:ss
+                    eta_txt = f", ETA {int(eta//60)}m {int(eta%60)}s" if eta else ""
+                    msg = getattr(p, 'message', '') or f"Epoch {current}/{total} - loss {loss:.4f}, mAP50 {map50:.4f}{eta_txt}"
+                    self.progress_signal.emit(progress_pct, msg)
+                pipeline.set_progress_callback(on_progress)
+            except Exception:
+                pass
+            
             # Start training with periodic progress updates
             ok, msg = pipeline.run_full_pipeline()
             best_model = pipeline.get_best_model_path()

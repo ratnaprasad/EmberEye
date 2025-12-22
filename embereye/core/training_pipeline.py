@@ -367,6 +367,7 @@ class YOLOTrainingPipeline:
         self.model = None
         self.training_active = False
         self.epoch_callback = None  # Callback for epoch progress: callback(current_epoch, total_epochs)
+        self.progress_callback = None  # Callback with TrainingProgress object for rich updates
     
     def set_epoch_callback(self, callback):
         """Set callback function for epoch progress updates.
@@ -375,6 +376,14 @@ class YOLOTrainingPipeline:
             callback: Function with signature callback(current_epoch: int, total_epochs: int)
         """
         self.epoch_callback = callback
+
+    def set_progress_callback(self, callback):
+        """Set callback for rich progress updates.
+        
+        Args:
+            callback: Function with signature callback(progress: TrainingProgress)
+        """
+        self.progress_callback = callback
     
     def run_full_pipeline(self) -> Tuple[bool, str]:
         """Execute complete training pipeline."""
@@ -397,6 +406,14 @@ class YOLOTrainingPipeline:
             
             stats = self.dataset_manager.get_dataset_stats()
             logger.info(f"Dataset stats: {stats}")
+            # Emit dataset ready status
+            try:
+                self.progress.status = TrainingStatus.VALIDATING
+                self.progress.message = f"Dataset ready: train {stats.get('train',0)}, val {stats.get('val',0)}, test {stats.get('test',0)}"
+                if self.progress_callback:
+                    self.progress_callback(self.progress)
+            except Exception:
+                pass
             
             # Step 3: Start training
             success, msg = self.start_training()
@@ -437,7 +454,64 @@ class YOLOTrainingPipeline:
                     current_epoch = trainer.epoch + 1  # YOLO uses 0-based indexing
                     total_epochs = trainer.epochs
                     self.progress.current_epoch = current_epoch
-                    self.epoch_callback(current_epoch, total_epochs)
+                    self.progress.total_epochs = total_epochs
+
+                    # Try to extract metrics/loss from trainer
+                    loss = 0.0
+                    val_loss = 0.0
+                    precision = 0.0
+                    recall = 0.0
+                    map50 = 0.0
+                    map_combined = 0.0
+                    eta_seconds = 0
+                    try:
+                        li = getattr(trainer, 'loss_items', None)
+                        if li is not None:
+                            try:
+                                loss = float(li.sum()) if hasattr(li, 'sum') else float(sum([float(x) for x in li]))
+                            except Exception:
+                                pass
+                        # Validator metrics (Ultralytics often exposes map50/map)
+                        validator = getattr(trainer, 'validator', None)
+                        if validator is not None and hasattr(validator, 'metrics'):
+                            mm = validator.metrics
+                            map50 = float(getattr(mm, 'map50', 0.0) or 0.0)
+                            map_combined = float(getattr(mm, 'map', 0.0) or 0.0)
+                            precision = float(getattr(mm, 'precision', 0.0) or 0.0)
+                            recall = float(getattr(mm, 'recall', 0.0) or 0.0)
+                        # ETA estimation if epoch_time is available
+                        epoch_time = float(getattr(trainer, 'epoch_time', 0.0) or 0.0)
+                        remaining = max(0, total_epochs - current_epoch)
+                        eta_seconds = int(epoch_time * remaining)
+                    except Exception:
+                        pass
+
+                    # Update progress object
+                    self.progress.loss = float(loss or 0.0)
+                    self.progress.val_loss = float(val_loss or 0.0)
+                    self.progress.precision = float(precision or 0.0)
+                    self.progress.recall = float(recall or 0.0)
+                    self.progress.map50 = float(map50 or 0.0)
+                    self.progress.map = float(map_combined or 0.0)
+                    self.progress.eta_seconds = int(eta_seconds or 0)
+                    self.progress.status = TrainingStatus.TRAINING
+                    self.progress.message = (
+                        f"Epoch {current_epoch}/{total_epochs} - "
+                        f"loss {self.progress.loss:.4f}, mAP50 {self.progress.map50:.4f}"
+                    )
+
+                    # Fire simple epoch callback
+                    try:
+                        self.epoch_callback(current_epoch, total_epochs)
+                    except Exception:
+                        pass
+
+                    # Fire rich progress callback (optional)
+                    try:
+                        if self.progress_callback:
+                            self.progress_callback(self.progress)
+                    except Exception:
+                        pass
                 
                 # Register callback with YOLO trainer
                 self.model.add_callback("on_train_epoch_end", on_train_epoch_end)
