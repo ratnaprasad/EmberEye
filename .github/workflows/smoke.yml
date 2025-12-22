@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  smoke:
+  syntax-check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -40,3 +40,28 @@ jobs:
                   ok = False
           sys.exit(0 if ok else 1)
           PY
+
+  inference-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install ultralytics opencv-python-headless numpy pillow
+
+      - name: Run headless smoke test
+        run: |
+          python tests/smoke_test.py --skip-detection-check --verbose
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "Inference smoke test completed"
