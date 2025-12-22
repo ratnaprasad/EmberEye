@@ -1096,6 +1096,29 @@ class BEMainWindow(QMainWindow):
         training_ready_layout.addWidget(self.training_ready_count_label)
         
         left_panel.addWidget(training_ready_group)
+
+        # Dataset Stats display
+        dataset_stats_group = QWidget()
+        dataset_stats_layout = QVBoxLayout(dataset_stats_group)
+        dataset_stats_layout.setContentsMargins(10, 10, 10, 10)
+        dataset_stats_group.setStyleSheet("""
+            QWidget {
+                background: rgba(76, 175, 80, 0.08);
+                border: 2px solid #4CAF50;
+                border-radius: 8px;
+            }
+        """)
+        ds_label = QLabel("📊 Dataset Stats")
+        ds_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #4CAF50; border: none; background: transparent;")
+        dataset_stats_layout.addWidget(ds_label)
+        self.dataset_images_counts_label = QLabel("Images: —")
+        self.dataset_images_counts_label.setStyleSheet("font-size: 13px; color: #fff; border: none; background: transparent;")
+        dataset_stats_layout.addWidget(self.dataset_images_counts_label)
+        self.dataset_classes_label = QLabel("Classes: —")
+        self.dataset_classes_label.setStyleSheet("font-size: 13px; color: #fff; border: none; background: transparent;")
+        dataset_stats_layout.addWidget(self.dataset_classes_label)
+        left_panel.addWidget(dataset_stats_group)
+
         left_panel.addStretch(1)
         
         # Move to Training and Delete buttons
@@ -1174,6 +1197,11 @@ class BEMainWindow(QMainWindow):
         
         right_panel.addStretch(1)
         training_layout.addLayout(right_panel, 1)
+        # Initial refresh of dataset stats
+        try:
+            self._refresh_dataset_stats()
+        except Exception:
+            pass
         
         # Populate versions on load
         self._refresh_model_versions()
@@ -1279,6 +1307,10 @@ class BEMainWindow(QMainWindow):
         target_dir = self._copy_annotations_to_training(annotations_dir)
         if target_dir:
             self._refresh_training_ready_count()
+            try:
+                self._refresh_dataset_stats()
+            except Exception:
+                pass
             QMessageBox.information(
                 self,
                 "Training",
@@ -2084,6 +2116,29 @@ class BEMainWindow(QMainWindow):
         except Exception:
             self.training_ready_count_label.setText("Error")
             self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #f44336; border: none; background: transparent;")
+
+    def _refresh_dataset_stats(self):
+        """Update Dataset Stats panel using DatasetInspector."""
+        try:
+            from embereye.utils import DatasetInspector
+            inspector = DatasetInspector(base_dir="training_data")
+            if not inspector.exists():
+                self.dataset_images_counts_label.setText("Images: dataset not prepared")
+                self.dataset_classes_label.setText("Classes: —")
+                return
+            summary = inspector.summary()
+            imgs = summary.get('images', {})
+            self.dataset_images_counts_label.setText(
+                f"Images: train {imgs.get('train',0)}, val {imgs.get('val',0)}, test {imgs.get('test',0)}"
+            )
+            classes = summary.get('classes', {})
+            total_cls = len(classes)
+            top = sorted(classes.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            top_txt = ", ".join([f"{k}:{v}" for k, v in top]) if top else "—"
+            self.dataset_classes_label.setText(f"Classes: {total_cls} ({top_txt})")
+        except Exception:
+            self.dataset_images_counts_label.setText("Images: —")
+            self.dataset_classes_label.setText("Classes: —")
 
     def _on_training_progress(self, percent: int, message: str):
         """Update overall training progress bar."""

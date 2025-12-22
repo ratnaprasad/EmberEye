@@ -1,0 +1,42 @@
+name: Smoke Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Show Python version
+        run: python -V
+
+      - name: Syntax check (compileall)
+        run: |
+          python - <<'PY'
+          import compileall
+          import sys
+          ok = True
+          # Compile package
+          if not compileall.compile_dir('embereye', force=True, quiet=1):
+              ok = False
+          # Compile entry points
+          for f in ['main.py', 'main_window.py']:
+              try:
+                  if not compileall.compile_file(f, force=True, quiet=1):
+                      ok = False
+              except Exception as e:
+                  print(f'Failed to compile {f}: {e}', file=sys.stderr)
+                  ok = False
+          sys.exit(0 if ok else 1)
+          PY
