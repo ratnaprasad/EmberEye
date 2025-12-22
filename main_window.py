@@ -1365,23 +1365,76 @@ class BEMainWindow(QMainWindow):
         self.cancel_training_btn.setEnabled(False)
     
     def rollback_model_version(self):
-        """Rollback to selected model version."""
+        """Rollback/Activate selected model version."""
         selected = self.model_versions_list.selectedItems()
-        if selected:
-            QMessageBox.information(self, "Rollback", f"Rolling back to:\n{selected[0].text()}")
-        else:
-            QMessageBox.warning(self, "No Selection", "Select a model version to rollback.")
+        if not selected:
+            QMessageBox.warning(self, "No Selection", "Select a model version to activate.")
+            return
+        
+        try:
+            # Parse version from label (format: "v1 | mAP: 0.8734 | Time: 1.23h" or "✓ v1 ...")
+            label_text = selected[0].text()
+            version = label_text.split('|')[0].strip().replace('✓', '').strip()
+            if '[ACTIVE]' in label_text:
+                QMessageBox.information(self, "Activate", f"{version} is already active.")
+                return
+            
+            reply = QMessageBox.question(
+                self, "Activate Model",
+                f"Activate {version} as the production model?\n\n"
+                f"This will update current_best.pt to point to this version.",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                from embereye.core.model_versioning import ModelVersionManager
+                manager = ModelVersionManager()
+                ok, msg = manager.promote_to_best(version)
+                if ok:
+                    QMessageBox.information(self, "Success", f"✓ {version} is now active.\n{msg}")
+                    self._refresh_model_versions()
+                else:
+                    QMessageBox.warning(self, "Activation Failed", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to activate version: {e}")
     
     def delete_model_version(self):
-        """Delete selected model version."""
+        """Delete selected model version with safeguards."""
         selected = self.model_versions_list.selectedItems()
-        if selected:
-            reply = QMessageBox.question(self, "Delete", f"Delete version:\n{selected[0].text()}?",
-                                        QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self.model_versions_list.takeItem(self.model_versions_list.row(selected[0]))
-        else:
+        if not selected:
             QMessageBox.warning(self, "No Selection", "Select a model version to delete.")
+            return
+        
+        try:
+            label_text = selected[0].text()
+            version = label_text.split('|')[0].strip().replace('✓', '').strip()
+            
+            if '[ACTIVE]' in label_text:
+                QMessageBox.warning(
+                    self, "Cannot Delete",
+                    f"{version} is the active model.\n\n"
+                    f"Activate a different version before deleting this one."
+                )
+                return
+            
+            reply = QMessageBox.question(
+                self, "Delete Model Version",
+                f"Permanently delete {version}?\n\n"
+                f"This will remove all weights and cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                from embereye.core.model_versioning import ModelVersionManager
+                manager = ModelVersionManager()
+                ok, msg = manager.delete_version(version)
+                if ok:
+                    QMessageBox.information(self, "Deleted", f"✓ {version} deleted successfully.")
+                    self._refresh_model_versions()
+                else:
+                    QMessageBox.warning(self, "Deletion Failed", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to delete version: {e}")
 
     # Helpers for training manager
     def _annotations_dir_for_video(self, video_path: str) -> str:
@@ -2487,6 +2540,13 @@ class BEMainWindow(QMainWindow):
         settings_menu.addAction("📚 Class & Subclass Manager", self.show_master_class_config)
         settings_menu.addAction("📋 Log Viewer", self.show_log_viewer_dialog)
         settings_menu.addSeparator()
+        # Model Export submenu
+        export_menu = settings_menu.addMenu("📦 Export Model")
+        export_menu.addAction("🔹 Export to ONNX", lambda: self.export_model('onnx'))
+        export_menu.addAction("🔹 Export to TorchScript", lambda: self.export_model('torchscript'))
+        export_menu.addAction("🔹 Export to CoreML", lambda: self.export_model('coreml'))
+        export_menu.addAction("🔹 Export to TensorFlow Lite", lambda: self.export_model('tflite'))
+        settings_menu.addSeparator()
         pfds_menu = settings_menu.addMenu("🔥 PFDS Devices")
         pfds_menu.addAction("➕ Add Device", self.show_pfds_add_dialog)
         pfds_menu.addAction("👁 View Devices", self.show_pfds_view_dialog)
@@ -3264,6 +3324,89 @@ class BEMainWindow(QMainWindow):
 
         dlg.resize(900, 600)
         dlg.exec_()
+
+    def export_model(self, format: str):
+        """Export current best model to deployment format (ONNX, TorchScript, CoreML, TFLite)."""
+        try:
+            from embereye.core.model_versioning import ModelVersionManager
+            from PyQt5.QtWidgets import QFileDialog, QProgressDialog
+            from PyQt5.QtCore import Qt
+            
+            manager = ModelVersionManager()
+            current_best = manager.get_current_best()
+            
+            if not current_best or not current_best.exists():
+                QMessageBox.warning(
+                    self, "No Model",
+                    "No trained model found.\n\n"
+                    "Train a model first in the Training tab."
+                )
+                return
+            
+            # Determine which version is active
+            active_version = None
+            try:
+                parts = current_best.parts
+                for p in parts:
+                    if p.startswith('v') and p[1:].isdigit():
+                        active_version = p
+                        break
+            except Exception:
+                pass
+            
+            # File dialog for export location
+            format_exts = {
+                'onnx': 'ONNX Files (*.onnx)',
+                'torchscript': 'TorchScript Files (*.torchscript *.pt)',
+                'coreml': 'CoreML Files (*.mlmodel)',
+                'tflite': 'TFLite Files (*.tflite)'
+            }
+            
+            default_name = f"EmberEye_{active_version or 'model'}.{format if format != 'torchscript' else 'pt'}"
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, f"Export Model to {format.upper()}",
+                default_name,
+                format_exts.get(format, "All Files (*.*)")
+            )
+            
+            if not save_path:
+                return
+            
+            # Progress dialog
+            progress = QProgressDialog(f"Exporting to {format.upper()}...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setWindowTitle("Exporting")
+            progress.show()
+            QApplication.processEvents()
+            
+            try:
+                from ultralytics import YOLO
+                model = YOLO(str(current_best))
+                export_path = model.export(format=format, imgsz=640)
+                
+                progress.close()
+                
+                # Copy to user-specified location if different
+                import shutil
+                if str(export_path) != save_path:
+                    shutil.copy(export_path, save_path)
+                
+                QMessageBox.information(
+                    self, "Export Complete",
+                    f"✓ Model exported successfully!\n\n"
+                    f"Format: {format.upper()}\n"
+                    f"Saved to: {save_path}\n"
+                    f"Source: {active_version or 'current_best'}"
+                )
+            except Exception as e:
+                progress.close()
+                QMessageBox.critical(
+                    self, "Export Failed",
+                    f"Failed to export model:\n\n{str(e)}\n\n"
+                    f"Ensure ultralytics and required dependencies are installed."
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Export error: {e}")
 
     def dispatch_pfds_command(self, cmd: dict) -> bool:
         """Dispatch PFDS commands over existing TCP connection to device IP.
