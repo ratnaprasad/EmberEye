@@ -368,6 +368,8 @@ class YOLOTrainingPipeline:
         self.training_active = False
         self.epoch_callback = None  # Callback for epoch progress: callback(current_epoch, total_epochs)
         self.progress_callback = None  # Callback with TrainingProgress object for rich updates
+        self.train_seconds: int = 0
+        self.final_metrics: Dict[str, float] = {}
     
     def set_epoch_callback(self, callback):
         """Set callback function for epoch progress updates.
@@ -440,6 +442,7 @@ class YOLOTrainingPipeline:
         try:
             from ultralytics import YOLO
             from ultralytics.utils import callbacks
+            import time
             
             self.progress.status = TrainingStatus.TRAINING
             self.progress.total_epochs = self.config.epochs
@@ -520,7 +523,7 @@ class YOLOTrainingPipeline:
             
             logger.info("Starting training...")
             logger.info(f"Config: {json.dumps(self.config.to_dict(), indent=2)}")
-            
+            start_ts = time.time()
             results = self.model.train(
                 data=str(dataset_yaml),
                 epochs=self.config.epochs,
@@ -543,8 +546,42 @@ class YOLOTrainingPipeline:
                 seed=self.config.seed,
                 verbose=True
             )
+            self.train_seconds = int(time.time() - start_ts)
             
             logger.info("✓ Training completed")
+
+            # Final validation to capture metrics for metadata
+            try:
+                self.progress.status = TrainingStatus.VALIDATING_FINAL
+                if self.progress_callback:
+                    self.progress.message = "Validating final model…"
+                    self.progress_callback(self.progress)
+                val_results = self.model.val(data=str(dataset_yaml), device=self.device, imgsz=self.config.imgsz, verbose=False)
+                # Extract metrics robustly across ultralytics versions
+                metrics: Dict[str, float] = {}
+                try:
+                    # Newer versions expose attributes on returned object
+                    mobj = getattr(val_results, 'metrics', None)
+                    if mobj is not None:
+                        metrics['map50'] = float(getattr(mobj, 'map50', 0.0) or 0.0)
+                        metrics['map'] = float(getattr(mobj, 'map', 0.0) or 0.0)
+                        metrics['precision'] = float(getattr(mobj, 'precision', 0.0) or 0.0)
+                        metrics['recall'] = float(getattr(mobj, 'recall', 0.0) or 0.0)
+                except Exception:
+                    pass
+                # Some versions return dict-like results
+                try:
+                    if not metrics and isinstance(val_results, dict):
+                        for k in ('map50', 'map', 'precision', 'recall'):
+                            metrics[k] = float(val_results.get(k, 0.0) or 0.0)
+                except Exception:
+                    pass
+                self.final_metrics = metrics
+                if self.progress_callback:
+                    self.progress.message = f"Validation: mAP50 {metrics.get('map50',0.0):.4f}"
+                    self.progress_callback(self.progress)
+            except Exception as ve:
+                logger.warning(f"Final validation failed: {ve}")
             return True, "Training successful"
         
         except ImportError:

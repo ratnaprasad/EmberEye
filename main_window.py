@@ -2150,8 +2150,13 @@ class BEMainWindow(QMainWindow):
         """Update epoch counter display."""
         self.training_epoch_label.setText(f"Epoch: {current}/{total}")
 
-    def _on_training_finished(self, ok: bool, msg: str, best_model_path: str):
-        """Handle training completion."""
+        def _on_training_finished(self, ok: bool, msg: str, payload):
+                """Handle training completion.
+                payload: either string best_model path or dict with keys
+                    - best_model: str
+                    - metrics: dict
+                    - train_seconds: int
+                """
         # Re-enable UI
         self.start_training_btn.setEnabled(True)
         self.cancel_training_btn.setEnabled(False)
@@ -2186,6 +2191,20 @@ class BEMainWindow(QMainWindow):
                 "font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;"
             )
             
+            # Resolve best model path and metrics from payload
+            best_model_path = None
+            metrics = {}
+            train_seconds = 0
+            try:
+                if isinstance(payload, dict):
+                    best_model_path = payload.get('best_model')
+                    metrics = payload.get('metrics', {}) or {}
+                    train_seconds = int(payload.get('train_seconds', 0) or 0)
+                elif isinstance(payload, str):
+                    best_model_path = payload
+            except Exception:
+                pass
+
             weights_dir = Path(best_model_path).parent if best_model_path else None
             metadata = ModelMetadata(
                 version=version,
@@ -2193,9 +2212,9 @@ class BEMainWindow(QMainWindow):
                 training_images=training_images,
                 new_images=training_images,
                 total_epochs=cfg.epochs,
-                best_accuracy=0.0,
+                best_accuracy=float(metrics.get('map50') or metrics.get('map') or 0.0),
                 loss=0.0,
-                training_time_hours=0.0,
+                training_time_hours=round((train_seconds or 0) / 3600.0, 3),
                 base_model=f"yolov8{cfg.model_size}",
                 config_snapshot=cfg.to_dict(),
                 previous_version=None,
@@ -2205,6 +2224,8 @@ class BEMainWindow(QMainWindow):
             if weights_dir and weights_dir.exists():
                 manager.create_version(metadata, weights_dir)
                 self._refresh_model_versions()
+            else:
+                QMessageBox.warning(self, "Versioning", "Training complete, but best weights not found. Version not created.")
         except Exception as e:
             QMessageBox.warning(self, "Versioning", f"Training done, but versioning failed: {e}")
 
@@ -4317,7 +4338,12 @@ class TrainingWorker(QThread):
             # Emit final progress
             status_msg = f"Training complete - {final_epochs} epochs" if ok else "Training failed"
             self.progress_signal.emit(100 if ok else 0, status_msg)
-            self.finished_signal.emit(ok, msg, str(best_model) if best_model else None)
+            result_payload = {
+                'best_model': str(best_model) if best_model else None,
+                'metrics': getattr(pipeline, 'final_metrics', {}) or {},
+                'train_seconds': getattr(pipeline, 'train_seconds', 0) or 0,
+            }
+            self.finished_signal.emit(ok, msg, result_payload)
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
