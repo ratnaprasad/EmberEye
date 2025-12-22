@@ -2095,8 +2095,17 @@ class BEMainWindow(QMainWindow):
             self.model_versions_list.clear()
             for v in versions:
                 label = v
+                # Try to load metadata for accuracy/time
+                try:
+                    meta = manager.get_version_metadata(v)
+                    if meta:
+                        acc = getattr(meta, 'best_accuracy', 0.0) or 0.0
+                        train_hrs = getattr(meta, 'training_time_hours', 0.0) or 0.0
+                        label = f"{v} | mAP: {float(acc):.4f} | Time: {float(train_hrs):.2f}h"
+                except Exception:
+                    pass
                 if current_version == v:
-                    label = f"✓ {v} [ACTIVE]"
+                    label = f"✓ {label} [ACTIVE]"
                 self.model_versions_list.addItem(label)
         except Exception as e:
             self.model_versions_list.clear()
