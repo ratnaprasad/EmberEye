@@ -1087,9 +1087,9 @@ class BEMainWindow(QMainWindow):
                 border-radius: 8px;
             }
         """)
-        ready_label = QLabel("📦 Ready for Training")
-        ready_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #00bcd4; border: none; background: transparent;")
-        training_ready_layout.addWidget(ready_label)
+        self.training_ready_label = QLabel("📦 Ready for Training")
+        self.training_ready_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #00bcd4; border: none; background: transparent;")
+        training_ready_layout.addWidget(self.training_ready_label)
         
         self.training_ready_count_label = QLabel("0 annotation files")
         self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fff; border: none; background: transparent;")
@@ -2328,8 +2328,10 @@ class BEMainWindow(QMainWindow):
             else:
                 cfg = TrainingConfig()
             
-            # Update status to show model version instead of "Ready for Training"
-            self.training_ready_count_label.setText(f"Model {version}")
+            # Update Ready for Training section to show completion status
+            self.training_ready_label.setText("✓ Training Complete")
+            self.training_ready_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #4CAF50; border: none; background: transparent;")
+            self.training_ready_count_label.setText(f"Model {version} created")
             self.training_ready_count_label.setStyleSheet(
                 "font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;"
             )
