@@ -1393,6 +1393,7 @@ class BEMainWindow(QMainWindow):
                 if ok:
                     QMessageBox.information(self, "Success", f"✓ {version} is now active.\n{msg}")
                     self._refresh_model_versions()
+                    self._refresh_sandbox_models()  # Update Sandbox dropdown
                 else:
                     QMessageBox.warning(self, "Activation Failed", msg)
         except Exception as e:
@@ -1431,6 +1432,7 @@ class BEMainWindow(QMainWindow):
                 if ok:
                     QMessageBox.information(self, "Deleted", f"✓ {version} deleted successfully.")
                     self._refresh_model_versions()
+                    self._refresh_sandbox_models()  # Update Sandbox dropdown
                 else:
                     QMessageBox.warning(self, "Deletion Failed", msg)
         except Exception as e:
@@ -2291,13 +2293,13 @@ class BEMainWindow(QMainWindow):
         """Update epoch counter display."""
         self.training_epoch_label.setText(f"Epoch: {current}/{total}")
 
-        def _on_training_finished(self, ok: bool, msg: str, payload):
-                """Handle training completion.
-                payload: either string best_model path or dict with keys
-                    - best_model: str
-                    - metrics: dict
-                    - train_seconds: int
-                """
+    def _on_training_finished(self, ok: bool, msg: str, payload):
+        """Handle training completion.
+        payload: either string best_model path or dict with keys
+            - best_model: str
+            - metrics: dict
+            - train_seconds: int
+        """
         # Re-enable UI
         self.start_training_btn.setEnabled(True)
         self.cancel_training_btn.setEnabled(False)
@@ -2365,6 +2367,7 @@ class BEMainWindow(QMainWindow):
             if weights_dir and weights_dir.exists():
                 manager.create_version(metadata, weights_dir)
                 self._refresh_model_versions()
+                self._refresh_sandbox_models()  # Update Sandbox dropdown with new version
             else:
                 QMessageBox.warning(self, "Versioning", "Training complete, but best weights not found. Version not created.")
         except Exception as e:
