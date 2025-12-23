@@ -16,7 +16,7 @@ from debug_config import debug_print, is_debug_enabled, set_debug_enabled
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
                              QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
                              QListWidget, QListWidgetItem, QProgressBar, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QSlider, QGroupBox, QCompleter,
-                             QCheckBox, QDoubleSpinBox, QFormLayout
+                             QCheckBox, QDoubleSpinBox, QFormLayout, QInputDialog
                              )
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QMutex, QObject, QTimer, QUrl, QThread
@@ -1526,6 +1526,22 @@ class BEMainWindow(QMainWindow):
         verify_btn.clicked.connect(self._sandbox_verify_model)
         model_layout.addWidget(verify_btn)
         
+        # Export/Import buttons
+        export_import_layout = QHBoxLayout()
+        export_import_layout.setSpacing(5)
+        
+        export_btn = QPushButton("📦 Export")
+        export_btn.setMaximumWidth(120)
+        export_btn.clicked.connect(self._sandbox_export_model)
+        export_import_layout.addWidget(export_btn)
+        
+        import_btn = QPushButton("📥 Import")
+        import_btn.setMaximumWidth(120)
+        import_btn.clicked.connect(self._sandbox_import_model)
+        export_import_layout.addWidget(import_btn)
+        
+        model_layout.addLayout(export_import_layout)
+        
         model_group.setLayout(model_layout)
         top_section.addWidget(model_group)
         
@@ -1794,6 +1810,167 @@ class BEMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Verify Model", f"Error: {e}")
     
+    def _sandbox_export_model(self):
+        """Export current model to deployment format (ONNX, TorchScript, CoreML, TFLite)."""
+        version = self.sandbox_model_combo.currentText()
+        if not version or version in ["No models available", "Error loading models"]:
+            QMessageBox.warning(self, "Export Model", "Select a model version first.")
+            return
+        
+        try:
+            from embereye.core.model_versioning import ModelVersionManager
+            
+            manager = ModelVersionManager()
+            best_model_path = manager.get_current_best()
+            
+            if not best_model_path or not best_model_path.exists():
+                QMessageBox.warning(self, "Export Model", f"Model weights not found for {version}")
+                return
+            
+            # Format selection dialog
+            formats = ["ONNX (.onnx)", "TorchScript (.pt)", "CoreML (.mlmodel)", "TFLite (.tflite)"]
+            format_keys = ["onnx", "torchscript", "coreml", "tflite"]
+            
+            format_text, ok = QInputDialog.getItem(
+                self, "Export Format", "Select export format:", formats, 0, False
+            )
+            
+            if not ok:
+                return
+            
+            fmt = format_keys[formats.index(format_text)]
+            
+            # File save dialog
+            default_name = f"EmberEye_{version}_{fmt}.{format_text.split('.')[-1]}"
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, "Export Model", default_name, 
+                f"{format_text} Files (*.{format_text.split('.')[-1]})"
+            )
+            
+            if not save_path:
+                return
+            
+            # Show progress dialog
+            progress = QProgressDialog(f"Exporting to {fmt.upper()}...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            QApplication.processEvents()
+            
+            # Export
+            from ultralytics import YOLO
+            model = YOLO(str(best_model_path))
+            export_path = model.export(format=fmt, imgsz=640)
+            
+            # Copy to requested location
+            import shutil
+            shutil.copy(str(export_path), save_path)
+            
+            progress.close()
+            QMessageBox.information(self, "Export Complete", f"✓ Model exported to:\n{save_path}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export model:\n{e}")
+    
+    def _sandbox_import_model(self):
+        """Import a model file from development center (maintenance/upgrade scenario)."""
+        try:
+            # File browser to select model
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Import Model from Development Center",
+                "", 
+                "Model Files (*.pt *.onnx *.mlmodel *.tflite);;PyTorch (*.pt);;ONNX (*.onnx);;CoreML (*.mlmodel);;TFLite (*.tflite);;All Files (*)"
+            )
+            
+            if not file_path:
+                return
+            
+            # Get version name from user
+            version_name, ok = QInputDialog.getText(
+                self, "Import Model", 
+                "Enter version name (e.g., v4, v4_updated):",
+                text="v4"
+            )
+            
+            if not ok or not version_name.strip():
+                return
+            
+            version_name = version_name.strip()
+            
+            # Create version directory
+            from embereye.core.model_versioning import ModelVersionManager, ModelMetadata
+            manager = ModelVersionManager()
+            version_dir = manager.models_dir / version_name
+            weights_dir = version_dir / "weights"
+            weights_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy model file
+            import shutil
+            from pathlib import Path
+            source = Path(file_path)
+            
+            # Determine destination filename
+            if source.suffix == ".pt":
+                dest_name = "best.pt"
+            elif source.suffix == ".onnx":
+                dest_name = "model.onnx"
+            elif source.suffix == ".mlmodel":
+                dest_name = "model.mlmodel"
+            elif source.suffix == ".tflite":
+                dest_name = "model.tflite"
+            else:
+                dest_name = source.name
+            
+            dest_path = weights_dir / dest_name
+            shutil.copy(file_path, dest_path)
+            
+            # Create metadata for imported model
+            metadata = ModelMetadata(
+                version=version_name,
+                timestamp=datetime.utcnow().isoformat(),
+                training_images=0,
+                new_images=0,
+                total_epochs=0,
+                best_accuracy=0.0,
+                loss=0.0,
+                training_time_hours=0.0,
+                base_model="imported",
+                config_snapshot={},
+                previous_version=None,
+                notes=f"Imported from {source.name} (from development center)",
+                training_strategy="imported",
+            )
+            
+            # Save metadata
+            metadata_file = version_dir / "metadata.json"
+            import json
+            with open(metadata_file, 'w') as f:
+                json.dump({
+                    'version': metadata.version,
+                    'created_at': metadata.timestamp,
+                    'best_accuracy': metadata.best_accuracy,
+                    'training_time_hours': metadata.training_time_hours,
+                    'notes': metadata.notes,
+                }, f, indent=2)
+            
+            # Refresh dropdown
+            self._refresh_sandbox_models()
+            
+            # Select the newly imported version
+            for i in range(self.sandbox_model_combo.count()):
+                if version_name in self.sandbox_model_combo.itemText(i):
+                    self.sandbox_model_combo.setCurrentIndex(i)
+                    break
+            
+            QMessageBox.information(
+                self, "Import Complete",
+                f"✓ Model imported successfully!\n\n"
+                f"Version: {version_name}\n"
+                f"Location: {dest_path}\n\n"
+                f"The model is now available in the Sandbox dropdown."
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import model:\n{e}")
     
     def _sandbox_select_annotated_frame(self):
         """Select a frame from existing annotations."""
