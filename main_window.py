@@ -1097,6 +1097,9 @@ class BEMainWindow(QMainWindow):
         
         left_panel.addWidget(training_ready_group)
 
+        # Track if training just completed (to prevent refresh from resetting display)
+        self.training_just_completed = False
+
         # Dataset Stats display
         dataset_stats_group = QWidget()
         dataset_stats_layout = QVBoxLayout(dataset_stats_group)
@@ -1351,6 +1354,7 @@ class BEMainWindow(QMainWindow):
         self.cancel_training_btn.setEnabled(False)
         self.training_status_label.setText("Training…")
         self.training_progress.setValue(0)
+        self.training_just_completed = False  # Reset completion flag for new training
 
         self.training_worker = TrainingWorker(config)
         self.training_worker.finished_signal.connect(self._on_training_finished)
@@ -2247,6 +2251,10 @@ class BEMainWindow(QMainWindow):
 
     def _refresh_training_ready_count(self):
         """Update the 'Ready for Training' count display."""
+        # Don't update if training just completed (preserve completion message)
+        if getattr(self, 'training_just_completed', False):
+            return
+        
         try:
             training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
             total = self._count_annotation_files(training_ann_base)
@@ -2335,6 +2343,7 @@ class BEMainWindow(QMainWindow):
             self.training_ready_count_label.setStyleSheet(
                 "font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;"
             )
+            self.training_just_completed = True  # Prevent refresh from overwriting
             
             # Resolve best model path and metrics from payload
             best_model_path = None
