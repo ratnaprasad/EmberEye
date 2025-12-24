@@ -16,7 +16,7 @@ from debug_config import debug_print, is_debug_enabled, set_debug_enabled
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
                              QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
                              QListWidget, QListWidgetItem, QProgressBar, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QSlider, QGroupBox, QCompleter,
-                             QCheckBox, QDoubleSpinBox, QFormLayout, QInputDialog
+                             QCheckBox, QDoubleSpinBox, QFormLayout, QInputDialog, QProgressDialog
                              )
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QMutex, QObject, QTimer, QUrl, QThread
@@ -1821,9 +1821,19 @@ class BEMainWindow(QMainWindow):
             from embereye.core.model_versioning import ModelVersionManager
             
             manager = ModelVersionManager()
-            best_model_path = manager.get_current_best()
+            # Prefer the selected version's weights; fall back to current_best if missing
+            weights_dir = manager.models_dir / version / "weights"
+            weight_path = weights_dir / "best.pt"
+            if not weight_path.exists():
+                alt_path = weights_dir / "last.pt"
+                if alt_path.exists():
+                    weight_path = alt_path
+                else:
+                    # Fall back to current_best.pt if present
+                    fallback = manager.get_current_best()
+                    weight_path = fallback if fallback and fallback.exists() else None
             
-            if not best_model_path or not best_model_path.exists():
+            if not weight_path or not weight_path.exists():
                 QMessageBox.warning(self, "Export Model", f"Model weights not found for {version}")
                 return
             
@@ -1858,7 +1868,7 @@ class BEMainWindow(QMainWindow):
             
             # Export
             from ultralytics import YOLO
-            model = YOLO(str(best_model_path))
+            model = YOLO(str(weight_path))
             export_path = model.export(format=fmt, imgsz=640)
             
             # Copy to requested location
