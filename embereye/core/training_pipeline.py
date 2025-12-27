@@ -175,6 +175,10 @@ class DatasetManager:
             'val': self.dataset_dir / 'labels' / 'val',
             'test': self.dataset_dir / 'labels' / 'test'
         }
+        # Extra classes discovered during orphan remapping (e.g., unclassified_FIRE_CATEGORY)
+        self._extra_unclassified: set[str] = set()
+        # Final class names used to build dataset.yaml and remap labels
+        self.final_names: List[str] | None = None
     
     def prepare_dataset(self, config: TrainingConfig) -> Tuple[bool, str]:
         """
@@ -207,10 +211,20 @@ class DatasetManager:
             
             logger.info(f"✓ {len(valid_files)} valid annotations")
             
-            # Split dataset
+            # Build final class names list (current taxonomy + any unclassified discovered)
+            current_leaf_classes = self._get_current_leaf_classes()
+            # Pre-scan to discover orphaned classes and record categories
+            self._discover_orphans(valid_files, current_leaf_classes)
+            # Compose final names list in stable order
+            self.final_names = list(current_leaf_classes)
+            for extra in sorted(self._extra_unclassified):
+                if extra not in self.final_names:
+                    self.final_names.append(extra)
+
+            # Split dataset and remap labels to final_names indices
             self._split_dataset(valid_files, config)
             
-            # Generate dataset.yaml
+            # Generate dataset.yaml from final_names
             self._generate_yaml_config(config)
             
             logger.info("✓ Dataset preparation complete")
@@ -286,9 +300,21 @@ class DatasetManager:
         logger.info(f"Train: {len(train_files)}, Val: {len(val_files)}, Test: {len(test_files)}")
     
     def _copy_split(self, files: List[Path], split: str):
-        """Copy files to split directory."""
+        """Copy files to split directory, remapping label IDs to final class indices."""
+        import json
         copied = 0
         skipped = 0
+        final_index_map = {name: idx for idx, name in enumerate(self.final_names or [])}
+        # Helper: load labels.txt mapping if metadata is missing
+        def _load_labels_txt_map(path: Path) -> List[str] | None:
+            labels_txt = path.parent / "labels.txt"
+            if labels_txt.exists():
+                try:
+                    return [line.strip() for line in labels_txt.read_text().splitlines() if line.strip()]
+                except Exception:
+                    return None
+            return None
+
         for ann_file in files:
             # Find corresponding image (same directory as annotation)
             img_file = ann_file.with_suffix('.jpg')
@@ -296,37 +322,71 @@ class DatasetManager:
                 img_file = ann_file.with_suffix('.png')
             if not img_file.exists():
                 img_file = ann_file.with_suffix('.jpeg')
-            
-            if img_file.exists():
-                shutil.copy(img_file, self.splits[split] / img_file.name)
-                shutil.copy(ann_file, self.labels_splits[split] / ann_file.name)
-                copied += 1
-            else:
+
+            if not img_file.exists():
                 logger.warning(f"No image found for annotation: {ann_file.name}")
                 skipped += 1
-        
+                continue
+
+            # Copy image
+            shutil.copy(img_file, self.splits[split] / img_file.name)
+
+            # Determine original class name per id using metadata or labels.txt
+            meta_file = ann_file.with_suffix('.json')
+            id_to_name: dict[int, str] = {}
+            labels_txt_list = _load_labels_txt_map(ann_file)
+            if meta_file.exists():
+                try:
+                    meta = json.loads(meta_file.read_text())
+                    name_to_id = meta.get("class_mapping", {})
+                    # invert mapping
+                    for n, i in name_to_id.items():
+                        try:
+                            id_to_name[int(i)] = str(n)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            elif labels_txt_list:
+                # Fallback: labels.txt order implied id→name
+                for i, n in enumerate(labels_txt_list):
+                    id_to_name[i] = n
+
+            # Remap labels
+            try:
+                lines = ann_file.read_text().splitlines()
+                out_labels = []
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) != 5:
+                        continue
+                    try:
+                        orig_id = int(parts[0])
+                        coords = [float(p) for p in parts[1:]]
+                    except Exception:
+                        continue
+                    orig_name = id_to_name.get(orig_id)
+                    target_name = self._resolve_target_name(orig_name)
+                    target_idx = final_index_map.get(target_name, 0)
+                    out_labels.append(f"{target_idx} {coords[0]:.6f} {coords[1]:.6f} {coords[2]:.6f} {coords[3]:.6f}")
+
+                # Write remapped label file
+                out_path = self.labels_splits[split] / ann_file.name
+                out_path.write_text("\n".join(out_labels) + ("\n" if out_labels else ""))
+                copied += 1
+            except Exception as e:
+                logger.warning(f"Failed to remap labels for {ann_file.name}: {e}")
+                # Fallback: copy as-is
+                shutil.copy(ann_file, self.labels_splits[split] / ann_file.name)
+                copied += 1
+
         logger.info(f"{split}: copied {copied} pairs, skipped {skipped} (no matching image)")
     
     def _generate_yaml_config(self, config: TrainingConfig):
-        """Generate YOLO dataset.yaml configuration."""
-        # Auto-detect classes from master_class_config - MUST match annotation_tool order
-        try:
-            from master_class_config import load_master_classes
-            classes_dict = load_master_classes()
-            # Collect leaf classes in exact same order as annotation_tool does
-            leaf_classes = []
-            for category in classes_dict.get("IncidentEnvironment", []) or []:
-                for leaf in classes_dict.get(category, []) or []:
-                    leaf_classes.append(leaf)
-            
-            nc = len(leaf_classes) if leaf_classes else 1
-            names = leaf_classes if leaf_classes else ['fire']
-            logger.info(f"Detected {nc} classes from master_class_config: {names}")
-        except Exception as e:
-            logger.warning(f"Could not load classes from master_class_config: {e}, using default")
-            nc = 1
-            names = ['fire']
-        
+        """Generate YOLO dataset.yaml configuration from final_names."""
+        names = self.final_names or self._get_current_leaf_classes() or ['fire']
+        nc = len(names)
+
         dataset_config = {
             'path': str(self.dataset_dir.absolute()),
             'train': 'images/train',
@@ -345,6 +405,59 @@ class DatasetManager:
             yaml.dump(dataset_config, f, default_flow_style=False)
         
         logger.info(f"✓ Dataset config saved: {yaml_path}")
+
+    def _get_current_leaf_classes(self) -> List[str]:
+        """Return current taxonomy leaf classes from master_class_config in annotation order."""
+        try:
+            from master_class_config import load_master_classes
+            classes_dict = load_master_classes()
+            leaf_classes = []
+            for category in classes_dict.get("IncidentEnvironment", []) or []:
+                for leaf in classes_dict.get(category, []) or []:
+                    leaf_classes.append(leaf)
+            return leaf_classes
+        except Exception:
+            return ['fire']
+
+    def _find_category_for_class(self, cls_name: str) -> str:
+        """Find the category name for a given leaf class name; returns 'UNKNOWN' if not found."""
+        try:
+            from master_class_config import load_master_classes
+            classes_dict = load_master_classes()
+            for category in classes_dict.get("IncidentEnvironment", []) or []:
+                if cls_name in (classes_dict.get(category, []) or []):
+                    return category
+        except Exception:
+            pass
+        return "UNKNOWN"
+
+    def _resolve_target_name(self, orig_name: str | None) -> str:
+        """Resolve final target class name, mapping missing classes to unclassified_<category>."""
+        leaf = self._get_current_leaf_classes()
+        if orig_name and orig_name in leaf:
+            return orig_name
+        # Map to category-specific unclassified
+        category = self._find_category_for_class(orig_name or "")
+        unclassified = f"unclassified_{category}"
+        self._extra_unclassified.add(unclassified)
+        return unclassified
+
+    def _discover_orphans(self, files: List[Path], current_leaf_classes: List[str]):
+        """Pre-scan annotation files to discover orphaned classes and record categories."""
+        import json
+        for ann_file in files:
+            meta_file = ann_file.with_suffix('.json')
+            if not meta_file.exists():
+                continue
+            try:
+                meta = json.loads(meta_file.read_text())
+                name_to_id = meta.get("class_mapping", {})
+                for name in list(name_to_id.keys()):
+                    if name not in current_leaf_classes:
+                        category = self._find_category_for_class(name)
+                        self._extra_unclassified.add(f"unclassified_{category}")
+            except Exception:
+                continue
     
     def get_dataset_stats(self) -> Dict:
         """Get dataset statistics."""
@@ -353,6 +466,96 @@ class DatasetManager:
             img_count = len(list(self.splits[split].glob('*.*')))
             stats[split] = img_count
         return stats
+
+    def create_filtered_dataset_unclassified_only(self, output_dataset_dir: str = None) -> Tuple[bool, str]:
+        """
+        Create a filtered dataset containing only files with unclassified_* labels.
+        Useful for focused retraining after re-annotation of unclassified items.
+        
+        Args:
+            output_dataset_dir: Output directory for filtered dataset (default: dataset_unclassified_filter)
+        
+        Returns:
+            (success, path_or_error_msg)
+        """
+        try:
+            if output_dataset_dir is None:
+                output_dataset_dir = str(self.dataset_dir.parent / "dataset_unclassified_filter")
+            
+            output_dir = Path(output_dataset_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy dataset.yaml but note this is filtered
+            ds_yaml = self.dataset_dir / 'dataset.yaml'
+            if ds_yaml.exists():
+                import yaml
+                cfg = yaml.safe_load(ds_yaml.read_text())
+                names = cfg.get('names', [])
+                unclassified_indices = {i for i, n in enumerate(names) if str(n).startswith('unclassified_')}
+                
+                if not unclassified_indices:
+                    return False, "No unclassified items found in current dataset"
+                
+                # Create output structure
+                for split in ['train', 'val', 'test']:
+                    (output_dir / 'images' / split).mkdir(parents=True, exist_ok=True)
+                    (output_dir / 'labels' / split).mkdir(parents=True, exist_ok=True)
+                
+                # Filter and copy files
+                copied = 0
+                for split in ['train', 'val', 'test']:
+                    split_labels = self.dataset_dir / 'labels' / split
+                    split_images = self.dataset_dir / 'images' / split
+                    if not split_labels.exists():
+                        continue
+                    
+                    for lbl in split_labels.glob('*.txt'):
+                        try:
+                            lines = lbl.read_text().splitlines()
+                        except Exception:
+                            continue
+                        
+                        has_unclassified = False
+                        for line in lines:
+                            parts = line.strip().split()
+                            if len(parts) == 5:
+                                try:
+                                    cid = int(parts[0])
+                                    if cid in unclassified_indices:
+                                        has_unclassified = True
+                                        break
+                                except Exception:
+                                    pass
+                        
+                        if has_unclassified:
+                            # Find and copy matching image
+                            stem = lbl.stem
+                            img_path = None
+                            for ext in ['.jpg', '.png', '.jpeg']:
+                                p = split_images / f"{stem}{ext}"
+                                if p.exists():
+                                    img_path = p
+                                    break
+                            
+                            if img_path:
+                                shutil.copy(img_path, output_dir / 'images' / split / img_path.name)
+                                shutil.copy(lbl, output_dir / 'labels' / split / lbl.name)
+                                copied += 1
+                
+                # Write dataset.yaml for filtered set
+                filtered_cfg = cfg.copy()
+                filtered_cfg['path'] = str(output_dir.absolute())
+                yaml_path = output_dir / 'dataset.yaml'
+                with open(yaml_path, 'w') as f:
+                    yaml.dump(filtered_cfg, f, default_flow_style=False)
+                
+                logger.info(f"✓ Filtered dataset created: {copied} files with unclassified items in {output_dataset_dir}")
+                return True, str(output_dataset_dir)
+            else:
+                return False, "Dataset not prepared yet"
+        except Exception as e:
+            logger.error(f"Filtered dataset creation error: {e}")
+            return False, str(e)
 
 
 class YOLOTrainingPipeline:

@@ -1,5 +1,7 @@
 import os
 import cv2
+import json
+from datetime import datetime
 from resource_helper import get_data_path
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
@@ -116,7 +118,7 @@ class ImageCanvas(QLabel):
             super().paintEvent(event)
 
     def mousePressEvent(self, event):
-        print(f"[DEBUG] Canvas mousePressEvent: button={event.button()}, pos={event.pos()}")
+        # Handle mouse press for annotation
         if event.button() == Qt.LeftButton and self._display_pixmap is not None:
             geom = self._pixmap_geometry()
             print(f"[DEBUG] Pixmap geom: {geom}")
@@ -217,13 +219,14 @@ class ImageCanvas(QLabel):
 
 
 class AnnotationToolDialog(QDialog):
-    """Simple video annotation tool supporting bounding boxes and YOLO format saving."""
-    def __init__(self, parent=None, video_path=None, class_labels=None, leaf_classes=None):
+    """Annotation tool supporting videos and image sequences with YOLO saving."""
+    def __init__(self, parent=None, video_path=None, image_paths=None, class_labels=None, leaf_classes=None):
         super().__init__(parent)
         self.setWindowTitle("Annotation Tool")
         # Increase dialog size to accommodate taller canvas
         self.resize(1200, 900)
         self.video_path = video_path
+        self.image_paths = image_paths or []
         self.class_labels = class_labels or []
         self.leaf_classes = leaf_classes or []
         # Map label text → class id. Prefer leaf classes for YOLO ids.
@@ -241,6 +244,8 @@ class AnnotationToolDialog(QDialog):
         self.fps = 0.0
         self.current_frame = None
         self.playing = False
+        self.media_mode = 'video' if (self.video_path and not self.image_paths) else ('images' if self.image_paths else 'none')
+        self.media_base = None
         
         # Initialize timers EARLY (before any video loading)
         self._play_timer = QTimer(self)
@@ -290,15 +295,15 @@ class AnnotationToolDialog(QDialog):
         right_widget.setLayout(right)
         right_widget.setMaximumWidth(400)
 
-        right.addWidget(QLabel("Video File"))
-        self.video_label = QLabel(self.video_path or "No video selected")
+        right.addWidget(QLabel("Media"))
+        self.video_label = QLabel(self.video_path or (f"{len(self.image_paths)} image(s) selected" if self.image_paths else "No media selected"))
         self.video_label.setWordWrap(True)
         self.video_label.setStyleSheet("color: #aaa; font-size: 11px;")
         right.addWidget(self.video_label)
         
-        select_btn = QPushButton("Select Video…")
+        select_btn = QPushButton("Select Media…")
         select_btn.setStyleSheet("padding: 8px; font-size: 12px;")
-        select_btn.clicked.connect(self.select_video)
+        select_btn.clicked.connect(self.select_media)
         right.addWidget(select_btn)
 
         right.addSpacing(10)
@@ -422,8 +427,12 @@ class AnnotationToolDialog(QDialog):
         bottom.addWidget(close_btn)
         main.addLayout(bottom)
         
-        # Auto-load video if provided in constructor
-        if self.video_path:
+        # Auto-load media if provided in constructor
+        if self.image_paths:
+            print(f"[DEBUG] Auto-loading images from constructor: {len(self.image_paths)} items")
+            self.load_images(self.image_paths)
+            self.video_label.setText(f"{len(self.image_paths)} image(s) selected")
+        elif self.video_path:
             print(f"[DEBUG] Auto-loading video from constructor: {self.video_path}")
             self.load_video(self.video_path)
             self.video_label.setText(self.video_path)
@@ -432,11 +441,28 @@ class AnnotationToolDialog(QDialog):
         self.canvas.installEventFilter(self)
         video_container.installEventFilter(self)
 
-    def select_video(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Video", "", "Videos (*.mp4 *.avi *.mov)")
-        if path:
+    def select_media(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Media",
+            "",
+            "Videos (*.mp4 *.avi *.mov);;Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)"
+        )
+        if not files:
+            return
+        video_exts = {".mp4", ".avi", ".mov"}
+        image_exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+        exts = {os.path.splitext(p.lower())[1] for p in files}
+        if len(files) == 1 and (exts & video_exts):
+            path = files[0]
             self.video_label.setText(path)
             self.load_video(path)
+        elif (exts & image_exts) and not (exts & video_exts):
+            files_sorted = sorted(files)
+            self.video_label.setText(f"{len(files_sorted)} image(s) selected")
+            self.load_images(files_sorted)
+        else:
+            QMessageBox.warning(self, "Media", "Please select either one video or one/more image files.")
 
     def _build_class_colors(self, names):
         """Build deterministic, vibrant color palette for each class."""
@@ -517,6 +543,10 @@ class AnnotationToolDialog(QDialog):
                 fps = 25.0
             self.fps = fps
             self.frame_index = 0
+            self.media_mode = 'video'
+            self.video_path = path
+            # base for annotations
+            self.media_base = os.path.splitext(os.path.basename(self.video_path or "video"))[0]
             # Configure slider range and ticks
             self._updating_slider = True
             try:
@@ -536,24 +566,82 @@ class AnnotationToolDialog(QDialog):
             interval_ms = int(1000.0 / self.fps) if self.fps > 0 else 40
             self._play_timer.setInterval(max(10, interval_ms))
             self.read_frame()
-            # Show where annotations will be stored for this video
-            base = os.path.splitext(os.path.basename(self.video_path or "video"))[0]
-            out_dir = get_data_path(os.path.join("annotations", base))
+            # Show where annotations will be stored
+            out_dir = get_data_path(os.path.join("annotations", self.media_base))
             self.video_label.setToolTip(f"Annotations folder: {out_dir}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Video load failed: {e}")
 
-    def read_frame(self):
-        if not self.cap:
-            return
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_index)
-        ok, frame = self.cap.read()
-        if not ok:
-            QMessageBox.warning(self, "End", "No more frames.")
-            return
+    def load_images(self, paths):
+        try:
+            if not paths:
+                QMessageBox.warning(self, "Images", "No images selected.")
+                return
+            # Validate files exist
+            valid = [p for p in paths if os.path.exists(p)]
+            if not valid:
+                QMessageBox.warning(self, "Images", "Selected images do not exist.")
+                return
+            self.image_paths = valid
+            self.cap = None
+            self.media_mode = 'images'
+            self.fps = 0.0
+            self.frame_index = 0
+            self.total_frames = len(self.image_paths)
+            # Base from common directory (for multiple) or stem (single)
+            try:
+                common_dir = os.path.commonpath(self.image_paths)
+                if os.path.isfile(common_dir):
+                    common_dir = os.path.dirname(common_dir)
+            except Exception:
+                common_dir = os.path.dirname(self.image_paths[0])
+            if len(self.image_paths) == 1:
+                self.media_base = os.path.splitext(os.path.basename(self.image_paths[0]))[0]
+            else:
+                self.media_base = os.path.basename(common_dir) or "images"
+            # Configure controls
+            self._updating_slider = True
+            try:
+                self.frame_slider.setEnabled(True)
+                self.play_btn.setEnabled(False)  # disable play for images
+                self.prev_btn.setEnabled(True)
+                self.next_btn.setEnabled(True)
+                self.frame_slider.setMinimum(0)
+                self.frame_slider.setMaximum(max(0, self.total_frames - 1))
+                self.frame_slider.setTickInterval(max(1, 1))
+                self.frame_slider.setValue(0)
+                self.update_time_labels()
+            finally:
+                self._updating_slider = False
+            # Load first image
+            self.read_frame()
+            out_dir = get_data_path(os.path.join("annotations", self.media_base))
+            self.video_label.setToolTip(f"Annotations folder: {out_dir}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Image load failed: {e}")
 
-        self.current_frame = frame
-        self.canvas.set_frame(frame)
+    def read_frame(self):
+        if self.media_mode == 'images':
+            if not (0 <= self.frame_index < self.total_frames):
+                QMessageBox.warning(self, "End", "No more frames.")
+                return
+            img_path = self.image_paths[self.frame_index]
+            frame = cv2.imread(img_path)
+            if frame is None:
+                QMessageBox.warning(self, "Image", f"Failed to load: {img_path}")
+                return
+            self.current_frame = frame
+            self.canvas.set_frame(frame)
+        else:
+            if not self.cap:
+                return
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_index)
+            ok, frame = self.cap.read()
+            if not ok:
+                QMessageBox.warning(self, "End", "No more frames.")
+                return
+            self.current_frame = frame
+            self.canvas.set_frame(frame)
 
         if not self._updating_slider:
             self._updating_slider = True
@@ -627,11 +715,16 @@ class AnnotationToolDialog(QDialog):
 
     def update_time_labels(self, current_index=None):
         idx = self.frame_index if current_index is None else int(current_index)
-        fps = self.fps if self.fps > 0 else 25.0
-        cur_secs = idx / fps
-        total_secs = (self.total_frames / fps) if self.total_frames > 0 else 0
-        self.time_left_label.setText(self._format_time(cur_secs))
-        self.time_right_label.setText(self._format_time(total_secs))
+        if self.media_mode == 'images':
+            # Show frame count for images
+            self.time_left_label.setText(f"{idx+1:02d}")
+            self.time_right_label.setText(f"{self.total_frames:02d}")
+        else:
+            fps = self.fps if self.fps > 0 else 25.0
+            cur_secs = idx / fps
+            total_secs = (self.total_frames / fps) if self.total_frames > 0 else 0
+            self.time_left_label.setText(self._format_time(cur_secs))
+            self.time_right_label.setText(self._format_time(total_secs))
 
     @staticmethod
     def _format_time(seconds):
@@ -689,23 +782,56 @@ class AnnotationToolDialog(QDialog):
             QMessageBox.information(self, "No Boxes", "No boxes to save for this frame.")
             return
         # build output dir
-        base = os.path.splitext(os.path.basename(self.video_path or "video"))[0]
+        base = self.media_base or os.path.splitext(os.path.basename(self.video_path or "media"))[0]
         out_dir = get_data_path(os.path.join("annotations", base))
         os.makedirs(out_dir, exist_ok=True)
         
-        # Save frame image
-        frame_name = f"frame_{self.frame_index:05d}.jpg"
-        frame_path = os.path.join(out_dir, frame_name)
-        cv2.imwrite(frame_path, self.current_frame)
+        # Save frame image (copy original for images mode)
+        if self.media_mode == 'images':
+            src_path = self.image_paths[self.frame_index]
+            img_name = os.path.basename(src_path)
+            frame_path = os.path.join(out_dir, img_name)
+            try:
+                import shutil
+                if not os.path.exists(frame_path):
+                    shutil.copy2(src_path, frame_path)
+            except Exception:
+                # Fallback to write via cv2
+                cv2.imwrite(frame_path, self.current_frame)
+            ann_stem = os.path.splitext(img_name)[0]
+            out_file = os.path.join(out_dir, f"{ann_stem}.txt")
+        else:
+            frame_name = f"frame_{self.frame_index:05d}.jpg"
+            frame_path = os.path.join(out_dir, frame_name)
+            cv2.imwrite(frame_path, self.current_frame)
+            out_file = os.path.join(out_dir, f"frame_{self.frame_index:05d}.txt")
         
         # Save annotations
-        out_file = os.path.join(out_dir, f"frame_{self.frame_index:05d}.txt")
         try:
             with open(out_file, "w") as f:
                 for cls, x, y, w, h in labeled:
                     class_id = self.class_id_map.get(cls, 0)
                     # YOLO format: class x_center y_center width height
                     f.write(f"{class_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
+
+            # Also save per-frame metadata snapshot for class consistency across taxonomy changes
+            meta = {
+                "version": "1.0",
+                "timestamp": datetime.now().isoformat(),
+                "media_base": base,
+                "frame_index": int(self.frame_index),
+                # class_id_map is name->id at annotation time
+                "class_mapping": self.class_id_map.copy(),
+                # leaf_classes order used by tool (ids derived from this ordering)
+                "leaf_classes": list(self.leaf_classes or []),
+            }
+            if self.media_mode == 'images':
+                meta["image_file"] = os.path.basename(self.image_paths[self.frame_index])
+                meta_file = os.path.join(out_dir, f"{os.path.splitext(os.path.basename(frame_path))[0]}.json")
+            else:
+                meta_file = os.path.join(out_dir, f"frame_{self.frame_index:05d}.json")
+            with open(meta_file, "w") as mf:
+                json.dump(meta, mf, indent=2)
             # Mark current labeled shapes as saved
             for shape in self.canvas.shapes:
                 if shape.get('class'):
@@ -741,7 +867,7 @@ class AnnotationToolDialog(QDialog):
     def export_labels(self):
         """Export labels.txt in the annotations folder using provided leaf_classes order."""
         try:
-            base = os.path.splitext(os.path.basename(self.video_path or "video"))[0]
+            base = self.media_base or os.path.splitext(os.path.basename(self.video_path or "media"))[0]
             out_dir = get_data_path(os.path.join("annotations", base))
             os.makedirs(out_dir, exist_ok=True)
             labels_path = os.path.join(out_dir, "labels.txt")

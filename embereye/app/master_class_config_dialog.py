@@ -9,6 +9,8 @@ from PyQt5.QtWidgets import (
     QHeaderView, QFormLayout, QComboBox, QLineEdit, QDialogButtonBox, QWidget, QTextEdit
 )
 from PyQt5.QtCore import Qt
+import os
+from resource_helper import get_data_path
 from master_class_config import load_master_classes, save_master_classes
 from threat_rules import load_threat_rules, save_threat_rules, DEFAULT_SETTINGS, SEVERITIES, DEFAULT_THREAT_RULES, DEFAULT_EXAMPLES
 
@@ -422,6 +424,27 @@ class MasterClassConfigDialog(QDialog):
 
     def save_and_close(self):
         """Save configuration and close dialog."""
+        # Warn if existing annotations may be impacted by taxonomy changes
+        try:
+            ann_root = get_data_path("annotations")
+            impacted = 0
+            if os.path.exists(ann_root):
+                for root, dirs, files in os.walk(ann_root):
+                    impacted += sum(1 for f in files if f.endswith('.txt') and f != 'labels.txt')
+            if impacted > 0:
+                msg = (
+                    f"⚠️ {impacted} existing annotation files detected.\n\n"
+                    "Changing classes may cause mismatches. EmberEye will temporarily remap any missing classes to\n"
+                    "category-specific 'unclassified_*' during training. You can review and reassign after training.\n\n"
+                    "Do you want to continue and save the new taxonomy?"
+                )
+                from PyQt5.QtWidgets import QMessageBox
+                reply = QMessageBox.question(self, "Class Change Impact", msg, QMessageBox.Yes | QMessageBox.No)
+                if reply != QMessageBox.Yes:
+                    return
+        except Exception:
+            pass
+
         ok_classes = save_master_classes(self.classes_dict)
         ok_rules = save_threat_rules(self.threat_matrix, self.examples, {
             'default_flame': self.default_flame_sev.currentText(),

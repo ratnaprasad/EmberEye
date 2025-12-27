@@ -1,0 +1,12 @@
+PyQt5
+numpy
+opencv-python
+Pillow
+bcrypt
+passlib
+cryptography==41.0.7
+pyinstaller==6.16.0
+websockets
+onvif-zeep
+wsdiscovery
+matplotlib

@@ -1,0 +1,98 @@
+{
+  "threat_matrix": {
+    "CRITICAL": [
+      "flame + person_distress in same quadrant",
+      "smoke_toxic + confined_space",
+      "damaged_vent + smoke_heavy + pressure_vessel",
+      "vehicle_fire + road (traffic context)",
+      "explosion detected",
+      "electrical_arc detected"
+    ],
+    "HIGH": [
+      "flame detected alone",
+      "smoke_heavy + indoor",
+      "spark + equipment_leak",
+      "person_distress alone",
+      "fire + fuel_tank",
+      "fire + gas_cylinder"
+    ],
+    "MEDIUM": [
+      "smoke detected alone",
+      "ember + industrial_vehicle",
+      "steam + pressure_vessel",
+      "structural_deform alone",
+      "spark + flammable_liquid",
+      "heat_haze + pressure_vessel"
+    ],
+    "LOW": [
+      "steam alone",
+      "heat_haze alone",
+      "person_protected alone",
+      "fire_extinguisher visible",
+      "sprinkler visible",
+      "alarm_light active"
+    ]
+  },
+  "examples": [
+    {
+      "name": "Factory Fire (Critical)",
+      "detected": [
+        "flame",
+        "smoke_heavy",
+        "indoor",
+        "person_distress"
+      ],
+      "classification": "CRITICAL",
+      "rule": "flame + person_distress in same quadrant",
+      "notes": "Active fire with occupants at risk"
+    },
+    {
+      "name": "Vehicle Fire on Road (Critical)",
+      "detected": [
+        "flame",
+        "vehicle",
+        "road",
+        "smoke"
+      ],
+      "classification": "CRITICAL",
+      "rule": "vehicle_fire + road (traffic context)",
+      "notes": "Traffic hazard with active fire"
+    },
+    {
+      "name": "Dented Vent with Smoke (High)",
+      "detected": [
+        "damaged_vent",
+        "smoke",
+        "outdoor"
+      ],
+      "classification": "HIGH",
+      "rule": "damaged equipment + smoke",
+      "notes": "Structural damage with smoke emission"
+    },
+    {
+      "name": "Unclassified Fire (Default)",
+      "detected": [
+        "flame"
+      ],
+      "classification": "unclassified_fire",
+      "rule": "flame only (no context)",
+      "notes": "Flame without additional context clues"
+    },
+    {
+      "name": "Normal Scene (No Threat)",
+      "detected": [
+        "person_protected",
+        "industrial_vehicle"
+      ],
+      "classification": "non_threat",
+      "rule": "safe configuration",
+      "notes": "Normal industrial operations"
+    }
+  ],
+  "settings": {
+    "default_flame": "HIGH",
+    "default_smoke": "MEDIUM",
+    "score_threshold": 0.4,
+    "notes": ""
+  }
+}

@@ -102,7 +102,10 @@ class PFDSManager:
                     # Send PERIOD_ON for Continuous mode (once per device, with retry on failure)
                     if mode == "Continuous":
                         if not device_init_done.get(did):
-                            print(f"PFDS: Sending PERIOD_ON to device {d['name']} ({d['ip']}) [ONE-TIME INIT]")
+                            # Only log once per initialization attempt
+                            if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                                print(f"PFDS: Sending PERIOD_ON to device {d['name']} ({d['ip']}) [ONE-TIME INIT]")
+                            
                             if self._dispatcher:
                                 # Start continuous streaming (PERIOD_ON is one-time per device boot)
                                 success = self._dispatcher({"command": "PERIOD_ON", **d})
@@ -112,14 +115,16 @@ class PFDSManager:
                                     print(f"✅ PERIOD_ON sent successfully to {d['ip']}")
                                 else:
                                     # Retry after 5 seconds if send failed (connection not ready)
+                                    # Only log failure once every 30 seconds to avoid spam
+                                    if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                                        print(f"⚠️  PERIOD_ON failed for {d['ip']}, retrying every 5s (logging suppressed)")
                                     device_last_retry[did] = now
-                                    print(f"⚠️  PERIOD_ON failed for {d['ip']}, will retry in 5s")
                             else:
-                                print("PFDS: WARNING - No dispatcher set!")
+                                if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                                    print("PFDS: WARNING - No dispatcher set!")
                         elif now - device_last_retry.get(did, 0) >= 5:
                             # Retry PERIOD_ON if it was marked as sent but device might have disconnected
-                            # This handles reconnection scenarios
-                            print(f"🔄 Retrying PERIOD_ON to {d['name']} ({d['ip']}) [RECONNECT CHECK]")
+                            # This handles reconnection scenarios (silent retries)
                             if self._dispatcher:
                                 success = self._dispatcher({"command": "PERIOD_ON", **d})
                                 if success:
