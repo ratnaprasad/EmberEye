@@ -1,0 +1,108 @@
+{
+  "timestamp": "2025-12-04 22:24:33",
+  "summary": {
+    "total": 10,
+    "passed": 10,
+    "failed": 0
+  },
+  "results": [
+    {
+      "name": "Parse throughput",
+      "value": 3674.2698859604707,
+      "unit": " fps",
+      "threshold": 3000,
+      "status": "PASS"
+    },
+    {
+      "name": "Parse latency",
+      "value": 0.27216291427612305,
+      "unit": " ms",
+      "threshold": 1.0,
+      "status": "PASS"
+    },
+    {
+      "name": "Parse success rate",
+      "value": 100.0,
+      "unit": "%",
+      "threshold": 100,
+      "status": "PASS"
+    },
+    {
+      "name": "Baseline memory",
+      "value": 30.359375,
+      "unit": " MB",
+      "threshold": null,
+      "status": "INFO"
+    },
+    {
+      "name": "Memory after 100 frames",
+      "value": 30.59375,
+      "unit": " MB",
+      "threshold": null,
+      "status": "INFO"
+    },
+    {
+      "name": "Memory increase",
+      "value": 0.234375,
+      "unit": " MB",
+      "threshold": 50,
+      "status": "PASS"
+    },
+    {
+      "name": "Memory recovered after GC",
+      "value": 0.0,
+      "unit": " MB",
+      "threshold": null,
+      "status": "INFO"
+    },
+    {
+      "name": "EEPROM validation throughput",
+      "value": 169637.49388273456,
+      "unit": " validations/sec",
+      "threshold": null,
+      "status": "INFO"
+    },
+    {
+      "name": "EEPROM validation latency",
+      "value": 5.894923210144043,
+      "unit": " \u03bcs",
+      "threshold": 100,
+      "status": "PASS"
+    },
+    {
+      "name": "EEPROM validation accuracy",
+      "value": 100,
+      "unit": "%",
+      "threshold": 95,
+      "status": "PASS"
+    },
+    {
+      "name": "Packet parsing throughput",
+      "value": 2557892.361640494,
+      "unit": " packets/sec",
+      "threshold": 2000000,
+      "status": "PASS"
+    },
+    {
+      "name": "Packet parsing latency",
+      "value": 0.3909468650817871,
+      "unit": " \u03bcs",
+      "threshold": 100,
+      "status": "PASS"
+    },
+    {
+      "name": "Concurrent processing (4 cameras)",
+      "value": 3901.415020847431,
+      "unit": " fps",
+      "threshold": 3000,
+      "status": "PASS"
+    },
+    {
+      "name": "Frame success rate",
+      "value": 100.0,
+      "unit": "%",
+      "threshold": 100,
+      "status": "PASS"
+    }
+  ]
+}

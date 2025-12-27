@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- WiX Toolset MSI Configuration for EmberEye
+     
+     Prerequisites:
+     - Install WiX Toolset v3: https://wixtoolset.org/releases/
+     - Build EXE first: python build_windows.py
+     
+     Build MSI:
+       candle.exe EmberEye.wxs -out obj\EmberEye.wixobj
+       light.exe obj\EmberEye.wixobj -out EmberEye.msi -ext WixUIExtension
+     
+     Features:
+     - Standard Windows Installer
+     - Start Menu shortcuts
+     - Desktop icon (optional)
+     - Add/Remove Programs entry
+     - Upgrade detection (allows in-place upgrades)
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  
+  <!-- Product definition -->
+  <Product Id="*" 
+           Name="EmberEye" 
+           Language="1033" 
+           Version="1.0.0" 
+           Manufacturer="S3Micro Systems" 
+           UpgradeCode="12345678-1234-1234-1234-123456789ABC">
+    
+    <Package InstallerVersion="200" 
+             Compressed="yes" 
+             InstallScope="perMachine" 
+             Description="EmberEye Fire and Smoke Detection System" 
+             Comments="Industrial IoT safety monitoring"/>
+    
+    <!-- Allow major upgrades (detect older versions and remove them) -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    
+    <MediaTemplate EmbedCab="yes" />
+    
+    <!-- Include WiX UI for standard installer dialogs -->
+    <UIRef Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    
+    <!-- Directory structure -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="EmberEye">
+          <!-- Main application files go here -->
+        </Directory>
+      </Directory>
+      
+      <!-- Start Menu -->
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="EmberEye"/>
+      </Directory>
+      
+      <!-- Desktop -->
+      <Directory Id="DesktopFolder" Name="Desktop"/>
+    </Directory>
+    
+    <!-- Component group for application files -->
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <!-- Main executable -->
+      <Component Id="EmberEye.exe" Guid="*">
+        <File Id="EmberEye.exe" 
+              Source="dist\EmberEye\EmberEye.exe" 
+              KeyPath="yes">
+          <!-- Associate with Start Menu shortcut -->
+          <Shortcut Id="StartMenuShortcut" 
+                    Directory="ApplicationProgramsFolder" 
+                    Name="EmberEye" 
+                    Description="Fire and Smoke Detection System"
+                    WorkingDirectory="INSTALLFOLDER" 
+                    Icon="EmberEye.ico" 
+                    IconIndex="0" 
+                    Advertise="yes"/>
+          
+          <!-- Optional Desktop shortcut -->
+          <Shortcut Id="DesktopShortcut" 
+                    Directory="DesktopFolder" 
+                    Name="EmberEye" 
+                    Description="Fire and Smoke Detection System"
+                    WorkingDirectory="INSTALLFOLDER" 
+                    Icon="EmberEye.ico" 
+                    IconIndex="0" 
+                    Advertise="yes"/>
+        </File>
+        
+        <!-- Registry entry for Add/Remove Programs -->
+        <RegistryValue Root="HKCU" 
+                       Key="Software\S3Micro\EmberEye" 
+                       Name="installed" 
+                       Type="integer" 
+                       Value="1" 
+                       KeyPath="no"/>
+      </Component>
+      
+      <!-- Configuration files -->
+      <Component Id="ConfigFiles" Guid="*">
+        <File Id="stream_config.json" Source="dist\EmberEye\stream_config.json" />
+        <File Id="logo.png" Source="dist\EmberEye\logo.png" />
+      </Component>
+      
+      <!-- Support libraries (harvest from dist\EmberEye\) -->
+      <!-- Note: Use heat.exe to auto-generate components for all DLLs -->
+      <!--
+      <Component Id="PythonLibs" Guid="*">
+        <File Id="python311.dll" Source="dist\EmberEye\python311.dll" />
+        ... (add all required DLLs)
+      </Component>
+      -->
+    </ComponentGroup>
+    
+    <!-- Icon for shortcuts and Control Panel -->
+    <Icon Id="EmberEye.ico" SourceFile="logo.ico"/>
+    <Property Id="ARPPRODUCTICON" Value="EmberEye.ico" />
+    
+    <!-- Feature: Main application (required) -->
+    <Feature Id="ProductFeature" 
+             Title="EmberEye Application" 
+             Level="1" 
+             Description="Core fire and smoke detection system">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+    
+    <!-- Remove Start Menu folder on uninstall -->
+    <Component Id="CleanupStartMenu" Directory="ApplicationProgramsFolder" Guid="*">
+      <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
+      <RegistryValue Root="HKCU" 
+                     Key="Software\S3Micro\EmberEye" 
+                     Name="cleanup" 
+                     Type="integer" 
+                     Value="1" 
+                     KeyPath="yes"/>
+    </Component>
+    
+  </Product>
+</Wix>
+
+<!-- 
+USAGE NOTES:
+
+1. Harvest all files from dist/EmberEye:
+   heat.exe dir dist\EmberEye -cg HarvestedFiles -gg -sfrag -srd -dr INSTALLFOLDER -out harvested.wxs
+
+2. Merge harvested.wxs content into this file (ProductComponents)
+
+3. Build MSI:
+   candle.exe EmberEye.wxs -out obj\EmberEye.wixobj
+   light.exe obj\EmberEye.wixobj -out EmberEye.msi -ext WixUIExtension
+
+4. Test installation:
+   msiexec /i EmberEye.msi /l*v install.log
+
+5. Uninstall:
+   msiexec /x EmberEye.msi
+
+CUSTOMIZATION:
+- Update UpgradeCode (generate new GUID, keep same for all versions)
+- Update Version for each release (format: Major.Minor.Build)
+- Update Manufacturer
+- Add license agreement: <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+- Add custom dialogs via WixUI_* references
+-->

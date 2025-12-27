@@ -238,17 +238,6 @@ class TCPSensorServer:
                 result = {'type': 'locid', 'loc_id': loc_id}
                 if client_ip:
                     result['client_ip'] = client_ip
-                # Persist IP -> loc_id mapping
-                try:
-                    from ip_loc_resolver import set_mapping
-                    set_mapping(client_ip, loc_id)
-                    try:
-                        from tcp_logger import log_raw_packet
-                        log_raw_packet(f"map {client_ip}->{loc_id}", locationId=loc_id)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
             except Exception as e:
                 print(f"Loc_id parse error: {e}")
                 try:
@@ -283,16 +272,9 @@ class TCPSensorServer:
                             loc_id = None
                             frame_data = data.strip()
                     
-                    # Resolve/fallback loc_id
+                    # Resolve/fallback loc_id: default to client IP when not provided
                     if not loc_id:
-                        # Try resolver first
-                        if client_ip:
-                            try:
-                                from ip_loc_resolver import get_loc_id
-                                resolved = get_loc_id(client_ip)
-                                loc_id = resolved or client_ip
-                            except Exception:
-                                loc_id = client_ip
+                        loc_id = client_ip
                     
                     # Parse frame data using thermal_frame_parser
                     # Expected: 834 word blocks (4 chars each) = 3336 chars total
@@ -396,15 +378,9 @@ class TCPSensorServer:
                             loc_id = None
                             sensor_data = data.strip()
                     
-                    # Resolve/fallback loc_id
+                    # Resolve/fallback loc_id: default to client IP when not provided
                     if not loc_id:
-                        if client_ip:
-                            try:
-                                from ip_loc_resolver import get_loc_id
-                                resolved = get_loc_id(client_ip)
-                                loc_id = resolved or client_ip
-                            except Exception:
-                                loc_id = client_ip
+                        loc_id = client_ip
                     
                     sensors = {}
                     for part in sensor_data.split(','):

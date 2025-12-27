@@ -13,11 +13,13 @@ from stream_config import StreamConfig
 from resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
 from tcp_server_logger import log_info as log_server_info, log_error as log_server_error
 from debug_config import debug_print, is_debug_enabled, set_debug_enabled
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
-                             QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
-                             QListWidget, QListWidgetItem, QProgressBar, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QSlider, QGroupBox, QCompleter,
-                             QCheckBox, QDoubleSpinBox, QFormLayout, QInputDialog, QProgressDialog
-                             )
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
+    QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
+    QListWidget, QListWidgetItem, QProgressBar, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QSlider, QGroupBox, QCompleter, QCheckBox, QDoubleSpinBox, QFormLayout, QInputDialog,
+    QProgressDialog, QApplication
+)
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QMutex, QObject, QTimer, QUrl, QThread
 )
@@ -38,7 +40,6 @@ from baseline_manager import BaselineManager
 from pfds_manager import PFDSManager, is_valid_ip
 from master_class_config import load_master_classes, flatten_classes
 from master_class_config_dialog import MasterClassConfigDialog
-# Thermal vision and anomalies modules
 from anomalies import (
     ThermalROIExtractor,
     AnomalyRecord,
@@ -48,55 +49,12 @@ from anomalies import (
     YOLOTrainingProgress
 )
 
-# Global callback wrapper for TCP packets - persists across MainWindow instances
-class GlobalTCPCallbackWrapper:
-    """Wrapper that allows safe callback updates when MainWindow instances change."""
-    def __init__(self):
-        self.callback = None
-        self.lock = QMutex()
-    
-    def set_callback(self, callback):
-        """Update the callback (thread-safe)."""
-        self.lock.lock()
-        try:
-            self.callback = callback
-        finally:
-            self.lock.unlock()
-    
-    def __call__(self, packet):
-        """Call the current callback if it exists (thread-safe)."""
-        self.lock.lock()
-        try:
-            callback = self.callback
-        finally:
-            self.lock.unlock()
-        
-        if callback:
-            try:
-                callback(packet)
-            except Exception as e:
-                print(f"TCP callback error: {e}")
 
-# Single global instance
-_global_tcp_callback = GlobalTCPCallbackWrapper()
-
-# bem_main_window.py
 class WebSocketClient(QObject):
     data_received = pyqtSignal(dict)
-    
-    def __init__(self, theme_manager=None):
+
+    def __init__(self):
         super().__init__()
-        # Optional theme manager support for Modern/Classic themes
-        self.theme_manager = theme_manager
-        try:
-            if self.theme_manager is not None:
-                from PyQt5.QtWidgets import QApplication
-                app = QApplication.instance()
-                if app is not None:
-                    # Apply the selected theme to the application
-                    self.theme_manager.apply_theme(app)
-        except Exception as _theme_err:
-            print(f"Theme apply error (non-fatal): {_theme_err}")
         self.websocket = None
         self.running = False
         self.loop = None
@@ -108,8 +66,7 @@ class WebSocketClient(QObject):
         self.running = True
         self.thread = Thread(target=self.run_client, daemon=True)
         self.thread.start()
-        # Wait for connection attempt but don't block app startup indefinitely
-        self.connect_event.wait(6)  # 6 seconds (5s connect + 1s buffer)
+        self.connect_event.wait(5)
 
     def run_client(self):
         self.loop = asyncio.new_event_loop()
@@ -117,38 +74,26 @@ class WebSocketClient(QObject):
         try:
             self.loop.run_until_complete(self.client_main())
         finally:
-            # Only close loop if it's not running
-            if self.loop and not self.loop.is_running():
-                try:
-                    self.loop.close()
-                except Exception as e:
-                    print(f"Loop close error in run_client: {e}")
+            self.loop.close()
 
     async def client_main(self):
         uri = "ws://localhost:8765"
         try:
-            # Try to connect with timeout - don't block app if server unavailable
-            async with asyncio.timeout(5):  # 5 second connection timeout
-                async with websockets.connect(uri) as ws:
-                    self.mutex.lock()
-                    self.websocket = ws
-                    self.connect_event.set()
-                    self.mutex.unlock()
-                    print("WebSocket connected successfully")
-                    
-                    while self.running:
-                        try:
-                            message = await asyncio.wait_for(ws.recv(), timeout=1)
-                            data = json.loads(message)
-                            self.data_received.emit(data)
-                        except asyncio.TimeoutError:
-                            continue
-        except asyncio.TimeoutError:
-            print("WebSocket connection timeout - continuing without WebSocket")
-            self.connect_event.set()  # Release waiting thread
+            async with websockets.connect(uri) as ws:
+                self.mutex.lock()
+                self.websocket = ws
+                self.connect_event.set()
+                self.mutex.unlock()
+
+                while self.running:
+                    try:
+                        message = await asyncio.wait_for(ws.recv(), timeout=1)
+                        data = json.loads(message)
+                        self.data_received.emit(data)
+                    except asyncio.TimeoutError:
+                        continue
         except Exception as e:
-            print(f"WebSocket error: {str(e)} - continuing without WebSocket")
-            self.connect_event.set()  # Release waiting thread
+            print(f"WebSocket error: {str(e)}")
         finally:
             self.connect_event.clear()
 
@@ -157,26 +102,18 @@ class WebSocketClient(QObject):
         self.mutex.lock()
         self.running = False
         self.mutex.unlock()
-        
+
         # Close websocket properly in the event loop
         if self.websocket and self.loop:
             try:
-                # Schedule the close coroutine in the event loop
                 future = asyncio.run_coroutine_threadsafe(self._close_websocket(), self.loop)
-                future.result(timeout=2)  # Wait up to 2 seconds
+                future.result(timeout=2)
             except Exception as e:
                 print(f"WebSocket close error: {e}")
-            # Ensure loop is stopped before thread join to avoid 'running loop' close errors
-            try:
-                if self.loop.is_running():
-                    self.loop.call_soon_threadsafe(self.loop.stop)
-            except Exception as e:
-                print(f"Loop stop error: {e}")
-        
-        # Wait for thread to finish
+
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=3)
-    
+
     async def _close_websocket(self):
         """Async helper to close websocket properly."""
         if self.websocket:
@@ -185,46 +122,10 @@ class WebSocketClient(QObject):
             except Exception as e:
                 print(f"WebSocket close exception: {e}")
 
+
 class BEMainWindow(QMainWindow):
     # Signal used to marshal TCP packets from background threads to the GUI thread
     tcp_packet_signal = pyqtSignal(dict)
-    # Signal for thermal vision training progress updates
-    training_progress_updated = pyqtSignal(dict)  # Emits YOLOTrainingProgress.to_dict()
-
-    # --- Safe fallbacks for runtime-missing handlers ---
-    def _fallback_group_changed(self, group):
-        try:
-            # Minimal behavior: update current group and redraw grid
-            self.current_group = group
-            self.current_rtsp_page = 1
-            if hasattr(self, 'schedule_grid_rebuild'):
-                self.schedule_grid_rebuild()
-            elif hasattr(self, 'update_rtsp_grid'):
-                self.update_rtsp_grid()
-        except Exception as e:
-            print(f"group_changed fallback error: {e}")
-
-    def _fallback_dispatch_pfds_command(self, cmd: dict) -> bool:
-        try:
-            ip = cmd.get('ip')
-            name = cmd.get('name') or ''
-            command = cmd.get('command')
-            print(f"PFDS dispatcher missing; cannot send '{command}' to {ip} ({name})")
-        except Exception:
-            pass
-        return False
-
-    def _fallback_update_rtsp_grid(self):
-        try:
-            print("update_rtsp_grid missing; skipping grid rebuild")
-        except Exception:
-            pass
-
-    def _fallback_handle_sensor_data(self, data):
-        try:
-            print(f"handle_sensor_data missing; dropping packet: {data}")
-        except Exception:
-            pass
 
     def _fallback_init_header_actions(self, header_layout):
         try:
@@ -288,6 +189,21 @@ class BEMainWindow(QMainWindow):
         if name == 'tcp_sensor_server' or name == 'ws_client':
             return None  # Return None for missing server instances
         raise AttributeError(f"{self.__class__.__name__!s} object has no attribute {name!s}")
+
+    def _on_screen_geometry_changed(self, *args, **kwargs):
+        """Adjust window when screen resolution changes.
+        If maximized, re-maximize to fit new available area; otherwise resize to available geometry.
+        """
+        try:
+            from PyQt5.QtGui import QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            if self.isMaximized():
+                self.showMaximized()
+            else:
+                self.setGeometry(avail)
+        except Exception:
+            pass
     
     def show_pending_baseline_changes(self):
         """Display notification panel for all pending baseline candidates with thumbnail and timestamp."""
@@ -710,9 +626,27 @@ class BEMainWindow(QMainWindow):
             is_modern = True
             
             self.setWindowTitle("Ember Eye Command Center" if is_modern else "Main")
-            self.setGeometry(100, 100, 1024, 768)
+            # Adapt initial size to current screen resolution
+            try:
+                from PyQt5.QtGui import QGuiApplication
+                screen = QGuiApplication.primaryScreen()
+                avail = screen.availableGeometry()
+                self.setGeometry(avail)
+            except Exception:
+                self.setGeometry(100, 100, 1024, 768)
             if is_modern:
                 self.showMaximized()
+            # React to resolution changes (monitor switch or scaling changes)
+            try:
+                from PyQt5.QtGui import QGuiApplication
+                screen = QGuiApplication.primaryScreen()
+                screen.geometryChanged.connect(self._on_screen_geometry_changed)
+                try:
+                    screen.availableGeometryChanged.connect(self._on_screen_geometry_changed)
+                except Exception:
+                    pass
+            except Exception:
+                pass
             
             central_widget = QWidget()
             self.setCentralWidget(central_widget)
@@ -820,70 +754,46 @@ class BEMainWindow(QMainWindow):
                 
                 # Enable mouse tracking for hover detection
                 self.setMouseTracking(True)
-            else:
-                # Classic Title Bar
-                title_bar = QHBoxLayout()
-                self.init_logo(title_bar)
-                
-                self.group_combo = QComboBox()
-                self.group_combo.addItems(self.config["groups"])
-                self.group_combo.currentTextChanged.connect(self.group_changed)
-                title_bar.addWidget(self.group_combo)
-                
-                # Grid size for classic mode
-                self.grid_size = QComboBox()
-                self.grid_size.addItems(["2x2", "3x3", "4x4"])
-                self.grid_size.currentIndexChanged.connect(self.update_rtsp_grid)
-                title_bar.addWidget(QLabel("Grid:"))
-                title_bar.addWidget(self.grid_size)
-                
-                title_bar.addStretch()
-                self.init_settings_menu(title_bar)
-                main_layout.addLayout(title_bar)
             
             # Tab Widget with centered tabs
             self.tabs = QTabWidget()
-            if is_modern:
-                self.tabs.setDocumentMode(True)
-                self.tabs.setStyleSheet("""
-                    QTabWidget::pane {
-                        border: none;
-                        background: #1a1a1a;
-                    }
-                    QTabBar {
-                        background: #1a1a1a;
-                        alignment: center;
-                    }
-                    QTabBar::tab {
-                        background: #252525;
-                        color: #9e9e9e;
-                        padding: 12px 40px;
-                        margin: 0px 4px;
-                        border: none;
-                        border-top: 3px solid transparent;
-                        font-weight: 600;
-                        font-size: 12px;
-                        letter-spacing: 2px;
-                        min-width: 140px;
-                    }
-                    QTabBar::tab:selected {
-                        background: #1a1a1a;
-                        color: #00bcd4;
-                        border-top-color: #00bcd4;
-                    }
-                    QTabBar::tab:hover:!selected {
-                        background: #2d2d2d;
-                        color: #b0b0b0;
-                    }
-                """)
-                # Set tab bar to not expand and center align
-                from PyQt5.QtCore import Qt
-                tab_bar = self.tabs.tabBar()
-                tab_bar.setExpanding(False)
-                tab_bar.setDrawBase(False)
-            else:
-                # Tab styling for classic mode
-                pass
+            self.tabs.setDocumentMode(True)
+            self.tabs.setStyleSheet("""
+                QTabWidget::pane {
+                    border: none;
+                    background: #1a1a1a;
+                }
+                QTabBar {
+                    background: #1a1a1a;
+                    alignment: center;
+                }
+                QTabBar::tab {
+                    background: #252525;
+                    color: #9e9e9e;
+                    padding: 12px 40px;
+                    margin: 0px 4px;
+                    border: none;
+                    border-top: 3px solid transparent;
+                    font-weight: 600;
+                    font-size: 12px;
+                    letter-spacing: 2px;
+                    min-width: 140px;
+                }
+                QTabBar::tab:selected {
+                    background: #1a1a1a;
+                    color: #00bcd4;
+                    border-top-color: #00bcd4;
+                }
+                QTabBar::tab:hover:!selected {
+                    background: #2d2d2d;
+                    color: #b0b0b0;
+                }
+            """)
+            # Set tab bar to not expand and center align
+            from PyQt5.QtCore import Qt
+            tab_bar = self.tabs.tabBar()
+            tab_bar.setExpanding(False)
+            tab_bar.setDrawBase(False)
             
             main_layout.addWidget(self.tabs)
             
@@ -917,6 +827,16 @@ class BEMainWindow(QMainWindow):
                         font-size: 10px;
                     }
                 """)
+                # Reduce mouse move events from status bar to avoid hover flicker
+                try:
+                    status_bar.setMouseTracking(False)
+                except Exception:
+                    pass
+                # Track hover zone transitions to avoid rapid toggling
+                self._was_in_bottom_zone = False
+                self._was_in_top_zone = False
+                # Timer-based hide for status bar to prevent thrashing
+                self.status_hide_timer = None
             
             # Initialize TCP status indicator
             self.init_tcp_status_indicator()
@@ -1037,44 +957,72 @@ class BEMainWindow(QMainWindow):
         training_widget = QWidget()
         training_layout = QHBoxLayout(training_widget)
         
-        # Left panel: Class selection and data management
+        # Left panel: Data management
         left_panel = QVBoxLayout()
-        
-        class_layout = QHBoxLayout()
-        class_layout.addWidget(QLabel("Class"))
-        self.training_class_combo = QComboBox()
-        self.training_class_combo.setMinimumWidth(300)
-        self.training_class_combo.setEditable(True)
-        self.training_class_combo.setInsertPolicy(QComboBox.NoInsert)
-        # Populate from master classes using hierarchical labels: root → category → class
-        try:
-            from master_class_config import get_hierarchical_class_labels
-            self.training_classes = get_hierarchical_class_labels()
-            self.training_class_combo.addItems(self.training_classes)
-            # Add search filter with QCompleter
-            completer = QCompleter(self.training_classes)
-            completer.setCaseSensitivity(Qt.CaseInsensitive)
-            completer.setFilterMode(Qt.MatchContains)
-            self.training_class_combo.setCompleter(completer)
-        except Exception:
-            pass
-        class_layout.addWidget(self.training_class_combo)
-        class_layout.addStretch(1)
-        left_panel.addLayout(class_layout)
         
         # Import and Annotate buttons
         btn_layout = QHBoxLayout()
-        import_btn = QPushButton("Import Video → Training")
+        import_btn = QPushButton("📥 Import Media")
         self.import_training_btn = import_btn
-        import_btn.clicked.connect(self.import_training_video)
+        import_btn.clicked.connect(self.import_training_media)
         btn_layout.addWidget(import_btn)
         
-        annotate_btn = QPushButton("📹 Annotate Video")
+        annotate_btn = QPushButton("🖊️ Annotate Media")
         self.annotate_btn = annotate_btn
         annotate_btn.clicked.connect(self.open_annotation_tool)
         btn_layout.addWidget(annotate_btn)
         btn_layout.addStretch(1)
         left_panel.addLayout(btn_layout)
+
+        # Import/Export for Classes and Annotations (grid layout for better organization)
+        ie_btn_layout = QGridLayout()
+        ie_btn_layout.setSpacing(5)
+        
+        # Row 0: Classes
+        export_classes_btn = QPushButton("⬆ Export Classes")
+        export_classes_btn.setToolTip("Export current class hierarchy to a JSON package")
+        export_classes_btn.clicked.connect(self._export_classes_package)
+        ie_btn_layout.addWidget(export_classes_btn, 0, 0)
+
+        import_classes_btn = QPushButton("⬇ Import Classes")
+        import_classes_btn.setToolTip("Import classes from a package with merge/override")
+        import_classes_btn.clicked.connect(self._import_classes_package)
+        ie_btn_layout.addWidget(import_classes_btn, 0, 1)
+
+        # Row 1: Annotations
+        export_ann_btn = QPushButton("⬆ Export Annotations")
+        export_ann_btn.setToolTip("Export annotations from workspace to a JSON package")
+        export_ann_btn.clicked.connect(self._export_annotations_package)
+        ie_btn_layout.addWidget(export_ann_btn, 1, 0)
+
+        import_ann_btn = QPushButton("⬇ Import Annotations")
+        import_ann_btn.setToolTip("Import annotations with conflict-safe merge or override")
+        import_ann_btn.clicked.connect(self._import_annotations_package)
+        ie_btn_layout.addWidget(import_ann_btn, 1, 1)
+
+        # Row 2: Revert
+        revert_classes_btn = QPushButton("↩ Revert Classes")
+        revert_classes_btn.setToolTip("Restore master_classes.json from a backup")
+        revert_classes_btn.clicked.connect(self._revert_classes_from_backup)
+        ie_btn_layout.addWidget(revert_classes_btn, 2, 0)
+
+        revert_ann_btn = QPushButton("↩ Revert Annotations")
+        revert_ann_btn.setToolTip("Restore annotations from a ZIP backup")
+        revert_ann_btn.clicked.connect(self._revert_annotations_from_backup)
+        ie_btn_layout.addWidget(revert_ann_btn, 2, 1)
+
+        # Row 3: ZIP Archive
+        export_zip_btn = QPushButton("⬆ Export ZIP")
+        export_zip_btn.setToolTip("Create a ZIP archive with images + labels + metadata")
+        export_zip_btn.clicked.connect(self._export_annotations_zip)
+        ie_btn_layout.addWidget(export_zip_btn, 3, 0)
+
+        import_zip_btn = QPushButton("⬇ Import ZIP")
+        import_zip_btn.setToolTip("Import a ZIP archive containing images + labels")
+        import_zip_btn.clicked.connect(self._import_annotations_zip)
+        ie_btn_layout.addWidget(import_zip_btn, 3, 1)
+        
+        left_panel.addLayout(ie_btn_layout)
         
         # Ready for Training count display
         training_ready_group = QWidget()
@@ -1133,6 +1081,11 @@ class BEMainWindow(QMainWindow):
         delete_btn = QPushButton("🗑 Delete")
         delete_btn.clicked.connect(self.delete_training_data)
         action_btn_layout.addWidget(delete_btn)
+
+        review_btn = QPushButton("🔎 Review Unclassified")
+        review_btn.setToolTip("List dataset items remapped to unclassified_* for re-annotation")
+        review_btn.clicked.connect(self.review_unclassified_items)
+        action_btn_layout.addWidget(review_btn)
         action_btn_layout.addStretch(1)
         left_panel.addLayout(action_btn_layout)
         
@@ -1173,6 +1126,11 @@ class BEMainWindow(QMainWindow):
         self.start_training_btn = QPushButton("▶ Start Training")
         self.start_training_btn.clicked.connect(self.start_model_training)
         train_btn_layout.addWidget(self.start_training_btn)
+        
+        self.quick_retrain_btn = QPushButton("⚡ Quick Retrain (Reviewed)")
+        self.quick_retrain_btn.setToolTip("Runs a shorter retrain using current dataset; ideal after fixing unclassified items")
+        self.quick_retrain_btn.clicked.connect(self.start_quick_retraining)
+        train_btn_layout.addWidget(self.quick_retrain_btn)
         
         self.cancel_training_btn = QPushButton("Cancel")
         self.cancel_training_btn.setEnabled(False)
@@ -1227,51 +1185,278 @@ class BEMainWindow(QMainWindow):
         self.training_manager_tab = training_tab
         self._training_video_path = None
         self.training_selected_video_path = None
+        self.training_selected_image_paths = []
         self.training_has_annotations = False
+        self.training_media_imported = False
         
         # Initial count update
         self._refresh_training_ready_count()
 
-    # Training Manager methods
-    def import_training_video(self):
-        """Import or register a training video.
+    def _export_classes_package(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        try:
+            default_path = os.path.join(os.path.expanduser("~"), "classes_export.json")
+            path, _ = QFileDialog.getSaveFileName(self, "Export Classes", default_path, "JSON (*.json)")
+            if not path:
+                return
+            from embereye.app.training_sync import export_classes_v2
+            result = export_classes_v2(path, origin="ui")
+            QMessageBox.information(self, "Export Classes", f"Written: {result.get('written')}\nCategories: {result['counts']['categories']}\nClasses: {result['counts']['classes']}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Classes", f"Error: {e}")
 
-        If annotations already exist for the selected video, we skip re-import
-        and treat it as an "Add existing annotated frames" operation.
+    def _import_classes_package(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox, QInputDialog
+        try:
+            path, _ = QFileDialog.getOpenFileName(self, "Import Classes", "", "JSON (*.json)")
+            if not path:
+                return
+            # Choose mode
+            modes = ["merge", "override"]
+            mode, ok = QInputDialog.getItem(self, "Import Mode", "Choose import mode", modes, 0, False)
+            if not ok:
+                return
+            from embereye.app.training_sync import import_classes_v2
+            from embereye.app.conflict_review_dialog import ConflictReviewDialog
+            # Dry-run report
+            report = import_classes_v2(path, mode=mode, dry_run=True)
+            conflicts = report.get('report', {}).get('conflicts', {})
+            dlg = ConflictReviewDialog(self, class_conflicts=conflicts, ann_conflicts={})
+            if dlg.exec_() == QDialog.Accepted:
+                if mode == "override":
+                    confirm = QMessageBox.warning(self, "Override Confirmation", "Override will replace current class hierarchy. Continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                    if confirm != QMessageBox.Yes:
+                        return
+                resolutions = dlg.get_resolutions()
+                applied = import_classes_v2(path, mode=mode, dry_run=False, resolutions=resolutions)
+                moved = len(conflicts.get('moved', []))
+                deleted = len(conflicts.get('deleted_in_incoming', []))
+                backup_msg = f"\nBackup: {applied.get('backup') or 'n/a'}" if mode == 'override' else ""
+                QMessageBox.information(self, "Import Classes", f"Applied: {applied.get('applied')}\nMoved: {moved}\nDeleted (incoming): {deleted}{backup_msg}")
+                # Refresh dataset stats if needed
+                try:
+                    self._refresh_dataset_stats()
+                except Exception:
+                    pass
+        except Exception as e:
+            QMessageBox.critical(self, "Import Classes", f"Error: {e}")
+
+    def _export_annotations_package(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        try:
+            default_path = os.path.join(os.path.expanduser("~"), "annotations_export.json")
+            path, _ = QFileDialog.getSaveFileName(self, "Export Annotations", default_path, "JSON (*.json)")
+            if not path:
+                return
+            from embereye.app.training_sync import export_annotations_v2
+            result = export_annotations_v2(path, origin="ui")
+            QMessageBox.information(self, "Export Annotations", f"Written: {result.get('written')}\nMedia: {result['counts']['media']}\nFrames: {result['counts']['frames']}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Annotations", f"Error: {e}")
+
+    def _import_annotations_package(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox, QInputDialog
+        try:
+            path, _ = QFileDialog.getOpenFileName(self, "Import Annotations", "", "JSON (*.json)")
+            if not path:
+                return
+            modes = ["merge", "override"]
+            mode, ok = QInputDialog.getItem(self, "Import Mode", "Choose import mode", modes, 0, False)
+            if not ok:
+                return
+            from embereye.app.training_sync import import_annotations_v2
+            from embereye.app.conflict_review_dialog import ConflictReviewDialog
+            # Dry-run
+            report = import_annotations_v2(path, mode=mode, dry_run=True)
+            conf = report.get('report', {}).get('conflicts', {})
+            dlg = ConflictReviewDialog(self, class_conflicts={}, ann_conflicts=conf)
+            if dlg.exec_() == QDialog.Accepted:
+                if mode == "override":
+                    confirm = QMessageBox.warning(self, "Override Confirmation", "Override will replace existing frame labels where present. Backup will be taken. Continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                    if confirm != QMessageBox.Yes:
+                        return
+                resolutions = dlg.get_resolutions()
+                applied = import_annotations_v2(path, mode=mode, dry_run=False, resolutions=resolutions)
+                dup = len(conf.get('duplicates', []))
+                dis = len(conf.get('disagreements', []))
+                backup_msg = f"\nBackup: {applied.get('backup') or 'n/a'}" if mode == 'override' else ""
+                QMessageBox.information(self, "Import Annotations",
+                                        f"Applied: {mode}{backup_msg}\nDuplicates (dry-run): {dup}\nDisagreements (dry-run): {dis}")
+                try:
+                    self._refresh_training_ready_count()
+                except Exception:
+                    pass
+        except Exception as e:
+            QMessageBox.critical(self, "Import Annotations", f"Error: {e}")
+
+    def _export_annotations_zip(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        try:
+            default_path = os.path.join(os.path.expanduser("~"), "annotations_full.zip")
+            path, _ = QFileDialog.getSaveFileName(self, "Export Annotations + Frames (ZIP)", default_path, "ZIP (*.zip)")
+            if not path:
+                return
+            from embereye.app.training_sync import export_annotations_zip
+            result = export_annotations_zip(path)
+            QMessageBox.information(self, "Export ZIP", f"Written: {result.get('written')}\nMedia: {result['counts']['media']}\nFiles: {result['counts']['files']}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export ZIP", f"Error: {e}")
+
+    def _import_annotations_zip(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        try:
+            path, _ = QFileDialog.getOpenFileName(self, "Import Annotations + Frames (ZIP)", "", "ZIP (*.zip)")
+            if not path:
+                return
+            from embereye.app.training_sync import import_annotations_zip
+            result = import_annotations_zip(path)
+            QMessageBox.information(self, "Import ZIP", f"Extracted: {result.get('extracted')}\nMedia: {result.get('media')}\nDestination: {result.get('dest')}")
+            try:
+                self._refresh_training_ready_count()
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.critical(self, "Import ZIP", f"Error: {e}")
+
+    def _revert_classes_from_backup(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        try:
+            from embereye.app.training_sync import list_class_backups, restore_classes_backup
+            backups = list_class_backups()
+            start_dir = os.path.dirname(backups[0]) if backups else os.path.expanduser("~")
+            path, _ = QFileDialog.getOpenFileName(self, "Select Classes Backup", start_dir, "JSON (*.json)")
+            if not path:
+                return
+            confirm = QMessageBox.warning(self, "Revert Classes", "This will replace master_classes.json. Continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if confirm != QMessageBox.Yes:
+                return
+            result = restore_classes_backup(path)
+            QMessageBox.information(self, "Revert Classes", f"Restored from: {result.get('used_backup')}\nSafety backup: {result.get('safety_backup') or 'n/a'}")
+            try:
+                self._refresh_dataset_stats()
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.critical(self, "Revert Classes", f"Error: {e}")
+
+    def _revert_annotations_from_backup(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        try:
+            from embereye.app.training_sync import list_annotation_backups, restore_annotations_backup
+            backups = list_annotation_backups()
+            start_dir = os.path.dirname(backups[0]) if backups else os.path.expanduser("~")
+            path, _ = QFileDialog.getOpenFileName(self, "Select Annotations Backup", start_dir, "ZIP (*.zip)")
+            if not path:
+                return
+            confirm = QMessageBox.warning(self, "Revert Annotations", "This will replace current annotations with the backup. Continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if confirm != QMessageBox.Yes:
+                return
+            result = restore_annotations_backup(path)
+            QMessageBox.information(self, "Revert Annotations", f"Restored to: {result.get('restored')}\nUsed backup: {result.get('used_backup')}\nSafety backup: {result.get('safety_backup') or 'n/a'}")
+            try:
+                self._refresh_training_ready_count()
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.critical(self, "Revert Annotations", f"Error: {e}")
+
+    # Training Manager methods
+    def import_training_media(self):
+        """Import or register training media (video or images).
+
+        - If a video is selected, behaves like previous video import.
+        - If one or more images are selected, prepares an image sequence for annotation.
+        If annotations already exist for the selected media base, we switch to "Register Annotated Frames".
         """
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Training Video", "", "Videos (*.mp4 *.avi *.mov)")
-        if file_path:
-            # Store for annotation tool use
+        # Allow selecting either a single video or multiple images
+        files, selected_filter = QFileDialog.getOpenFileNames(
+            self,
+            "Select Training Media",
+            "",
+            "Videos (*.mp4 *.avi *.mov);;Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)"
+        )
+        if not files:
+            return
+
+        # Detect media type by extension
+        video_exts = {".mp4", ".avi", ".mov"}
+        image_exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+        paths_lower = [p.lower() for p in files]
+        exts = {os.path.splitext(p)[1] for p in paths_lower}
+
+        is_video = len(files) == 1 and len(exts & video_exts) == 1 and (exts & image_exts) == set()
+        is_images = len(exts & image_exts) >= 1 and (exts & video_exts) == set()
+
+        if not is_video and not is_images:
+            QMessageBox.warning(self, "Import", "Please select either a single video or one/more image files.")
+            return
+
+        if is_video:
+            file_path = files[0]
             self.training_selected_video_path = file_path
+            self.training_selected_image_paths = []
             annotations_dir = self._annotations_dir_for_video(file_path)
             has_ann = self._has_annotations(annotations_dir)
             self.training_has_annotations = has_ann
 
+            self.training_media_imported = True
+            if hasattr(self, 'import_training_btn'):
+                self.import_training_btn.setEnabled(False)  # Disable until new import
             if has_ann:
-                # Switch button label to reflect we're registering existing annotations
-                if hasattr(self, 'import_training_btn'):
-                    self.import_training_btn.setText("Register Annotated Frames")
                 QMessageBox.information(
                     self,
-                    "Annotations Found",
-                    f"Annotations already exist for this video.\n\n"
-                    f"Video: {file_path}\n"
-                    f"Annotations folder: {annotations_dir}\n\n"
-                    "You can now add them directly to the training set or open the annotation tool to review."
+                    "Media Imported ✓",
+                    f"Media: {os.path.basename(file_path)}\n\n"
+                    f"Annotations folder:\n{annotations_dir}\n\n"
+                    "Next steps:\n"
+                    "1. Click '🖊️ Annotate Media' to review/edit annotations\n"
+                    "2. Click '→ Move to Training' to finalize"
                 )
-                # Update status label if available
                 if hasattr(self, 'training_status_label'):
-                    self.training_status_label.setText("Ready: annotated frames detected")
+                    self.training_status_label.setText("Ready: media with existing annotations")
+            else:
+                QMessageBox.information(
+                    self,
+                    "Media Imported ✓",
+                    f"Media: {os.path.basename(file_path)}\n\n"
+                    "Next: Click '🖊️ Annotate Media' to label frames/images."
+                )
+                if hasattr(self, 'training_status_label'):
+                    self.training_status_label.setText("Ready: awaiting annotation")
+        else:
+            # Images case: store list and derive annotations directory
+            files_sorted = sorted(files)
+            self.training_selected_image_paths = files_sorted
+            self.training_selected_video_path = None
+            annotations_dir = self._annotations_dir_for_images(files_sorted)
+            has_ann = self._has_annotations(annotations_dir)
+            self.training_has_annotations = has_ann
+
+            if has_ann:
+                if hasattr(self, 'import_training_btn'):
+                    self.import_training_btn.setEnabled(False)
+                QMessageBox.information(
+                    self,
+                    "Images Imported ✓",
+                    f"Images: {len(files_sorted)} file(s)\n\n"
+                    f"Annotations folder:\n{annotations_dir}\n\n"
+                    "Next steps:\n"
+                    "1. Click '🖊️ Annotate Media' to review/edit\n"
+                    "2. Click '→ Move to Training' to finalize"
+                )
+                if hasattr(self, 'training_status_label'):
+                    self.training_status_label.setText("Ready: images with existing annotations")
             else:
                 if hasattr(self, 'import_training_btn'):
-                    self.import_training_btn.setText("Import Video → Training")
+                    self.import_training_btn.setEnabled(False)
                 QMessageBox.information(
                     self,
-                    "Import",
-                    f"Video imported:\n{file_path}\n\nClick 'Annotate Video' to label frames."
+                    "Images Imported ✓",
+                    f"Imported {len(files_sorted)} image(s).\n\n"
+                    "Next: Click '🖊️ Annotate Media' to label them."
                 )
                 if hasattr(self, 'training_status_label'):
-                    self.training_status_label.setText("Ready: import complete, needs annotation")
+                    self.training_status_label.setText("Ready: awaiting annotation")
     
     def open_annotation_tool(self):
         """Open annotation tool for labeling frames."""
@@ -1288,21 +1473,28 @@ class BEMainWindow(QMainWindow):
 
             from annotation_tool import AnnotationToolDialog
             video_path = getattr(self, 'training_selected_video_path', None)
-            print(f"[DEBUG] Opening annotation tool with video_path: {video_path}")
-            if not video_path:
-                QMessageBox.warning(self, "Annotation", "Please import a video first.")
+            image_paths = getattr(self, 'training_selected_image_paths', []) or []
+            # Opening annotation tool with video or images
+            if not video_path and not image_paths:
+                QMessageBox.warning(self, "Annotation", "Please import media (video or images) first.")
                 return
-            dlg = AnnotationToolDialog(self, video_path=video_path, class_labels=hierarchical, leaf_classes=leaf_classes)
+            from embereye.app.annotation_tool import AnnotationToolDialog as AEDlg  # ensure latest
+            dlg = AEDlg(self, video_path=video_path, image_paths=image_paths, class_labels=hierarchical, leaf_classes=leaf_classes)
             dlg.exec_()
         except Exception as e:
             QMessageBox.critical(self, "Annotation", f"Failed to open annotation tool: {e}")
     
     def move_to_training(self):
         """Register annotated frames into training_data/annotations for training."""
-        if not getattr(self, 'training_selected_video_path', None):
-            QMessageBox.warning(self, "Training", "Select or import a video first.")
+        has_video = bool(getattr(self, 'training_selected_video_path', None))
+        has_images = bool(getattr(self, 'training_selected_image_paths', []) )
+        if not (has_video or has_images):
+            QMessageBox.warning(self, "Training", "Select or import media first.")
             return
-        annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
+        if has_video:
+            annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
+        else:
+            annotations_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
         ann_count = self._count_annotation_files(annotations_dir)
         if ann_count == 0:
             QMessageBox.warning(self, "Training", "No annotations found. Annotate or ensure labels exist before moving to training.")
@@ -1331,6 +1523,124 @@ class BEMainWindow(QMainWindow):
                                      QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
             QMessageBox.information(self, "Delete", "Training data deleted.")
+
+    def review_unclassified_items(self):
+        """Scan training_data/dataset for labels mapped to unclassified_* and present a review list."""
+        try:
+            from pathlib import Path
+            import yaml
+            dataset_dir = Path(get_data_path("training_data")) / "dataset"
+            ds_yaml = dataset_dir / "dataset.yaml"
+            if not ds_yaml.exists():
+                QMessageBox.information(self, "Review", "Dataset not prepared yet. Run training prep first.")
+                return
+            cfg = yaml.safe_load(ds_yaml.read_text())
+            names = cfg.get('names') or []
+            unclassified_indices = {i for i, n in enumerate(names) if str(n).startswith('unclassified_')}
+            if not unclassified_indices:
+                QMessageBox.information(self, "Review", "No unclassified items found in current dataset.")
+                return
+
+            # Collect label files containing unclassified indices
+            label_root = dataset_dir / 'labels'
+            image_root = dataset_dir / 'images'
+            candidates = []  # list of (split, label_path, image_path, matched_ids)
+            for split in ['train', 'val', 'test']:
+                split_labels = label_root / split
+                split_images = image_root / split
+                if not split_labels.exists():
+                    continue
+                for lbl in split_labels.glob('*.txt'):
+                    try:
+                        lines = lbl.read_text().splitlines()
+                    except Exception:
+                        continue
+                    matched = set()
+                    for line in lines:
+                        parts = line.strip().split()
+                        if len(parts) == 5:
+                            try:
+                                cid = int(parts[0])
+                                if cid in unclassified_indices:
+                                    matched.add(cid)
+                            except Exception:
+                                pass
+                    if matched:
+                        # Resolve image path with common extensions
+                        stem = lbl.stem
+                        img_path = None
+                        for ext in ['.jpg', '.png', '.jpeg']:
+                            p = split_images / f"{stem}{ext}"
+                            if p.exists():
+                                img_path = p
+                                break
+                        candidates.append((split, str(lbl), str(img_path) if img_path else "", sorted(list(matched))))
+
+            if not candidates:
+                QMessageBox.information(self, "Review", "Dataset prepared, but no files currently flagged as unclassified.")
+                return
+
+            # Build a simple dialog to list and open items
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Unclassified Items")
+            lay = QVBoxLayout(dlg)
+            info = QLabel("Items remapped to unclassified_* — open folder to re-annotate the originals.")
+            lay.addWidget(info)
+            lst = QListWidget()
+            for split, lbl_path, img_path, ids in candidates:
+                names_list = ", ".join(names[i] for i in ids if i < len(names))
+                lst.addItem(f"[{split}] {os.path.basename(img_path) or os.path.basename(lbl_path)} → {names_list}")
+            lay.addWidget(lst)
+            btn_row = QHBoxLayout()
+            open_btn = QPushButton("Open Folder…")
+
+            def _open_selected_folder():
+                idx = lst.currentRow()
+                if idx < 0:
+                    return
+                _, lbl_path, img_path, _ = candidates[idx]
+                target = img_path or lbl_path
+                try:
+                    from PyQt5.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(target)))
+                except Exception as e:
+                    QMessageBox.warning(self, "Open", f"Failed to open folder: {e}")
+
+            open_btn.clicked.connect(_open_selected_folder)
+            annotate_btn = QPushButton("Annotate…")
+
+            def _annotate_selected():
+                idx = lst.currentRow()
+                if idx < 0:
+                    QMessageBox.information(self, "Annotate", "Select an item first.")
+                    return
+                split, lbl_path, img_path, _ = candidates[idx]
+                target_img = img_path or ""
+                if not target_img or not os.path.exists(target_img):
+                    QMessageBox.warning(
+                        self,
+                        "Annotate",
+                        "Image not found for this label. Use 'Open Folder…' to locate the source, then import it via 'Import Media'."
+                    )
+                    return
+                # Prime the annotation tool with this image
+                self.training_selected_video_path = None
+                self.training_selected_image_paths = [target_img]
+                dlg.accept()  # close review dialog before opening annotator
+                self.open_annotation_tool()
+
+            annotate_btn.clicked.connect(_annotate_selected)
+            btn_row.addWidget(open_btn)
+            btn_row.addWidget(annotate_btn)
+            btn_row.addStretch(1)
+            lay.addLayout(btn_row)
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dlg.accept)
+            lay.addWidget(close_btn)
+            dlg.resize(700, 420)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, "Review", f"Failed to build review list: {e}")
 
     def start_model_training(self):
         """Start YOLO model training using training_pipeline."""
@@ -1367,6 +1677,73 @@ class BEMainWindow(QMainWindow):
         QMessageBox.information(self, "Training", "Cancel is not supported in this pipeline yet.")
         self.start_training_btn.setEnabled(True)
         self.cancel_training_btn.setEnabled(False)
+
+    def start_quick_retraining(self):
+        """Start a shorter retraining run, useful after re-annotation of unclassified items."""
+        training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
+        ann_total = self._count_annotation_files(training_ann_base)
+        if ann_total == 0:
+            QMessageBox.warning(self, "Training", "No annotations found in training_data/annotations. Import/register annotated frames first.")
+            return
+
+        # Ask if user wants to focus on unclassified items only
+        reply = QMessageBox.question(
+            self,
+            "Quick Retrain Mode",
+            "Retrain on full dataset or focus on unclassified items only?\n\n"
+            "Yes = Unclassified Only (faster, focused)\n"
+            "No = Full Dataset",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        use_filtered = reply == QMessageBox.Yes
+        
+        # If filtered, create the filtered dataset first
+        filtered_dataset_path = None
+        if use_filtered:
+            try:
+                from pathlib import Path
+                from embereye.core.training_pipeline import DatasetManager
+                dm = DatasetManager(str(get_data_path("training_data")))
+                success, result = dm.create_filtered_dataset_unclassified_only()
+                if success:
+                    filtered_dataset_path = result
+                    QMessageBox.information(self, "Filtered Dataset", f"Using unclassified-only subset for faster retrain")
+                else:
+                    reply = QMessageBox.question(self, "Filtered Dataset", f"Could not create filtered dataset: {result}\n\nContinue with full dataset?", QMessageBox.Yes | QMessageBox.No)
+                    if reply != QMessageBox.Yes:
+                        return
+                    use_filtered = False
+            except Exception as e:
+                QMessageBox.warning(self, "Filtered Dataset", f"Error creating filtered dataset: {e}\n\nContinuing with full dataset")
+                use_filtered = False
+
+        from training_pipeline import TrainingConfig
+        project_name = f"embereye_quickfix_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        epochs = max(10, min(25, int(self.epochs_spin.value())))
+        config = TrainingConfig(
+            project_name=project_name,
+            epochs=epochs,
+            batch_size=self.batch_size_spin.value(),
+            imgsz=640,
+            device="auto",
+        )
+        
+        # Store reference to dataset override if using filtered
+        if use_filtered and filtered_dataset_path:
+            config._override_dataset_path = filtered_dataset_path
+
+        self.start_training_btn.setEnabled(False)
+        self.cancel_training_btn.setEnabled(False)
+        self.training_status_label.setText("Quick retrain…")
+        self.training_progress.setValue(0)
+        self.training_just_completed = False
+
+        self.training_worker = TrainingWorker(config)
+        self.training_worker.finished_signal.connect(self._on_training_finished)
+        self.training_worker.progress_signal.connect(self._on_training_progress)
+        self.training_worker.epoch_progress_signal.connect(self._on_epoch_progress)
+        self.training_worker.start()
     
     def rollback_model_version(self):
         """Rollback/Activate selected model version."""
@@ -1448,6 +1825,27 @@ class BEMainWindow(QMainWindow):
         base = os.path.splitext(os.path.basename(video_path or "video"))[0]
         return get_data_path(os.path.join("annotations", base))
 
+    def _annotations_dir_for_images(self, image_paths) -> str:
+        """Return annotations directory for an image set.
+
+        If multiple images from same folder, use that folder name as base.
+        If a single image, use its stem as base.
+        """
+        if not image_paths:
+            return get_data_path(os.path.join("annotations", "images"))
+        try:
+            # Common directory
+            common_dir = os.path.commonpath(image_paths)
+            if os.path.isfile(common_dir):
+                common_dir = os.path.dirname(common_dir)
+        except Exception:
+            common_dir = os.path.dirname(image_paths[0])
+        if len(image_paths) == 1:
+            base = os.path.splitext(os.path.basename(image_paths[0]))[0]
+        else:
+            base = os.path.basename(common_dir) or "images"
+        return get_data_path(os.path.join("annotations", base))
+
     def _has_annotations(self, annotations_dir: str) -> bool:
         try:
             if not annotations_dir or not os.path.exists(annotations_dir):
@@ -1521,26 +1919,27 @@ class BEMainWindow(QMainWindow):
         self.sandbox_model_info.setWordWrap(True)
         model_layout.addWidget(self.sandbox_model_info)
 
-        verify_btn = QPushButton("Verify model")
-        verify_btn.setMaximumWidth(120)
+        # Verify / Export / Import on one line for alignment
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(6)
+
+        verify_btn = QPushButton("Verify")
+        verify_btn.setMaximumWidth(110)
         verify_btn.clicked.connect(self._sandbox_verify_model)
-        model_layout.addWidget(verify_btn)
-        
-        # Export/Import buttons
-        export_import_layout = QHBoxLayout()
-        export_import_layout.setSpacing(5)
+        actions_row.addWidget(verify_btn)
         
         export_btn = QPushButton("📦 Export")
-        export_btn.setMaximumWidth(120)
+        export_btn.setMaximumWidth(110)
         export_btn.clicked.connect(self._sandbox_export_model)
-        export_import_layout.addWidget(export_btn)
+        actions_row.addWidget(export_btn)
         
         import_btn = QPushButton("📥 Import")
-        import_btn.setMaximumWidth(120)
+        import_btn.setMaximumWidth(110)
         import_btn.clicked.connect(self._sandbox_import_model)
-        export_import_layout.addWidget(import_btn)
+        actions_row.addWidget(import_btn)
+        actions_row.addStretch(1)
         
-        model_layout.addLayout(export_import_layout)
+        model_layout.addLayout(actions_row)
         
         model_group.setLayout(model_layout)
         top_section.addWidget(model_group)
@@ -1630,26 +2029,32 @@ class BEMainWindow(QMainWindow):
         self.sandbox_progress.setMaximumHeight(16)
         results_layout.addWidget(self.sandbox_progress)
         
-        # Horizontal layout for image + stats
+        # Result image with overlay stats
         results_inner = QHBoxLayout()
         results_inner.setSpacing(6)
         
         self.sandbox_results_label = QLabel("Results appear here")
         self.sandbox_results_label.setAlignment(Qt.AlignCenter)
-        self.sandbox_results_label.setStyleSheet("border: 1px solid #ccc; background: #fff;")
+        self.sandbox_results_label.setStyleSheet("border: 1px solid #333; background: #111;")
         self.sandbox_results_label.setScaledContents(False)
-        self.sandbox_results_label.setFixedHeight(350)
-        self.sandbox_results_label.setMaximumWidth(300)
+        self.sandbox_results_label.setFixedHeight(380)
+        self.sandbox_results_label.setMinimumWidth(420)
+        self.sandbox_results_label.setMaximumWidth(500)
         results_inner.addWidget(self.sandbox_results_label)
-        
-        # Real-time stats panel
-        self.sandbox_stats_panel = QLabel("Waiting for inference...")
-        self.sandbox_stats_panel.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.sandbox_stats_panel.setStyleSheet("border: 1px solid #ddd; background: #f5f5f5; padding: 8px; font-family: monospace; font-size: 11px;")
-        self.sandbox_stats_panel.setFixedHeight(350)
-        self.sandbox_stats_panel.setMaximumWidth(350)
-        self.sandbox_stats_panel.setWordWrap(True)
-        results_inner.addWidget(self.sandbox_stats_panel)
+
+        # Overlay stats on top-left of result frame (transparent, compact)
+        self.sandbox_stats_overlay = QLabel("Waiting for inference...", self.sandbox_results_label)
+        self.sandbox_stats_overlay.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.sandbox_stats_overlay.setWordWrap(True)
+        self.sandbox_stats_overlay.setFixedWidth(210)
+        self.sandbox_stats_overlay.setMinimumHeight(150)
+        self.sandbox_stats_overlay.move(10, 10)
+        self.sandbox_stats_overlay.setStyleSheet(
+            "background: rgba(0, 0, 0, 0.65); color: #f1f1f1; padding: 8px;"
+            "font-family: monospace; font-size: 10px; border-radius: 5px;"
+        )
+        self.sandbox_stats_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.sandbox_stats_overlay.raise_()
         
         results_layout.addLayout(results_inner)
         results_group.setLayout(results_layout)
@@ -1657,12 +2062,12 @@ class BEMainWindow(QMainWindow):
 
         previews_column.addLayout(previews_row)
 
-        # Stats and detections below previews
+        # Stats and detections below previews (more compact)
         self.sandbox_stats_label = QLabel("Detections: - | Time: -")
-        self.sandbox_stats_label.setStyleSheet("font-size: 10px; font-family: monospace;")
+        self.sandbox_stats_label.setStyleSheet("font-size: 10px; font-family: monospace; padding: 2px 0; color: #ccc;")
         previews_column.addWidget(self.sandbox_stats_label)
         self.sandbox_detections_list = QListWidget()
-        self.sandbox_detections_list.setMaximumHeight(90)
+        self.sandbox_detections_list.setMaximumHeight(70)
         previews_column.addWidget(self.sandbox_detections_list)
 
         body_layout.addLayout(previews_column)
@@ -2268,7 +2673,7 @@ class BEMainWindow(QMainWindow):
             f"FPS: {fps:.1f}\n\n"
             f"Est. Remaining: {remaining:.1f}s"
         )
-        self.sandbox_stats_panel.setText(stats_text)
+        self.sandbox_stats_overlay.setText(stats_text)
 
         # Show the current frame being processed in the input preview
         if frame_path and os.path.exists(frame_path):
@@ -2295,8 +2700,8 @@ class BEMainWindow(QMainWindow):
             q_img = QImage(annotated_img.data, width, height, bytes_per_line, QImage.Format_RGB888)
             pixmap = QPixmap.fromImage(q_img.rgbSwapped())
             
-            # Scale to fit label constraints (max 200px height set earlier)
-            scaled = pixmap.scaled(420, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # Scale to fit enlarged result frame
+            scaled = pixmap.scaled(520, 380, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.sandbox_results_label.setPixmap(scaled)
             self.sandbox_results_label.setText("")
             
@@ -2571,8 +2976,70 @@ class BEMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Versioning", f"Training done, but versioning failed: {e}")
 
+        # Post-training: summarize unclassified items in prepared dataset and offer review
+        try:
+            summary = self._summarize_unclassified_in_dataset()
+            if summary and summary.get('total', 0) > 0:
+                txt = (
+                    f"Unclassified items detected in dataset: {summary['total']}\n"
+                    + "\n".join([f"- {k}: {v}" for k, v in summary.get('by_class', {}).items()])
+                )
+                reply = QMessageBox.question(
+                    self,
+                    "Unclassified Items",
+                    txt + "\n\nOpen review list now?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    try:
+                        self.review_unclassified_items()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _update_anomaly_count(self):
         pass
+
+    def _summarize_unclassified_in_dataset(self):
+        """Return a dict summary of unclassified_* items in current prepared dataset."""
+        try:
+            from pathlib import Path
+            import yaml
+            dataset_dir = Path(get_data_path("training_data")) / "dataset"
+            ds_yaml = dataset_dir / "dataset.yaml"
+            if not ds_yaml.exists():
+                return None
+            cfg = yaml.safe_load(ds_yaml.read_text())
+            names = cfg.get('names') or []
+            unclassified_indices = {i for i, n in enumerate(names) if str(n).startswith('unclassified_')}
+            if not unclassified_indices:
+                return { 'total': 0, 'by_class': {} }
+            label_root = dataset_dir / 'labels'
+            counts = {names[i]: 0 for i in unclassified_indices}
+            total = 0
+            for split in ['train', 'val', 'test']:
+                split_labels = label_root / split
+                if not split_labels.exists():
+                    continue
+                for lbl in split_labels.glob('*.txt'):
+                    try:
+                        lines = lbl.read_text().splitlines()
+                    except Exception:
+                        continue
+                    for line in lines:
+                        parts = line.strip().split()
+                        if len(parts) == 5:
+                            try:
+                                cid = int(parts[0])
+                                if cid in unclassified_indices:
+                                    counts[names[cid]] += 1
+                                    total += 1
+                            except Exception:
+                                pass
+            return { 'total': total, 'by_class': counts }
+        except Exception:
+            return None
 
     def handle_anomaly_frame_from_widget(self, loc_id, qimage, score):
         """Add a captured anomaly to the Anomalies tab."""
@@ -4151,6 +4618,7 @@ class BEMainWindow(QMainWindow):
         try:
             from PyQt5.QtCore import QEvent
             from PyQt5.QtGui import QCursor
+            from PyQt5.QtWidgets import QApplication
             
             if event.type() == QEvent.MouseMove:
                 # Reset cursor hide timer on any mouse movement
@@ -4158,9 +4626,33 @@ class BEMainWindow(QMainWindow):
                     self.cursor_hide_timer.stop()
                     self._show_cursor()
                     self.cursor_hide_timer.start(self.cursor_hide_seconds * 1000)
+
+                # If hovering directly over the status bar or its children, skip X-ray toggling
+                try:
+                    widget_under_cursor = QApplication.widgetAt(QCursor.pos())
+                except Exception:
+                    widget_under_cursor = None
+
+                def _is_in_status_bar(w):
+                    try:
+                        sb = self.statusBar() if hasattr(self, 'statusBar') else None
+                        if not sb or w is None:
+                            return False
+                        # Walk up the parent chain to see if widget belongs to status bar
+                        curr = w
+                        while curr is not None:
+                            if curr == sb:
+                                return True
+                            curr = getattr(curr, 'parentWidget', lambda: None)()
+                        return False
+                    except Exception:
+                        return False
+
+                hovering_status_bar = _is_in_status_bar(widget_under_cursor)
                 
                 # X-ray effect: Show header (overlay_header) when mouse near edges
-                if hasattr(self, 'overlay_header') and hasattr(self, 'header_visible'):
+                # Skip when hovering status bar to avoid flicker
+                if not hovering_status_bar and hasattr(self, 'overlay_header') and hasattr(self, 'header_visible'):
                     cursor_pos = QCursor.pos()
                     window_pos = self.mapFromGlobal(cursor_pos)
 
@@ -4181,27 +4673,46 @@ class BEMainWindow(QMainWindow):
                         self.header_visible = False
                 
                 # X-ray effect: Show status bar when mouse near bottom (also show header)
-                if hasattr(self, 'statusBar') and hasattr(self, 'statusbar_visible'):
+                # Skip toggling when cursor is over the status bar itself
+                if not hovering_status_bar and hasattr(self, 'statusBar') and hasattr(self, 'statusbar_visible'):
+                    from PyQt5.QtCore import QTimer
                     cursor_pos = QCursor.pos()
                     window_pos = self.mapFromGlobal(cursor_pos)
                     window_height = self.height()
-                    
-                    # Show status bar if mouse within 50px of bottom
-                    if window_pos.y() > window_height - 50 and not self.statusbar_visible:
-                        self.statusBar().show()
-                        self.statusbar_visible = True
-                        # Also ensure header is visible when bottom bar shows
-                        if hasattr(self, 'overlay_header') and hasattr(self, 'header_visible') and not self.header_visible:
+
+                    enter_thresh = 30  # px from bottom to enter zone
+                    exit_thresh = 80   # px from bottom to consider leaving (hysteresis)
+                    in_bottom_zone = window_pos.y() > window_height - enter_thresh
+
+                    if in_bottom_zone:
+                        # Cancel pending hide and ensure bar is visible when entering zone
+                        if hasattr(self, 'status_hide_timer') and self.status_hide_timer:
                             try:
-                                self.overlay_header.show()
-                                self.overlay_header.raise_()
+                                self.status_hide_timer.stop()
                             except Exception:
                                 pass
-                            self.header_visible = True
-                    # Hide status bar if mouse moves away
-                    elif window_pos.y() < window_height - 100 and self.statusbar_visible:
-                        self.statusBar().hide()
-                        self.statusbar_visible = False
+                            self.status_hide_timer = None
+                        if not self.statusbar_visible:
+                            self.statusBar().show()
+                            self.statusbar_visible = True
+                            # Also ensure header is visible when bottom bar shows
+                            if hasattr(self, 'overlay_header') and hasattr(self, 'header_visible') and not self.header_visible:
+                                try:
+                                    self.overlay_header.show()
+                                    self.overlay_header.raise_()
+                                except Exception:
+                                    pass
+                                self.header_visible = True
+                        self._was_in_bottom_zone = True
+                    else:
+                        # Debounce hide with hysteresis to reduce flicker near boundary
+                        if window_pos.y() < window_height - exit_thresh and self.statusbar_visible:
+                            if not hasattr(self, 'status_hide_timer') or self.status_hide_timer is None:
+                                self.status_hide_timer = QTimer(self)
+                                self.status_hide_timer.setSingleShot(True)
+                                self.status_hide_timer.timeout.connect(self._hide_status_bar)
+                                self.status_hide_timer.start(550)  # slightly longer debounce
+                        self._was_in_bottom_zone = False
             
             elif event.type() == QEvent.KeyPress:
                 # Any key press resets cursor timer
@@ -4227,6 +4738,19 @@ class BEMainWindow(QMainWindow):
         from PyQt5.QtCore import Qt
         self.setCursor(Qt.BlankCursor)
         self.cursor_visible = False
+
+    def _hide_status_bar(self):
+        """Hide the status bar via debounced timer."""
+        try:
+            if hasattr(self, 'statusBar') and self.statusbar_visible:
+                self.statusBar().hide()
+                self.statusbar_visible = False
+        except Exception:
+            pass
+        finally:
+            # Clear timer reference
+            if hasattr(self, 'status_hide_timer'):
+                self.status_hide_timer = None
     
     def cleanup_all_workers(self):
         """
@@ -4352,10 +4876,14 @@ class BEMainWindow(QMainWindow):
         try:
             # Check theme for styling
             from PyQt5.QtWidgets import QApplication
+            from PyQt5.QtWidgets import QSizePolicy
             app = QApplication.instance()
             is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
             
             # Grid is already cleared by cleanup_old_widgets when called via schedule
+            # Reset any maximized state when rebuilding grid
+            self.maximized_widget = None
+            self.original_layout = None
 
             filtered_streams = [
                 s for s in self.config["streams"]
@@ -4370,6 +4898,12 @@ class BEMainWindow(QMainWindow):
                 return
 
             rows, cols = map(int, self.grid_size.currentText().replace("×", "x").split("x"))
+            
+            # Clear previous row/column stretches to prevent layout issues when switching grid sizes
+            for r in range(10):  # Clear up to 10 rows (more than max 5x5)
+                self.rtsp_grid.setRowStretch(r, 0)
+            for c in range(10):  # Clear up to 10 columns
+                self.rtsp_grid.setColumnStretch(c, 0)
             feeds_per_page = rows * cols
             total_streams = len(filtered_streams)
             total_pages = max(1, (total_streams + feeds_per_page - 1) // feeds_per_page)
@@ -4385,6 +4919,18 @@ class BEMainWindow(QMainWindow):
                 
                 try:
                     video_widget = VideoWidget(stream["url"], stream['name'], stream['loc_id'])
+                    try:
+                        video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                    except Exception:
+                        pass
+                    # Default to normal camera view with fusion overlay (numeric grid OFF)
+                    try:
+                        if hasattr(video_widget, "_activate_fusion_overlay"):
+                            video_widget._activate_fusion_overlay()
+                        elif hasattr(video_widget, "toggle_thermal_grid_view"):
+                            video_widget.toggle_thermal_grid_view(False)
+                    except Exception:
+                        pass
                     self.video_widgets[stream['loc_id']] = video_widget
                     video_widget.setToolTip(f"{stream['name']}\n{stream['url']}")
                     
@@ -4431,6 +4977,15 @@ class BEMainWindow(QMainWindow):
                     error_label.setAlignment(Qt.AlignCenter)
                     error_label.setStyleSheet("color: red; background-color: black;")
                     self.rtsp_grid.addWidget(error_label, row, col)
+
+            # Ensure equal stretch for rows and columns so cells fill available space
+            try:
+                for r in range(rows):
+                    self.rtsp_grid.setRowStretch(r, 1)
+                for c in range(cols):
+                    self.rtsp_grid.setColumnStretch(c, 1)
+            except Exception:
+                pass
 
             self.page_label.setText(f"Page {self.current_rtsp_page} of {total_pages}")
             self.prev_rtsp.setEnabled(self.current_rtsp_page > 1)
@@ -4488,28 +5043,63 @@ class BEMainWindow(QMainWindow):
             if self.maximized_widget == sender:
                 return
 
-            # Store original state
+            # Get current grid dimensions
+            rows, cols = map(int, self.grid_size.currentText().replace("×", "x").split("x"))
+
+            # Store original state and grid position BEFORE modifying anything
             self.original_layout = {
                 'visible': [],
-                'hidden': []
+                'hidden': [],
+                'grid_items': []
             }
 
-            # Update button visibility
-            sender.maximize_btn.setVisible(False)  # Hide maximize
-            sender.minimize_btn.setVisible(True)   # Show minimize
-
-            # Hide other widgets and store state
-            for i in range(self.rtsp_grid.count()):
+            # FIRST: Capture all widget positions BEFORE any modifications
+            grid_count = self.rtsp_grid.count()
+            
+            for i in range(grid_count):
                 item = self.rtsp_grid.itemAt(i)
                 if item and (widget := item.widget()):
+                    try:
+                        # Store original grid position NOW, before any changes
+                        pos = self.rtsp_grid.getItemPosition(i)
+                        self.original_layout['grid_items'].append({
+                            'widget': widget,
+                            'row': pos[0],
+                            'col': pos[1],
+                            'rowspan': pos[2],
+                            'colspan': pos[3]
+                        })
+                    except Exception as e:
+                        print(f"Error capturing widget position: {e}")
+                        continue
+
+            # Update button visibility
+            try:
+                if hasattr(sender, 'maximize_btn'):
+                    sender.maximize_btn.setVisible(False)  # Hide maximize
+                if hasattr(sender, 'minimize_btn'):
+                    sender.minimize_btn.setVisible(True)   # Show minimize
+            except Exception as e:
+                print(f"Button visibility error in maximize: {e}")
+
+            # SECOND: Now modify the grid - hide non-sender widgets and maximize sender
+            for item_data in self.original_layout['grid_items']:
+                widget = item_data['widget']
+                try:
                     if widget == sender:
+                        # Remove from grid and re-add spanning entire grid
+                        self.rtsp_grid.removeWidget(widget)
+                        self.rtsp_grid.addWidget(widget, 0, 0, rows, cols)
                         widget.raise_()
                         self.maximized_widget = widget
+                        self.original_layout['visible'].append(widget)
                     else:
                         widget.hide()
                         self.original_layout['hidden'].append(widget)
-                    self.original_layout['visible'].append(widget)
-
+                except Exception as e:
+                    print(f"Error modifying widget in maximize: {e}")
+                    continue
+            
             self.rtsp_grid.setContentsMargins(0, 0, 0, 0)
             self.rtsp_grid.setSpacing(0)
             sender.setFocus()
@@ -4517,29 +5107,67 @@ class BEMainWindow(QMainWindow):
 
         except Exception as e:
             print(f"Maximize error: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def handle_minimize(self):
         """Restore to grid view - show all hidden widgets"""
         try:
-            if not self.maximized_widget:
+            if not self.maximized_widget or not self.original_layout:
                 return
-
+            
             # Restore button visibility for the previously maximized widget
-            self.maximized_widget.maximize_btn.setVisible(True)  # Show maximize
-            self.maximized_widget.minimize_btn.setVisible(False)  # Hide minimize
+            try:
+                if hasattr(self.maximized_widget, 'maximize_btn'):
+                    self.maximized_widget.maximize_btn.setVisible(True)  # Show maximize
+                if hasattr(self.maximized_widget, 'minimize_btn'):
+                    self.maximized_widget.minimize_btn.setVisible(False)  # Hide minimize
+            except Exception as e:
+                print(f"Button visibility error: {e}")
 
-            # Restore visibility of all hidden widgets
-            for widget in self.original_layout.get('hidden', []):
-                if widget and widget.parent():
+            # Remove the maximized widget from grid
+            try:
+                self.rtsp_grid.removeWidget(self.maximized_widget)
+            except Exception as e:
+                print(f"Remove widget error: {e}")
+
+            # Restore all widgets to their original grid positions
+            for item in self.original_layout.get('grid_items', []):
+                widget = item.get('widget')
+                if not widget:
+                    continue
+                    
+                try:
+                    # Check if widget still has a parent and is valid
+                    if not widget.parent():
+                        continue
+                        
+                    # Re-add to original position
+                    self.rtsp_grid.addWidget(
+                        widget,
+                        item['row'],
+                        item['col'],
+                        item['rowspan'],
+                        item['colspan']
+                    )
                     widget.show()
+                except Exception as e:
+                    print(f"Restore widget error: {e}")
+                    continue
 
             self.maximized_widget = None
+            self.original_layout = None
             self.rtsp_grid.setContentsMargins(0, 0, 0, 0)
             self.rtsp_grid.setSpacing(0)
             self.rtsp_grid.update()
 
         except Exception as e:
             print(f"Minimize error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Force reset state even on error
+            self.maximized_widget = None
+            self.original_layout = None
 
     def restore_layout(self):
         """Restore layout without deleting widgets"""
@@ -4664,46 +5292,56 @@ class BEMainWindow(QMainWindow):
         self.update_graph()
 
     def logout(self):
-        """Perform orderly shutdown before closing and returning to login."""
-        print("Logout initiated - shutting down components...")
+        """Perform non-blocking shutdown before closing and returning to login."""
+        print("Logout initiated - starting async shutdown...")
         
-        # Stop video widgets first
-        self.shutdown_video_widgets()
-        
-        # Stop WebSocket client
-        if hasattr(self, 'ws_client'):
+        def _shutdown_in_thread():
+            """Perform shutdown in background thread to avoid blocking UI."""
             try:
-                print("Stopping WebSocket client...")
-                self.ws_client.stop()
+                # Stop video widgets (non-blocking with timeout)
+                self.shutdown_video_widgets()
+                
+                # Stop WebSocket client (with timeout)
+                if hasattr(self, 'ws_client'):
+                    try:
+                        print("Stopping WebSocket client...")
+                        self.ws_client.stop()
+                    except Exception as e:
+                        print(f"WebSocket stop error: {e}")
+                
+                # Stop TCP sensor server (with timeout)
+                if hasattr(self, 'tcp_server') and self.tcp_server:
+                    try:
+                        print("Stopping TCP sensor server...")
+                        self.tcp_server.stop()
+                    except Exception as e:
+                        print(f"TCP server stop error: {e}")
+                
+                # Stop baseline manager sensor server if it exists
+                if hasattr(self.parent(), 'server') and getattr(self.parent(), 'server'):
+                    try:
+                        print("Stopping parent sensor server...")
+                        self.parent().server.stop()
+                    except Exception as e:
+                        print(f"Parent sensor server stop error: {e}")
+                
+                print("Cleanup complete, returning to login...")
             except Exception as e:
-                print(f"WebSocket stop during logout error: {e}")
+                print(f"Shutdown error: {e}")
+            finally:
+                # Schedule close on main thread
+                self.close()
+                from ee_loginwindow import EELoginWindow
+                login_window = EELoginWindow()
+                login_window.show()
         
-        # Stop TCP sensor server
-        if hasattr(self, 'tcp_server') and self.tcp_server:
-            try:
-                print("Stopping TCP sensor server...")
-                self.tcp_server.stop()
-            except Exception as e:
-                print(f"TCP server stop during logout error: {e}")
-        
-        # Stop baseline manager sensor server if it exists
-        if hasattr(self.parent(), 'server') and getattr(self.parent(), 'server'):
-            try:
-                print("Stopping parent sensor server...")
-                self.parent().server.stop()
-            except Exception as e:
-                print(f"Parent sensor server stop during logout error: {e}")
-        
-        print("Cleanup complete, returning to login...")
-        self.close()
-        
-        # Show login window
-        from ee_loginwindow import EELoginWindow
-        login_window = EELoginWindow()
-        login_window.show()
+        # Run shutdown in daemon thread (won't block UI)
+        import threading
+        shutdown_thread = threading.Thread(target=_shutdown_in_thread, daemon=True)
+        shutdown_thread.start()
 
     def shutdown_video_widgets(self):
-        """Iterate all video widgets and ensure their worker threads stop."""
+        """Iterate all video widgets and ensure their worker threads stop (with timeout)."""
         for widget in self.get_video_widgets():
             if hasattr(widget, 'stop'):
                 try:
@@ -4728,7 +5366,12 @@ class TrainingWorker(QThread):
             self.epoch_progress_signal.emit(0, self.config.epochs)
             
             from training_pipeline import YOLOTrainingPipeline
-            pipeline = YOLOTrainingPipeline(base_dir="training_data", config=self.config)
+            
+            # Check if using filtered dataset (e.g., unclassified-only retrain)
+            filtered_dataset_path = getattr(self.config, '_override_dataset_path', None)
+            base_dir = filtered_dataset_path if filtered_dataset_path else "training_data"
+            
+            pipeline = YOLOTrainingPipeline(base_dir=base_dir, config=self.config)
             
             # Set up epoch progress callback
             def epoch_callback(current, total):

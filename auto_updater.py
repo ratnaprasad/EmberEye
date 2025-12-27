@@ -16,7 +16,7 @@ import urllib.error
 from packaging import version as pkg_version
 
 # Current version (update on each release)
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.0.0-beta"
 
 # GitHub release API endpoint
 GITHUB_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"

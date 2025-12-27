@@ -40,6 +40,7 @@ class VideoWidget(QWidget):
         # Cache for thermal grid overlay to prevent flickering
         self._cached_thermal_overlay = None
         self._last_overlay_matrix_hash = None
+        self._last_overlay_size = None  # Track last overlay size for invalidation
         self._last_thermal_update_time = 0
         self._thermal_update_interval = 0.2  # Minimum 200ms between thermal updates
         
@@ -80,17 +81,15 @@ class VideoWidget(QWidget):
         self.thermal_data_received.connect(self._handle_thermal_data)
         self.init_worker()
         self.top_left_controls.raise_()
+        self.right_overlay_controls.raise_()
         self.bottom_right_status.raise_()
-        # Reflect loaded state in button without triggering handler twice
-        if hasattr(self, 'thermal_view_btn'):
-            self.thermal_view_btn.blockSignals(True)
-            self.thermal_view_btn.setChecked(self.thermal_grid_view_enabled)
-            self.thermal_view_btn.blockSignals(False)
-            if self.thermal_grid_view_enabled and self._last_thermal_matrix is not None:
-                try:
-                    self._render_temperature_grid(self._last_thermal_matrix)
-                except Exception:
-                    pass
+        # Reflect loaded state in overlay buttons without double-triggering
+        self._sync_overlay_buttons_from_state(initial=True)
+        if self.thermal_grid_view_enabled and self._last_thermal_matrix is not None:
+            try:
+                self._render_temperature_grid(self._last_thermal_matrix)
+            except Exception:
+                pass
 
     def set_thermal_overlay(self, matrix):
         """Thread-safe method to set thermal overlay from any thread."""
@@ -169,19 +168,53 @@ class VideoWidget(QWidget):
             
             from PyQt5.QtGui import QPainter, QPen, QFont, QBrush
             from PyQt5.QtCore import Qt, QRect
+            from PyQt5.QtGui import QPixmap
             import time
             
             # Create a copy to draw on
-            result = base_pixmap.copy()
+            # CRITICAL: Scale result pixmap to CURRENT label size for responsive scaling
+            label_width = max(1, self.video_label.width())
+            label_height = max(1, self.video_label.height())
+            
+            # If label size is invalid, use base_pixmap size
+            if label_width < 50 or label_height < 50:
+                label_width = base_pixmap.width()
+                label_height = base_pixmap.height()
+            
+            # Scale base_pixmap to label size for display
+            result = base_pixmap.scaled(label_width, label_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            
+            # If scaled result is smaller than label, pad it
+            if result.width() < label_width or result.height() < label_height:
+                padded = QPixmap(label_width, label_height)
+                padded.fill(Qt.black)
+                painter_tmp = QPainter(padded)
+                x_offset = (label_width - result.width()) // 2
+                y_offset = (label_height - result.height()) // 2
+                painter_tmp.drawPixmap(x_offset, y_offset, result)
+                painter_tmp.end()
+                result = padded
+
             painter = QPainter(result)
             
             # Draw thermal grid if enabled and hot cells exist
             if self.thermal_grid_enabled and self.hot_cells_history:
-                # Calculate cell dimensions
-                widget_width = base_pixmap.width()
-                widget_height = base_pixmap.height()
+                # Calculate cell dimensions based on CURRENT LABEL SIZE, not video frame size
+                widget_width = max(1, self.video_label.width())
+                widget_height = max(1, self.video_label.height())
+                
+                # Fallback if label size is invalid
+                if widget_width < 50 or widget_height < 50:
+                    widget_width = base_pixmap.width()
+                    widget_height = base_pixmap.height()
+                
                 cell_width = widget_width / self.thermal_grid_cols
                 cell_height = widget_height / self.thermal_grid_rows
+                
+                # Calculate scale factor based on widget size (baseline 640×480)
+                scale_factor = min(widget_width / 640, widget_height / 480)
+                scale_factor = max(0.5, min(scale_factor, 1.5))  # Clamp to reasonable range
+                border_width = max(1, int(2 * scale_factor))
                 
                 current_time = time.time()
                 
@@ -204,10 +237,10 @@ class VideoWidget(QWidget):
                         # Fill cell with semi-transparent color
                         painter.fillRect(x, y, w, h, color)
                         
-                        # Draw border
+                        # Draw border with adaptive width
                         border_color = QColor(self.thermal_grid_border)
                         border_color.setAlpha(int(border_color.alpha() * opacity))
-                        pen = QPen(border_color, 2)
+                        pen = QPen(border_color, border_width)
                         painter.setPen(pen)
                         painter.drawRect(x, y, w, h)
             
@@ -255,20 +288,8 @@ class VideoWidget(QWidget):
             from PyQt5.QtCore import Qt, QRect
             import hashlib
 
-            # Check if we need to regenerate the overlay
-            matrix_hash = hashlib.md5(str(self._last_thermal_matrix).encode()).hexdigest()
-            size_key = f"{base_pixmap.width()}x{base_pixmap.height()}"
-            cache_key = f"{matrix_hash}_{size_key}"
-            
-            # If cached overlay exists and matches, reuse it
-            if self._cached_thermal_overlay is not None and self._last_overlay_matrix_hash == cache_key:
-                # Just composite the cached overlay on top of the new frame
-                result = base_pixmap.copy()
-                painter = QPainter(result)
-                painter.drawPixmap(0, 0, self._cached_thermal_overlay)
-                painter.end()
-                self.video_label.setPixmap(result)
-                return
+            # Always regenerate overlay to ensure proper scaling - disable caching for responsiveness
+            # This ensures overlays scale correctly when switching between grid and maximized views
 
             arr = np.array(self._last_thermal_matrix)
             # Try to match configured dimensions
@@ -278,45 +299,96 @@ class VideoWidget(QWidget):
                 else:
                     return
 
-            w = base_pixmap.width()
-            h = base_pixmap.height()
+            # Use CURRENT label size - this ensures responsive scaling on resize
+                w = max(1, self.video_label.width())
+                h = max(1, self.video_label.height())
             
-            # Create transparent overlay pixmap
-            overlay = QPixmap(w, h)
-            overlay.fill(Qt.transparent)
-            painter = QPainter(overlay)
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setRenderHint(QPainter.TextAntialiasing, True)
+                # If dimensions are invalid, use fallback
+                if w < 50 or h < 50:
+                    w = base_pixmap.width()
+                    h = base_pixmap.height()
+            
+                # Create transparent overlay pixmap
+                overlay = QPixmap(w, h)
+                overlay.fill(Qt.transparent)
+                painter = QPainter(overlay)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.TextAntialiasing, True)
+            
+            # If dimensions are invalid, use fallback
+            if w < 50 or h < 50:
+                w = base_pixmap.width()
+                h = base_pixmap.height()
+
+            # Size/data-aware cache to avoid redraw flicker
+            cache_key_size = (w, h)
+            cache_key_sig = hashlib.sha1(arr.tobytes()).hexdigest()
+            use_cache = (
+                self._cached_thermal_overlay is not None
+                and self._last_overlay_size == cache_key_size
+                and self._cached_grid_matrix_sig == cache_key_sig
+            )
+
+            if use_cache:
+                overlay = self._cached_thermal_overlay
+                painter = None
+            else:
+                overlay = QPixmap(w, h)
+                overlay.fill(Qt.transparent)
+                painter = QPainter(overlay)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+            # Compute stable cell rects to avoid rounding drift
+            def _iter_cell_rects(cols, rows, width, height):
+                # Accumulate rounded edges so the last row/col fills perfectly
+                x_edges = [round(i * (width / cols)) for i in range(cols + 1)]
+                y_edges = [round(j * (height / rows)) for j in range(rows + 1)]
+                for r in range(rows):
+                    for c in range(cols):
+                        x = x_edges[c]
+                        y = y_edges[r]
+                        w_ = x_edges[c + 1] - x
+                        h_ = y_edges[r + 1] - y
+                        yield r, c, x, y, w_, h_
 
             cell_w = w / self.thermal_grid_cols
             cell_h = h / self.thermal_grid_rows
             cell_min = min(cell_w, cell_h)
 
-            # Grid pen
-            grid_color = QColor(200, 200, 200, 180)  # Semi-transparent white
-            pen_width = 2 if cell_min > 30 else 1
-            grid_pen = QPen(grid_color)
-            grid_pen.setWidth(pen_width)
-            painter.setPen(grid_pen)
+            if painter is not None:
+                # Adaptive grid pen based on cell size
+                grid_color = QColor(200, 200, 200, 180)  # Semi-transparent white
+                if cell_min < 15:
+                    pen_width = 1
+                elif cell_min < 30:
+                    pen_width = 2
+                else:
+                    pen_width = 3
+                grid_pen = QPen(grid_color)
+                grid_pen.setWidth(pen_width)
+                painter.setPen(grid_pen)
 
-            vmax = float(arr.max()) if arr.size else 1.0
+                vmax = float(arr.max()) if arr.size else 1.0
 
-            # Font size
-            base_font_size = int(cell_min * 0.4)
-            base_font_size = max(8, min(base_font_size, 24))
-            font = QFont("Arial", base_font_size, QFont.Bold)
-            painter.setFont(font)
+                # Font size based on cell dimensions
+                if cell_min < 15:
+                    base_font_size = max(6, int(cell_min * 0.35))
+                elif cell_min < 25:
+                    base_font_size = int(cell_min * 0.40)
+                else:
+                    base_font_size = int(cell_min * 0.45)
+                base_font_size = max(6, min(base_font_size, 24))
+                font = QFont("Arial", base_font_size, QFont.Bold)
+                painter.setFont(font)
 
-            show_text = cell_min >= 10
-            precise = cell_min >= 26
+                show_text = cell_min >= 8  # Show text if cells are large enough
+                precise = cell_min >= 26  # Show decimals on larger sizes
 
-            # Draw grid lines and temperature values
-            for r in range(self.thermal_grid_rows):
-                for c in range(self.thermal_grid_cols):
-                    x = int(c * cell_w)
-                    y = int(r * cell_h)
-                    rect = QRect(x, y, int(cell_w), int(cell_h))
-                    
+                # Draw grid lines and temperature values
+                for r, c, x, y, rw, rh in _iter_cell_rects(self.thermal_grid_cols, self.thermal_grid_rows, w, h):
+                    rect = QRect(x, y, rw, rh)
+
                     # Draw grid cell border
                     painter.setPen(grid_pen)
                     painter.drawRect(rect)
@@ -341,26 +413,39 @@ class VideoWidget(QWidget):
                     else:
                         tcolor = QColor(200, 220, 255)
                         bg_color = QColor(0, 0, 0, 120)
-                    
+
                     # Draw semi-transparent background for text
                     painter.fillRect(rect.adjusted(2, 2, -2, -2), bg_color)
-                    
+
                     # Draw temperature text
                     painter.setPen(tcolor)
                     txt = f"{temp_c:.2f}"
                     painter.drawText(rect, Qt.AlignCenter, txt)
 
-            painter.end()
+                painter.end()
+
+                # Cache overlay for this size/signature to prevent flicker
+                try:
+                    self._cached_thermal_overlay = overlay
+                    self._last_overlay_size = (w, h)
+                    self._cached_grid_matrix_sig = cache_key_sig
+                except Exception:
+                    pass
             
-            # Cache the overlay
-            self._cached_thermal_overlay = overlay
-            self._last_overlay_matrix_hash = cache_key
+            # Display the overlay on the frame
+            # CRITICAL: Use actual display size (w, h from label), not base_pixmap size
+            # This ensures overlay scales responsively with tile size
+            scaled_frame = base_pixmap.scaledToWidth(w, Qt.SmoothTransformation)
+            result = QPixmap(w, h)
+            result.fill(Qt.black)
             
-            # Composite overlay on frame
-            result = base_pixmap.copy()
-            painter = QPainter(result)
-            painter.drawPixmap(0, 0, overlay)
-            painter.end()
+            # Center the scaled frame on result
+            frame_painter = QPainter(result)
+            x_offset = (w - scaled_frame.width()) // 2
+            y_offset = (h - scaled_frame.height()) // 2
+            frame_painter.drawPixmap(x_offset, y_offset, scaled_frame)
+            frame_painter.drawPixmap(0, 0, overlay)
+            frame_painter.end()
             self.video_label.setPixmap(result)
         except Exception as e:
             print(f"Thermal grid overlay error: {e}")
@@ -380,8 +465,15 @@ class VideoWidget(QWidget):
                 else:
                     return
 
+            # Use CURRENT label size - ensure we get real-time dimensions
             w = max(1, self.video_label.width())
             h = max(1, self.video_label.height())
+            
+            # If dimensions are invalid, use fallback
+            if w < 50 or h < 50:
+                w = 640
+                h = 480
+            
             pix = QPixmap(w, h)
             pix.fill(QColor(0, 0, 0))
 
@@ -389,59 +481,76 @@ class VideoWidget(QWidget):
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
 
+            # Compute stable cell rects to avoid rounding drift
+            def _iter_cell_rects(cols, rows, width, height):
+                x_edges = [round(i * (width / cols)) for i in range(cols + 1)]
+                y_edges = [round(j * (height / rows)) for j in range(rows + 1)]
+                for r in range(rows):
+                    for c in range(cols):
+                        x = x_edges[c]
+                        y = y_edges[r]
+                        w_ = x_edges[c + 1] - x
+                        h_ = y_edges[r + 1] - y
+                        yield r, c, x, y, w_, h_
+
             cell_w = w / self.thermal_grid_cols
             cell_h = h / self.thermal_grid_rows
             cell_min = min(cell_w, cell_h)
 
-            # Adaptive grid pen (thinner on tiny cells, thicker on large)
+            # Adaptive grid pen based on cell size
             grid_color = QColor(60, 60, 60)
-            pen_width = 1
-            if cell_min > 40:
+            if cell_min < 20:
+                pen_width = 1
+            elif cell_min < 40:
                 pen_width = 2
-            if cell_min > 70:
+            elif cell_min < 70:
                 pen_width = 3
+            else:
+                pen_width = 4
             grid_pen = QPen(grid_color)
             grid_pen.setWidth(pen_width)
             painter.setPen(grid_pen)
 
             vmax = float(arr.max()) if arr.size else 1.0
 
-            # Adaptive font size range 6..32
-            base_font_size = int(cell_min * (0.42 if cell_min < 30 else 0.48))
+            # Font size based on cell dimensions
+            if cell_min < 15:
+                base_font_size = max(6, int(cell_min * 0.35))
+            elif cell_min < 25:
+                base_font_size = int(cell_min * 0.42)
+            else:
+                base_font_size = int(cell_min * 0.48)
             base_font_size = max(6, min(base_font_size, 32))
             font = QFont("Arial", base_font_size)
             painter.setFont(font)
 
-            # Decide text format: hide if cell extremely small
-            show_text = cell_min >= 6
-            precise = cell_min >= 26  # show one decimal if large cells
+            # Decide text format based on cell size
+            show_text = cell_min >= 8  # Hide if extremely small
+            precise = cell_min >= 26  # Show one decimal if large enough
 
-            for r in range(self.thermal_grid_rows):
-                for c in range(self.thermal_grid_cols):
-                    x = int(c * cell_w)
-                    y = int(r * cell_h)
-                    rect = QRect(x, y, int(cell_w), int(cell_h))
-                    painter.drawRect(rect)
+            for r, c, x, y, rw, rh in _iter_cell_rects(self.thermal_grid_cols, self.thermal_grid_rows, w, h):
+                rect = QRect(x, y, rw, rh)
+                painter.drawRect(rect)
 
-                    if not show_text:
-                        continue
+                if not show_text:
+                    continue
 
-                    val = float(arr[r, c])
-                    # Matrix is already in Celsius from thermal_frame_parser
-                    temp_c = val
+                val = float(arr[r, c])
+                # Matrix is already in Celsius from thermal_frame_parser
+                temp_c = val
 
-                    # Temperature color bands
-                    if temp_c >= 60:
-                        tcolor = QColor(255, 70, 70)
-                    elif temp_c >= 45:
-                        tcolor = QColor(255, 150, 60)
-                    elif temp_c >= 32:
-                        tcolor = QColor(255, 250, 120)
-                    else:
-                        tcolor = QColor(200, 220, 255)
-                    painter.setPen(tcolor)
-                    txt = f"{temp_c:.2f}"
-                    painter.drawText(rect, Qt.AlignCenter, txt)
+                # Temperature color bands
+                if temp_c >= 60:
+                    tcolor = QColor(255, 70, 70)
+                elif temp_c >= 45:
+                    tcolor = QColor(255, 150, 60)
+                elif temp_c >= 32:
+                    tcolor = QColor(255, 250, 120)
+                else:
+                    tcolor = QColor(200, 220, 255)
+                painter.setPen(tcolor)
+                txt = f"{temp_c:.2f}"
+                painter.drawText(rect, Qt.AlignCenter, txt)
 
             painter.end()
             self.video_label.setPixmap(pix)
@@ -459,18 +568,15 @@ class VideoWidget(QWidget):
         app = QApplication.instance()
         is_modern = app.property("theme") == "modern" if app else False
         
-        # Top-left controls (minimize, maximize, reload) - always visible but transparent
+        # Top controls (minimize, maximize, reload) aligned on the right
         self.top_left_controls = QWidget(self)
-        if is_modern:
-            self.top_left_controls.setObjectName("video_controls")
-            self.top_left_controls.setStyleSheet("""
-                QWidget#video_controls {
-                    background-color: transparent;
-                    border: none;
-                }
-            """)
-        else:
-            self.top_left_controls.setStyleSheet("background-color: transparent;")
+        self.top_left_controls.setObjectName("video_controls")
+        self.top_left_controls.setStyleSheet("""
+            QWidget#video_controls {
+                background-color: transparent;
+                border: none;
+            }
+        """)
         
         top_left_layout = QHBoxLayout(self.top_left_controls)
         top_left_layout.setContentsMargins(2, 2, 2, 2)
@@ -478,16 +584,32 @@ class VideoWidget(QWidget):
 
         self.minimize_btn = self.create_control_button("−", "Restore to grid")
         self.maximize_btn = self.create_control_button("⛶", "Maximize view")
-        # Thermal Grid View toggle button (numbers-only grid view)
-        self.thermal_view_btn = self.create_control_button("⌗", "Toggle thermal grid view")
-        self.thermal_view_btn.setCheckable(True)
         self.reload_btn = self.create_control_button("⟳", "Reload stream")
         self.minimize_btn.setVisible(False)
         top_left_layout.addWidget(self.minimize_btn)
         top_left_layout.addWidget(self.maximize_btn)
-        # Place new button between maximize and reload
-        top_left_layout.addWidget(self.thermal_view_btn)
         top_left_layout.addWidget(self.reload_btn)
+
+        # Right-side overlay mode stack (vertical)
+        self.right_overlay_controls = QWidget(self)
+        self.right_overlay_controls.setObjectName("overlay_controls")
+        self.right_overlay_controls.setStyleSheet("""
+            QWidget#overlay_controls {
+                background-color: transparent;
+                border: none;
+            }
+        """)
+        overlay_layout = QVBoxLayout(self.right_overlay_controls)
+        overlay_layout.setContentsMargins(2, 2, 2, 2)
+        overlay_layout.setSpacing(2)
+
+        self.fusion_overlay_btn = self.create_control_button("◎", "Camera + fusion overlay")
+        self.fusion_overlay_btn.setCheckable(True)
+        self.grid_overlay_btn = self.create_control_button("⌗", "Thermal numeric grid view")
+        self.grid_overlay_btn.setCheckable(True)
+
+        overlay_layout.addWidget(self.fusion_overlay_btn)
+        overlay_layout.addWidget(self.grid_overlay_btn)
 
         # Bottom-right status (fire alarm, temperature) - always visible but transparent
         self.bottom_right_status = QWidget(self)
@@ -554,66 +676,57 @@ class VideoWidget(QWidget):
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtCore import Qt
         app = QApplication.instance()
-        is_modern = app.property("theme") == "modern" if app else False
         
         btn = QPushButton(text)
         btn.setFixedSize(28, 28)
         if tooltip:
             btn.setToolTip(tooltip)
         
-        if is_modern:
-            btn.setObjectName("icon-btn")
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: transparent;
-                    border: none;
-                    color: rgba(0, 188, 212, 0.9);
-                    font-weight: 600;
-                    font-size: 16px;
-                    padding: 4px;
-                }
-                QPushButton:hover {
-                    background-color: transparent;
-                    border: none;
-                    color: #00bcd4;
-                }
-                QPushButton:pressed {
-                    background-color: transparent;
-                    border: none;
-                    color: #00acc1;
-                }
-                QPushButton:checked {
-                    background-color: transparent;
-                    border: none;
-                    color: #00bcd4;
-                }
-            """)
-        else:
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(255, 255, 255, 150);
-                    border: 1px solid gray;
-                    border-radius: 15px;
-                    color: black;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: rgba(255, 255, 255, 200);
-                }
-            """)
+        btn.setObjectName("icon-btn")
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                color: rgba(0, 188, 212, 0.9);
+                font-weight: 600;
+                font-size: 16px;
+                padding: 4px;
+            }
+            QPushButton:hover {
+                background-color: transparent;
+                border: none;
+                color: #00bcd4;
+            }
+            QPushButton:pressed {
+                background-color: transparent;
+                border: none;
+                color: #00acc1;
+            }
+            QPushButton:checked {
+                background-color: transparent;
+                border: none;
+                color: #00bcd4;
+            }
+        """)
         return btn
 
     def position_controls(self):
         """Position control widgets correctly with theme-aware margins"""
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
-        is_modern = app.property("theme") == "modern" if app else False
         
-        margin = 10 if is_modern else 25
+        margin = 10
         
-        # Top-left controls
+        # Top controls (right aligned)
         self.top_left_controls.adjustSize()
-        self.top_left_controls.move(margin, margin)
+        tl_x = self.width() - self.top_left_controls.width() - margin
+        self.top_left_controls.move(tl_x, margin)
+
+        # Right overlay controls stacked below the top controls
+        self.right_overlay_controls.adjustSize()
+        ro_x = self.width() - self.right_overlay_controls.width() - margin
+        ro_y = margin + self.top_left_controls.height() + 6
+        self.right_overlay_controls.move(ro_x, ro_y)
 
         # Bottom-right status
         self.bottom_right_status.adjustSize()
@@ -634,31 +747,29 @@ class VideoWidget(QWidget):
         """Handle widget resizing"""
         self.video_label.resize(event.size())
         self.position_controls()
-        # Fast path: scale cached numeric grid if available
+        
+        # Invalidate caches on resize to force regeneration with proper scaling
+        self._cached_grid_pixmap = None
+        self._cached_thermal_overlay = None
+        self._last_overlay_size = None  # Invalidate size tracking
+        self._cached_grid_matrix_sig = None
+        
+        # Regenerate overlays with new dimensions
         if getattr(self, 'thermal_grid_view_enabled', False) and self._last_thermal_matrix is not None:
             try:
-                if self._cached_grid_pixmap and not self._cached_grid_pixmap.isNull():
-                    scaled = self._cached_grid_pixmap.scaled(self.video_label.size(), Qt.IgnoreAspectRatio, Qt.FastTransformation)
-                    self.video_label.setPixmap(scaled)
-                else:
-                    self._render_temperature_grid(self._last_thermal_matrix)
+                self._render_temperature_grid(self._last_thermal_matrix)
             except Exception:
-                try:
-                    self._render_temperature_grid(self._last_thermal_matrix)
-                except Exception:
-                    pass
+                pass
+        elif not getattr(self, 'thermal_grid_view_enabled', False):
+            # Redraw fusion overlay or hot cells with new size
+            try:
+                self._redraw_with_grid()
+            except Exception:
+                pass
     
     def mouseMoveEvent(self, event):
-        """Fade in/out controls on mouse movement for cleaner UI"""
-        try:
-            if hasattr(self, '_controls_opacity_effect') and self._controls_opacity_effect is not None:
-                current = float(self._controls_opacity_effect.opacity())
-                new_opacity = 0.8 if current < 0.5 else 1.0
-                self._controls_opacity_effect.setOpacity(new_opacity)
-        except Exception:
-            pass
+        """Handle mouse move without forcing repaints to avoid flicker."""
         super().mouseMoveEvent(event)
-        super().resizeEvent(event)
 
     def _start_worker_timer(self):
         """Slot to safely start the worker's timer from main thread"""
@@ -699,12 +810,8 @@ class VideoWidget(QWidget):
         self.reload_btn.clicked.connect(self.reload_stream)
         self.maximize_btn.clicked.connect(self.toggle_maximize)
         self.minimize_btn.clicked.connect(self.toggle_minimize)
-        # Thermal grid view toggle
-        if hasattr(self, 'thermal_view_btn'):
-            try:
-                self.thermal_view_btn.toggled.connect(self.toggle_thermal_grid_view)
-            except Exception:
-                pass
+        self.fusion_overlay_btn.clicked.connect(self._activate_fusion_overlay)
+        self.grid_overlay_btn.clicked.connect(self._activate_grid_overlay)
 
         # Start thread
         self.worker_thread.started.connect(self.worker.start_stream)
@@ -747,8 +854,12 @@ class VideoWidget(QWidget):
                 # Clear frozen frame when alarm clears
                 self.frozen_frame = None
             
-            # Scale video frame to label size
-            scaled_video = pixmap.scaled(self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # Scale video frame to fully fill the tile (allow slight crop to avoid letterboxing)
+            scaled_video = pixmap.scaled(
+                self.video_label.size(),
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation
+            )
             
             # Apply thermal grid view overlay (full grid with temperature values)
             if self.thermal_grid_view_enabled and self._last_thermal_matrix is not None:
@@ -820,44 +931,34 @@ class VideoWidget(QWidget):
         """Update fire alarm indicator with theme-aware styling"""
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
-        is_modern = app.property("theme") == "modern" if app else False
         
         self.alarm_active = alarm_active  # Store alarm state
         
-        if is_modern:
-            if alarm_active:
-                self.fire_alarm_status.setObjectName("led_offline")  # Red LED
-                self.fire_alarm_status.setStyleSheet("""
-                    QLabel {
-                        background-color: #ff5252;
-                        border-radius: 8px;
-                        border: 2px solid #ffffff;
-                        min-width: 16px;
-                        min-height: 16px;
-                        max-width: 16px;
-                        max-height: 16px;
-                    }
-                """)
-            else:
-                self.fire_alarm_status.setObjectName("led_online")  # Green LED
-                self.fire_alarm_status.setStyleSheet("""
-                    QLabel {
-                        background-color: #69f0ae;
-                        border-radius: 8px;
-                        border: 2px solid rgba(105, 240, 174, 0.5);
-                        min-width: 16px;
-                        min-height: 16px;
-                        max-width: 16px;
-                        max-height: 16px;
-                    }
-                """)
+        if alarm_active:
+            self.fire_alarm_status.setObjectName("led_offline")  # Red LED
+            self.fire_alarm_status.setStyleSheet("""
+                QLabel {
+                    background-color: #ff5252;
+                    border-radius: 8px;
+                    border: 2px solid #ffffff;
+                    min-width: 16px;
+                    min-height: 16px;
+                    max-width: 16px;
+                    max-height: 16px;
+                }
+            """)
         else:
-            # Classic theme
-            color = "red" if alarm_active else "#444"
-            self.fire_alarm_status.setStyleSheet(f"""
-                background-color: {color};
-                border-radius: 10px;
-                border: 2px solid {'#fff' if alarm_active else '#666'};
+            self.fire_alarm_status.setObjectName("led_online")  # Green LED
+            self.fire_alarm_status.setStyleSheet("""
+                QLabel {
+                    background-color: #69f0ae;
+                    border-radius: 8px;
+                    border: 2px solid rgba(105, 240, 174, 0.5);
+                    min-width: 16px;
+                    min-height: 16px;
+                    max-width: 16px;
+                    max-height: 16px;
+                }
             """)
         
         # Update temperature color to sync with alarm state
@@ -876,42 +977,57 @@ class VideoWidget(QWidget):
             from PyQt5.QtGui import QFont, QColor, QBrush, QPen
             from PyQt5.QtCore import Qt, QRect
             
-            # Semi-transparent background for overlay panel
-            panel_height = 180
-            panel_rect = QRect(10, height - panel_height - 10, 320, panel_height)
+            # Adaptive sizing based on tile dimensions
+            # Scale panel size based on available space
+            scale_factor = min(width / 640.0, height / 480.0)  # Assume 640x480 as baseline
+            scale_factor = max(0.5, min(scale_factor, 1.5))  # Clamp between 0.5x and 1.5x
+            
+            # Semi-transparent background for overlay panel with adaptive sizing
+            panel_height = int(180 * scale_factor)
+            panel_width = int(320 * scale_factor)
+            margin = int(10 * scale_factor)
+            panel_rect = QRect(margin, height - panel_height - margin, panel_width, panel_height)
             painter.fillRect(panel_rect, QColor(0, 0, 0, 200))
             
             # Border
-            painter.setPen(QPen(QColor(255, 255, 255, 180), 2))
+            border_width = max(1, int(2 * scale_factor))
+            painter.setPen(QPen(QColor(255, 255, 255, 180), border_width))
             painter.drawRect(panel_rect)
             
-            # Title
-            font_title = QFont("Arial", 12, QFont.Bold)
+            # Title with adaptive font size
+            title_font_size = max(8, int(12 * scale_factor))
+            font_title = QFont("Arial", title_font_size, QFont.Bold)
             painter.setFont(font_title)
             painter.setPen(QColor(255, 255, 255))
-            painter.drawText(panel_rect.x() + 10, panel_rect.y() + 20, "Multi-Sensor Fusion")
+            title_x = panel_rect.x() + int(10 * scale_factor)
+            title_y = panel_rect.y() + int(20 * scale_factor)
+            painter.drawText(title_x, title_y, "Multi-Sensor Fusion")
             
-            # Alarm status
-            alarm_status = "\ud83d\udd25 ALARM ACTIVE" if self.fusion_data.get('alarm') else "\u2713 Normal"
+            # Alarm status with adaptive sizing
+            alarm_status = "🔥 ALARM ACTIVE" if self.fusion_data.get('alarm') else "✓ Normal"
             alarm_color = QColor(255, 0, 0) if self.fusion_data.get('alarm') else QColor(0, 255, 0)
-            font_status = QFont("Arial", 11, QFont.Bold)
+            status_font_size = max(8, int(11 * scale_factor))
+            font_status = QFont("Arial", status_font_size, QFont.Bold)
             painter.setFont(font_status)
             painter.setPen(alarm_color)
-            painter.drawText(panel_rect.x() + 10, panel_rect.y() + 45, alarm_status)
+            status_y = panel_rect.y() + int(45 * scale_factor)
+            painter.drawText(title_x, status_y, alarm_status)
             
-            # Confidence/Accuracy
+            # Confidence/Accuracy with adaptive sizing
             confidence = self.fusion_data.get('confidence', 0.0)
             accuracy = min(100, int(confidence * 100))
             painter.setPen(QColor(255, 255, 255))
-            font_data = QFont("Arial", 10)
+            data_font_size = max(7, int(10 * scale_factor))
+            font_data = QFont("Arial", data_font_size)
             painter.setFont(font_data)
-            painter.drawText(panel_rect.x() + 10, panel_rect.y() + 70, f"Prediction Accuracy: {accuracy}%")
+            conf_y = panel_rect.y() + int(70 * scale_factor)
+            painter.drawText(title_x, conf_y, f"Prediction Accuracy: {accuracy}%")
             
-            # Confidence bar
-            bar_width = 280
-            bar_height = 15
-            bar_x = panel_rect.x() + 20
-            bar_y = panel_rect.y() + 75
+            # Confidence bar with adaptive sizing
+            bar_width = int(280 * scale_factor)
+            bar_height = max(8, int(15 * scale_factor))
+            bar_x = panel_rect.x() + int(20 * scale_factor)
+            bar_y = panel_rect.y() + int(75 * scale_factor)
             
             # Background bar
             painter.fillRect(bar_x, bar_y, bar_width, bar_height, QColor(60, 60, 60))
@@ -926,33 +1042,36 @@ class VideoWidget(QWidget):
                 bar_color = QColor(255, 0, 0)
             painter.fillRect(bar_x, bar_y, fill_width, bar_height, bar_color)
             
-            # Active sources
+            # Active sources with adaptive sizing
             sources = self.fusion_data.get('sources', [])
             painter.setPen(QColor(255, 255, 255))
-            painter.drawText(panel_rect.x() + 10, panel_rect.y() + 110, "Active Sensors:")
+            sensors_y = panel_rect.y() + int(110 * scale_factor)
+            painter.drawText(title_x, sensors_y, "Active Sensors:")
             
-            y_offset = 125
+            y_offset = int(125 * scale_factor)
+            line_spacing = int(18 * scale_factor)
             sensor_icons = {
-                'thermal': '\ud83c\udf21\ufe0f Thermal',
-                'gas': '\ud83d\udca8 Gas',
-                'flame': '\ud83d\udd25 Flame',
-                'vision': '\ud83d\udc41\ufe0f Vision'
+                'thermal': '🌡️ Thermal',
+                'gas': '💨 Gas',
+                'flame': '🔥 Flame',
+                'vision': '👁️ Vision'
             }
             
             for source in sensor_icons:
                 color = QColor(0, 255, 0) if source in sources else QColor(100, 100, 100)
                 painter.setPen(color)
-                painter.drawText(panel_rect.x() + 20, panel_rect.y() + y_offset, sensor_icons[source])
-                y_offset += 18
+                painter.drawText(panel_rect.x() + int(20 * scale_factor), panel_rect.y() + y_offset, sensor_icons[source])
+                y_offset += line_spacing
             
-            # Hot cells count
+            # Hot cells count with adaptive sizing
             hot_cells_count = len(self.fusion_data.get('hot_cells', []))
             painter.setPen(QColor(255, 255, 0))
-            painter.drawText(panel_rect.x() + 180, panel_rect.y() + 110, f"Hot Cells: {hot_cells_count}")
+            right_col_x = panel_rect.x() + int(180 * scale_factor)
+            painter.drawText(right_col_x, sensors_y, f"Hot Cells: {hot_cells_count}")
             
-            # Sensor readings - Right column
-            right_col_x = panel_rect.x() + 180
-            reading_y = panel_rect.y() + 110
+            # Sensor readings - Right column with adaptive sizing
+            reading_y = panel_rect.y() + int(110 * scale_factor)
+            reading_spacing = int(18 * scale_factor)
             
             # Thermal
             if 'thermal_max' in self.fusion_data:
@@ -960,7 +1079,7 @@ class VideoWidget(QWidget):
                 temp_c = float(self.fusion_data['thermal_max'])
                 painter.setPen(QColor(255, 200, 0))
                 painter.drawText(right_col_x, reading_y, f"Thermal: {temp_c:.1f}°C")
-                reading_y += 18
+                reading_y += reading_spacing
             
             # Gas (ADC1)
             if 'gas_ppm' in self.fusion_data:
@@ -972,15 +1091,15 @@ class VideoWidget(QWidget):
                 else:
                     painter.drawText(right_col_x, reading_y, f"Gas: {gas_ppm/1000:.1f}K")
                 if aqi:
-                    painter.drawText(right_col_x, reading_y + 12, f"({aqi})")
-                    reading_y += 12
-                reading_y += 18
+                    painter.drawText(right_col_x, reading_y + int(12 * scale_factor), f"({aqi})")
+                    reading_y += int(12 * scale_factor)
+                reading_y += reading_spacing
             
             # ADC1 Raw
             if 'adc1_raw' in self.fusion_data:
                 painter.setPen(QColor(150, 150, 150))
                 painter.drawText(right_col_x, reading_y, f"ADC1: {self.fusion_data['adc1_raw']}")
-                reading_y += 18
+                reading_y += reading_spacing
             
             # Smoke (ADC2)
             if 'smoke_level' in self.fusion_data:
@@ -988,13 +1107,13 @@ class VideoWidget(QWidget):
                 smoke_color = QColor(255, 100, 100) if smoke > 50 else QColor(100, 200, 255)
                 painter.setPen(smoke_color)
                 painter.drawText(right_col_x, reading_y, f"Smoke: {smoke:.0f}%")
-                reading_y += 18
+                reading_y += reading_spacing
             
             # ADC2 Raw
             if 'adc2_raw' in self.fusion_data:
                 painter.setPen(QColor(150, 150, 150))
                 painter.drawText(right_col_x, reading_y, f"ADC2: {self.fusion_data['adc2_raw']}")
-                reading_y += 18
+                reading_y += reading_spacing
             
             # Flame (MPY30)
             if 'flame_raw' in self.fusion_data:
@@ -1003,7 +1122,7 @@ class VideoWidget(QWidget):
                 painter.setPen(flame_color)
                 flame_text = "FLAME!" if flame_active else "No Flame"
                 painter.drawText(right_col_x, reading_y, flame_text)
-                reading_y += 18
+                reading_y += reading_spacing
             
         except Exception as e:
             print(f"Fusion overlay draw error: {e}")
@@ -1013,7 +1132,7 @@ class VideoWidget(QWidget):
         self.current_temp = temp  # Store current temperature
         if not hasattr(self, 'temp_label'):
             return  # Label not created yet, skip update
-        print(f"DEBUG: set_temperature called with {temp:.1f}°C")
+        # Update temperature display
         self.temp_label.setText(f"Temp: {temp:.1f}°C")
         self._update_temp_color()
 
@@ -1025,11 +1144,11 @@ class VideoWidget(QWidget):
         # Color syncs with fusion alarm state for consistency
         if self.alarm_active:
             # Alarm active: red color with bold text
-            print(f"DEBUG: Temp color → RED (alarm active), temp={self.current_temp:.1f}°C")
+            # Temperature alarm active - red color
             self.temp_label.setStyleSheet("color: red; font-weight: bold;")
         elif self.current_temp > 35:
             # Elevated temperature but no alarm: orange warning
-            print(f"DEBUG: Temp color → ORANGE (elevated), temp={self.current_temp:.1f}°C")
+            # Elevated temperature - orange color
             self.temp_label.setStyleSheet("color: orange;")
         else:
             # Normal temperature: white
@@ -1094,6 +1213,36 @@ class VideoWidget(QWidget):
             self._last_overlay_matrix_hash = None
         # Force frame redraw to apply or remove grid overlay
         # The next frame update will handle the overlay automatically
+        try:
+            self._sync_overlay_buttons_from_state()
+        except Exception:
+            pass
+
+    def _sync_overlay_buttons_from_state(self, initial=False):
+        """Keep overlay buttons in sync with current grid/overlay mode."""
+        if not hasattr(self, 'fusion_overlay_btn') or not hasattr(self, 'grid_overlay_btn'):
+            return
+        fusion_checked = not self.thermal_grid_view_enabled
+        grid_checked = self.thermal_grid_view_enabled
+        for btn, state in ((self.fusion_overlay_btn, fusion_checked), (self.grid_overlay_btn, grid_checked)):
+            btn.blockSignals(True)
+            btn.setChecked(state)
+            btn.blockSignals(False)
+        if initial and fusion_checked:
+            # Ensure fusion overlay remains visible when grid is off
+            self.show_fusion_overlay = True
+
+    def _activate_fusion_overlay(self):
+        """Select camera + fusion overlay (turn off numeric grid)."""
+        self.thermal_grid_view_enabled = False
+        self._sync_overlay_buttons_from_state()
+        self.toggle_thermal_grid_view(False)
+
+    def _activate_grid_overlay(self):
+        """Select thermal numeric grid view (turn off fusion overlay)."""
+        self.thermal_grid_view_enabled = True
+        self._sync_overlay_buttons_from_state()
+        self.toggle_thermal_grid_view(True)
 
     def stop(self):
         """Safe thread cleanup"""

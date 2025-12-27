@@ -1,0 +1,61 @@
+{
+  "IncidentEnvironment": [
+    "FIRE_CATEGORY",
+    "SMOKE_CATEGORY",
+    "STRUCTURAL_CATEGORY",
+    "HUMAN_CATEGORY",
+    "VEHICLE_CATEGORY",
+    "SAFETY_CATEGORY",
+    "ENVIRONMENT_MARKERS",
+    "DEFAULT_CATEGORY"
+  ],
+  "FIRE_CATEGORY": [
+    "flame",
+    "spark",
+    "ember",
+    "heat_haze",
+    "fire"
+  ],
+  "SMOKE_CATEGORY": [
+    "smoke",
+    "smoke_heavy",
+    "smoke_toxic",
+    "steam"
+  ],
+  "STRUCTURAL_CATEGORY": [
+    "damaged_vent",
+    "structural_deform",
+    "equipment_leak",
+    "pressure_vessel"
+  ],
+  "HUMAN_CATEGORY": [
+    "person",
+    "person_protected",
+    "person_distress",
+    "person_rescuer"
+  ],
+  "VEHICLE_CATEGORY": [
+    "vehicle",
+    "ship",
+    "aircraft",
+    "industrial_vehicle"
+  ],
+  "SAFETY_CATEGORY": [
+    "fire_extinguisher",
+    "emergency_exit",
+    "sprinkler",
+    "alarm_light"
+  ],
+  "ENVIRONMENT_MARKERS": [
+    "indoor",
+    "outdoor",
+    "confined_space",
+    "road"
+  ],
+  "DEFAULT_CATEGORY": [
+    "unclassified_fire",
+    "unclassified_smoke",
+    "non_threat"
+  ],
+  "fire": []
+}

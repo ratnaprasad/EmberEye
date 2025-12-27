@@ -1,8 +1,16 @@
 import sqlite3
 import bcrypt
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QPushButton, QDialog,
-                            QMainWindow, QMessageBox, QLabel, QWizard, QRadioButton,
-                            QButtonGroup, QHBoxLayout, QGroupBox)
+from PyQt5.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QDialog,
+    QMainWindow,
+    QMessageBox,
+    QLabel,
+    QWizard,
+)
 from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtGui import QPixmap
 from resource_helper import get_resource_path
@@ -49,31 +57,6 @@ class EELoginWindow(QWidget):
         self.username = QLineEdit(placeholderText="Username")
         self.password = QLineEdit(placeholderText="Password", echoMode=QLineEdit.Password)
         
-        # Theme Selection
-        theme_group = QGroupBox("UI Theme")
-        theme_layout = QHBoxLayout()
-        self.theme_button_group = QButtonGroup()
-        
-        self.classic_radio = QRadioButton("Classic")
-        self.modern_radio = QRadioButton("Modern (Recommended)")
-        
-        self.theme_button_group.addButton(self.classic_radio, 0)
-        self.theme_button_group.addButton(self.modern_radio, 1)
-        
-        # Set default based on saved preference
-        if self.theme_manager.get_theme() == ThemeManager.MODERN:
-            self.modern_radio.setChecked(True)
-        else:
-            self.classic_radio.setChecked(True)
-        
-        theme_layout.addWidget(self.classic_radio)
-        theme_layout.addWidget(self.modern_radio)
-        theme_group.setLayout(theme_layout)
-        
-        # Add tooltips
-        self.classic_radio.setToolTip("Traditional interface with familiar layout")
-        self.modern_radio.setToolTip("Slim, dark theme optimized for video viewing")
-        
         self.login_btn = QPushButton("Login", clicked=self.authenticate)
         self.login_btn.setObjectName("primary")
         self.status = QLabel()
@@ -83,7 +66,6 @@ class EELoginWindow(QWidget):
         layout.addWidget(app_name_label)
         layout.addWidget(self.username)
         layout.addWidget(self.password)
-        layout.addWidget(theme_group)
         layout.addWidget(self.login_btn)
         layout.addWidget(self.status)
         self.setLayout(layout)
@@ -141,12 +123,8 @@ class EELoginWindow(QWidget):
                                         'User created successfully!')
                 return
 
-            # Regular user flow
-            # Save theme selection
-            if self.modern_radio.isChecked():
-                self.theme_manager.set_theme(ThemeManager.MODERN)
-            else:
-                self.theme_manager.set_theme(ThemeManager.CLASSIC)
+            # Regular user flow - Modern theme is default
+            self.theme_manager.set_theme(ThemeManager.MODERN)
             
             self.start_sensor_server()
             self.dashboard = BEMainWindow(theme_manager=self.theme_manager)

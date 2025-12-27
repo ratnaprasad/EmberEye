@@ -1,0 +1,100 @@
+================================================================================
+                    EMBEREYE EEPROM CALIBRATION FIX
+                          Quick Reference Guide
+================================================================================
+
+WHAT WAS FIXED:
+- Added hourly EEPROM1 command scheduling (every 3600 seconds)
+- Enhanced calibration offset extraction and logging
+- Added timestamp tracking for calibration data freshness
+
+WHY IT MATTERS:
+- Negative temperature values (-0.69°C to -1.27°C) = Wrong offset
+- Device keeps calibration offset in EEPROM[0]
+- Periodic refresh ensures offset matches device calibration
+
+EXPECTED BEHAVIOR ON WINDOWS:
+┌─────────────────────────────────────────────────────────────────┐
+│ Startup (t=0):                                                  │
+│   1. EmberEye starts                                            │
+│   2. PERIOD_ON sent automatically                              │
+│   3. Thermal data starts streaming                             │
+│                                                                 │
+│ After 1 Hour (t=3600s):                                         │
+│   1. Console: "🔧 Sending EEPROM1 to device..."               │
+│   2. Device responds with calibration data                     │
+│   3. Console: "✅ EEPROM1 DATA LOADED: Offset: X.XX°C"        │
+│   4. New offset applied to all temperature calculations        │
+│                                                                 │
+│ Every Hour After:                                              │
+│   - EEPROM1 command sent automatically                         │
+│   - Offset verified and logged                                 │
+│   - Temperature accuracy maintained                            │
+└─────────────────────────────────────────────────────────────────┘
+
+KEY LOG MESSAGES TO LOOK FOR:
+
+📊 EEPROM CALIBRATION APPLIED:
+   ├─ Raw hex word[0]: 0xFFB0
+   ├─ Raw signed value: -80 (centi-degrees)
+   ├─ Offset: -0.80°C
+   ├─ Previous offset: 0.00°C
+   └─ Temperature correction: raw_value ÷ 100 - (-0.80)°C
+
+✅ EEPROM1 DATA LOADED:
+   ├─ Frame ID: 1234
+   ├─ Total size: 3328 chars (832 blocks)
+   ├─ Calibration offset: -0.80°C
+   └─ Status: Ready for temperature conversion
+
+✅ EEPROM1 CALIBRATION RECEIVED:
+   ├─ Device: 192.168.1.100
+   ├─ Frame ID: 1234
+   ├─ Blocks: 832
+   ├─ Offset: -0.80°C
+   ├─ Timestamp: 2025-12-04 15:47:32
+   └─ Next update: In ~1 hour
+
+TEMPERATURE CALCULATION FORMULA:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Temperature (°C) = (Raw_Value / 100) - EEPROM_Offset
+
+EXAMPLE 1: Negative offset (common case)
+  Raw Value: FFB0 = -80 (centi-degrees)
+  EEPROM Offset: -0.80°C
+  Result: (-80 / 100) - (-0.80) = -0.80 + 0.80 = 0.00°C
+
+EXAMPLE 2: Positive offset (recalibrated device)
+  Raw Value: FFB0 = -80 (centi-degrees)
+  EEPROM Offset: +5.00°C
+  Result: (-80 / 100) - (5.00) = -0.80 - 5.00 = -5.80°C
+
+TROUBLESHOOTING:
+
+Q: Temperatures still showing negative after EEPROM1?
+A: Check the offset value printed in logs:
+   - If offset = -30°C and room is 28°C: raw_value would need to be 5800
+   - If you see 3000 (30°C raw) - 30 = 0°C ✓ CORRECT
+   - If offset is way off (+80°C): Device calibration may be wrong
+
+Q: No "EEPROM1 DATA LOADED" message after 1 hour?
+A: 1. Check if device is still connected (check "PERIOD_ON" messages)
+   2. Verify TCP port 4888 (or configured port) is accessible
+   3. Check if device supports EEPROM1 command
+   4. Restart device and try manual refresh
+
+Q: Offset changed between updates?
+A: This is normal! Indicates:
+   - Device temperature fluctuations (normal behavior)
+   - Sensor recalibration happening internally
+   - Environmental temperature changes
+
+FILES MODIFIED:
+1. pfds_manager.py       - Hourly EEPROM1 scheduling
+2. thermal_frame_parser.py - Enhanced offset logging  
+3. main_window.py        - Timestamp tracking
+
+No configuration changes needed - it works automatically!
+
+================================================================================

@@ -1,0 +1,192 @@
+{
+  "timestamp": "2025-12-03 22:14:00",
+  "summary": {
+    "total": 30,
+    "passed": 29,
+    "failed": 0,
+    "warned": 1,
+    "success_rate": 96.66666666666667
+  },
+  "results": [
+    {
+      "name": "TCP mode",
+      "status": "PASS",
+      "message": "async mode enabled",
+      "timestamp": 1764780239.869834
+    },
+    {
+      "name": "thermal_use_eeprom",
+      "status": "PASS",
+      "message": "Enabled for embedded EEPROM",
+      "timestamp": 1764780239.8698418
+    },
+    {
+      "name": "stream_config.json",
+      "status": "PASS",
+      "message": "Valid config with 2 streams",
+      "timestamp": 1764780239.869845
+    },
+    {
+      "name": "Simulator v3 file",
+      "status": "PASS",
+      "message": "File exists",
+      "timestamp": 1764780239.869868
+    },
+    {
+      "name": "Simulator imports",
+      "status": "PASS",
+      "message": "Module can be imported",
+      "timestamp": 1764780239.8699038
+    },
+    {
+      "name": "PFDS: PERIOD_ON gating per device",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.870162
+    },
+    {
+      "name": "PFDS: Removed auto-EEPROM1",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.8701692
+    },
+    {
+      "name": "PFDS: One-time PERIOD_ON logging",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.870174
+    },
+    {
+      "name": "Parser: EEPROM validation method",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.870519
+    },
+    {
+      "name": "Parser: Embedded EEPROM usage",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.8705258
+    },
+    {
+      "name": "TCP Server: PERIOD_ON gating per connection",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.870775
+    },
+    {
+      "name": "TCP Server: One-time PERIOD_ON logging",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.870782
+    },
+    {
+      "name": "TCP Server: 3336-char frame support",
+      "status": "PASS",
+      "message": "",
+      "timestamp": 1764780239.870791
+    },
+    {
+      "name": "Database file",
+      "status": "WARN",
+      "message": "Database not initialized yet",
+      "timestamp": 1764780239.874769
+    },
+    {
+      "name": "Port 9001 (TCP Sensor Server)",
+      "status": "PASS",
+      "message": "Available",
+      "timestamp": 1764780239.877216
+    },
+    {
+      "name": "Port 9090 (Metrics Server)",
+      "status": "PASS",
+      "message": "Available",
+      "timestamp": 1764780239.8773
+    },
+    {
+      "name": "Port 8765 (WebSocket Server (optional))",
+      "status": "PASS",
+      "message": "Available",
+      "timestamp": 1764780239.8773499
+    },
+    {
+      "name": "Frame parsing speed",
+      "status": "PASS",
+      "message": "3025.6 fps (0.33 ms/frame)",
+      "timestamp": 1764780240.035936
+    },
+    {
+      "name": "Parsing performance",
+      "status": "PASS",
+      "message": "Above 30 fps threshold",
+      "timestamp": 1764780240.035939
+    },
+    {
+      "name": "UI: Main application window",
+      "status": "PASS",
+      "message": "main_window.py",
+      "timestamp": 1764780240.035993
+    },
+    {
+      "name": "UI: Login window",
+      "status": "PASS",
+      "message": "ee_loginwindow.py",
+      "timestamp": 1764780240.036008
+    },
+    {
+      "name": "UI: Stream configuration",
+      "status": "PASS",
+      "message": "streamconfig_dialog.py",
+      "timestamp": 1764780240.0360389
+    },
+    {
+      "name": "UI: Video display widget",
+      "status": "PASS",
+      "message": "video_widget.py",
+      "timestamp": 1764780240.036076
+    },
+    {
+      "name": "UI: Failed devices management",
+      "status": "PASS",
+      "message": "failed_devices_tab.py",
+      "timestamp": 1764780240.036105
+    },
+    {
+      "name": "UI: Device status tracking",
+      "status": "PASS",
+      "message": "device_status_manager.py",
+      "timestamp": 1764780240.0361469
+    },
+    {
+      "name": "Import: Qt GUI framework",
+      "status": "PASS",
+      "message": "PyQt5.QtWidgets",
+      "timestamp": 1764780240.117512
+    },
+    {
+      "name": "Import: Qt core",
+      "status": "PASS",
+      "message": "PyQt5.QtCore",
+      "timestamp": 1764780240.117532
+    },
+    {
+      "name": "Import: NumPy",
+      "status": "PASS",
+      "message": "numpy",
+      "timestamp": 1764780240.117536
+    },
+    {
+      "name": "Import: OpenCV",
+      "status": "PASS",
+      "message": "cv2",
+      "timestamp": 1764780240.295163
+    },
+    {
+      "name": "Import: Async I/O",
+      "status": "PASS",
+      "message": "asyncio",
+      "timestamp": 1764780240.3550751
+    }
+  ]
+}
