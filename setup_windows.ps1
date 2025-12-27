@@ -70,6 +70,11 @@ if ([string]::IsNullOrWhiteSpace($InstallPath)) {
     Write-Host ""
 }
 
+# Create installation directory FIRST (before any logging)
+if (-not (Test-Path $InstallPath)) {
+    New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
+}
+
 # Global settings
 $LogFile = "$InstallPath\setup_log_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').txt"
 $ErrorsFile = "$InstallPath\setup_errors_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').txt"
@@ -95,14 +100,18 @@ function Write-Log {
         "INFO"    { Write-Host $LogMessage -ForegroundColor Cyan }
     }
     
-    # File logging
-    Add-Content -Path $LogFile -Value $LogMessage
-    
-    if ($Level -eq "ERROR") {
-        Add-Content -Path $ErrorsFile -Value $LogMessage
-    }
-    elseif ($Level -eq "WARNING") {
-        Add-Content -Path $WarningsFile -Value $LogMessage
+    # File logging (with error handling)
+    try {
+        Add-Content -Path $LogFile -Value $LogMessage -ErrorAction SilentlyContinue
+        
+        if ($Level -eq "ERROR") {
+            Add-Content -Path $ErrorsFile -Value $LogMessage -ErrorAction SilentlyContinue
+        }
+        elseif ($Level -eq "WARNING") {
+            Add-Content -Path $WarningsFile -Value $LogMessage -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Silently continue if log writing fails
     }
 }
 
@@ -152,21 +161,15 @@ function Compare-Versions {
 
 function Initialize-Setup {
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║      EmberEye v1.0.0-beta - Automated Windows Setup           ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "================================================================" -ForegroundColor Cyan
+    Write-Host "      EmberEye v1.0.0-beta - Automated Windows Setup           " -ForegroundColor Cyan
+    Write-Host "================================================================" -ForegroundColor Cyan
     Write-Host ""
     
     Write-Log "======== EmberEye Setup Started ========"
     Write-Log "Installation Path: $InstallPath"
     Write-Log "PowerShell Version: $($PSVersionTable.PSVersion)"
     Write-Log "OS Version: $(Get-CimInstance Win32_OperatingSystem | Select-Object -ExpandProperty Caption)"
-    
-    # Create installation directory
-    if (-not (Test-Path $InstallPath)) {
-        Write-Log "Creating installation directory: $InstallPath"
-        New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
-    }
 }
 
 function Check-Python {
@@ -178,12 +181,10 @@ function Check-Python {
         
         # Check version requirement
         if (Compare-Versions -Current $pythonVersion -Required $PYTHON_MIN_VERSION) {
-            $successMsg = 'Python version meets requirement (' + $PYTHON_MIN_VERSION + ' and above)'
-            Write-Log $successMsg "SUCCESS"
+            Write-Log "Python version meets requirement ($PYTHON_MIN_VERSION minimum)" "SUCCESS"
             return $true
         } else {
-            $warningMsg = 'Python version is below requirement (need ' + $PYTHON_MIN_VERSION + ', found ' + $pythonVersion + ')'
-            Write-Log $warningMsg "WARNING"
+            Write-Log "Python version below requirement (need $PYTHON_MIN_VERSION, found $pythonVersion)" "WARNING"
             return $false
         }
     } else {
@@ -226,10 +227,10 @@ function Check-Git {
 function Install-Git {
     Write-Log "Attempting to install Git..." "INFO"
     Write-Host ""
-    Write-Host "⚠️  Git is required but not installed." -ForegroundColor Yellow
+    Write-Host "WARNING: Git is required but not installed." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "Please download and install Git from:" -ForegroundColor Yellow
-    Write-Host "  📥 https://git-scm.com/download/win" -ForegroundColor Cyan
+    Write-Host "  https://git-scm.com/download/win" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Accept all default settings during installation." -ForegroundColor Yellow
     Write-Host ""
@@ -390,7 +391,7 @@ function Verify-Installation {
         
         # Check EmberEye import
         Write-Host "Testing EmberEye import..." -ForegroundColor Cyan
-        & .\.venv\Scripts\python -c "import embereye; print('✅ EmberEye imported successfully')" 2>&1 | Tee-Object -FilePath $LogFile -Append
+        & .\.venv\Scripts\python -c "import embereye; print('SUCCESS: EmberEye imported successfully')" 2>&1 | Tee-Object -FilePath $LogFile -Append
         
         if ($LASTEXITCODE -eq 0) {
             Write-Log "EmberEye import test passed" "SUCCESS"
