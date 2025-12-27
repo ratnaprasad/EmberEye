@@ -25,18 +25,36 @@ if errorlevel 1 (
 REM Get the directory where this script is located
 set "SCRIPT_DIR=%~dp0"
 
-REM Default installation path
-set "INSTALL_PATH=C:\EmberEye"
-
-REM Check for command line arguments
+REM Ask user where to install
+set "INSTALL_PATH="
 if "%~1"=="" (
-    echo Installation Path: %INSTALL_PATH%
     echo.
+    echo Installation Options:
+    echo 1. Use current directory: %SCRIPT_DIR%
+    echo 2. Use default: C:\EmberEye
+    echo 3. Enter custom path
+    echo.
+    set /p "CHOICE=Select option (1/2/3): "
+    
+    if "!CHOICE!"=="1" (
+        set "INSTALL_PATH=%SCRIPT_DIR%"
+        echo Using current directory: !INSTALL_PATH!
+    ) else if "!CHOICE!"=="2" (
+        set "INSTALL_PATH=C:\EmberEye"
+        echo Using default directory: !INSTALL_PATH!
+    ) else if "!CHOICE!"=="3" (
+        set /p "INSTALL_PATH=Enter installation path: "
+        echo Using custom path: !INSTALL_PATH!
+    ) else (
+        echo Invalid choice. Using default directory.
+        set "INSTALL_PATH=C:\EmberEye"
+    )
 ) else (
     set "INSTALL_PATH=%~1"
-    echo Custom Installation Path: %INSTALL_PATH%
-    echo.
+    echo Using provided installation path: !INSTALL_PATH!
 )
+
+echo.
 
 REM Execute PowerShell script
 echo Launching setup script...

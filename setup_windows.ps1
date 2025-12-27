@@ -1,5 +1,5 @@
 param(
-    [string]$InstallPath = "C:\EmberEye",
+    [string]$InstallPath = "",
     [switch]$Force = $false
 )
 
@@ -14,6 +14,61 @@ param(
 # 5. Runs verification tests
 # 6. Logs all errors for troubleshooting
 # ============================================================================
+
+# ============================================================================
+# INSTALLATION PATH SELECTION
+# ============================================================================
+
+# If no path provided via parameter, ask user
+if ([string]::IsNullOrWhiteSpace($InstallPath)) {
+    # Get script's directory
+    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║      EmberEye v1.0.0-beta - Installation Path Selection       ║" -ForegroundColor Cyan
+    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Where would you like to install EmberEye?" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  1. Use current directory" -ForegroundColor Green
+    Write-Host "     📁 $ScriptDir" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  2. Use default location" -ForegroundColor Green
+    Write-Host "     📁 C:\EmberEye" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  3. Enter custom path" -ForegroundColor Green
+    Write-Host ""
+    
+    $Choice = Read-Host "Select option (1/2/3)"
+    
+    switch ($Choice) {
+        "1" {
+            $InstallPath = $ScriptDir
+            Write-Host "✅ Using current directory: $InstallPath" -ForegroundColor Green
+        }
+        "2" {
+            $InstallPath = "C:\EmberEye"
+            Write-Host "✅ Using default directory: $InstallPath" -ForegroundColor Green
+        }
+        "3" {
+            $CustomPath = Read-Host "Enter installation path"
+            if ([string]::IsNullOrWhiteSpace($CustomPath)) {
+                $InstallPath = "C:\EmberEye"
+                Write-Host "⚠️  Empty path provided. Using default: $InstallPath" -ForegroundColor Yellow
+            } else {
+                $InstallPath = $CustomPath
+                Write-Host "✅ Using custom path: $InstallPath" -ForegroundColor Green
+            }
+        }
+        default {
+            $InstallPath = "C:\EmberEye"
+            Write-Host "⚠️  Invalid choice. Using default: $InstallPath" -ForegroundColor Yellow
+        }
+    }
+    
+    Write-Host ""
+}
 
 # Global settings
 $LogFile = "$InstallPath\setup_log_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').txt"
