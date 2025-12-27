@@ -25,17 +25,17 @@ if ([string]::IsNullOrWhiteSpace($InstallPath)) {
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║      EmberEye v1.0.0-beta - Installation Path Selection       ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "==============================================================" -ForegroundColor Cyan
+    Write-Host "  EmberEye v1.0.0-beta - Installation Path Selection" -ForegroundColor Cyan
+    Write-Host "==============================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Where would you like to install EmberEye?" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  1. Use current directory" -ForegroundColor Green
-    Write-Host "     📁 $ScriptDir" -ForegroundColor Cyan
+    Write-Host "     DIR: $ScriptDir" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  2. Use default location" -ForegroundColor Green
-    Write-Host "     📁 C:\EmberEye" -ForegroundColor Cyan
+    Write-Host "     DIR: C:\EmberEye" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  3. Enter custom path" -ForegroundColor Green
     Write-Host ""
@@ -45,25 +45,25 @@ if ([string]::IsNullOrWhiteSpace($InstallPath)) {
     switch ($Choice) {
         "1" {
             $InstallPath = $ScriptDir
-            Write-Host "✅ Using current directory: $InstallPath" -ForegroundColor Green
+            Write-Host "Using current directory: $InstallPath" -ForegroundColor Green
         }
         "2" {
             $InstallPath = "C:\EmberEye"
-            Write-Host "✅ Using default directory: $InstallPath" -ForegroundColor Green
+            Write-Host "Using default directory: $InstallPath" -ForegroundColor Green
         }
         "3" {
             $CustomPath = Read-Host "Enter installation path"
             if ([string]::IsNullOrWhiteSpace($CustomPath)) {
                 $InstallPath = "C:\EmberEye"
-                Write-Host "⚠️  Empty path provided. Using default: $InstallPath" -ForegroundColor Yellow
+                Write-Host "Warning: Empty path provided. Using default: $InstallPath" -ForegroundColor Yellow
             } else {
                 $InstallPath = $CustomPath
-                Write-Host "✅ Using custom path: $InstallPath" -ForegroundColor Green
+                Write-Host "Using custom path: $InstallPath" -ForegroundColor Green
             }
         }
         default {
             $InstallPath = "C:\EmberEye"
-            Write-Host "⚠️  Invalid choice. Using default: $InstallPath" -ForegroundColor Yellow
+            Write-Host "Warning: Invalid choice. Using default: $InstallPath" -ForegroundColor Yellow
         }
     }
     
@@ -193,13 +193,13 @@ function Check-Python {
 function Install-Python {
     Write-Log "Attempting to install Python 3.12..." "INFO"
     Write-Host ""
-    Write-Host "⚠️  Python 3.12+ is required but not installed." -ForegroundColor Yellow
+    Write-Host "Python 3.12+ is required but not installed." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "Please download and install Python from:" -ForegroundColor Yellow
-    Write-Host "  📥 https://www.python.org/downloads/" -ForegroundColor Cyan
+    Write-Host "  https://www.python.org/downloads/" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "✅ IMPORTANT: During installation, CHECK:" -ForegroundColor Yellow
-    Write-Host "    ☑️  'Add Python to PATH'" -ForegroundColor Green
+    Write-Host "IMPORTANT: During installation, check:" -ForegroundColor Yellow
+    Write-Host "    - 'Add Python to PATH'" -ForegroundColor Green
     Write-Host ""
     Write-Host "After installation, run this script again." -ForegroundColor Yellow
     Write-Host ""
@@ -521,9 +521,9 @@ function Main {
     
     # Install dependencies
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host "Step 4: Installing Dependencies" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     
     if (-not (Install-Dependencies $repoPath)) {
@@ -533,45 +533,45 @@ function Main {
     
     # Install build tools
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host "Step 5: Installing Build Tools" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     
     Install-BuildTools $repoPath | Out-Null
     
     # Verify installation
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host "Step 6: Verifying Installation" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     
     Verify-Installation $repoPath | Out-Null
     
     # Create shortcuts
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host "Step 7: Creating Shortcuts" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     
     Create-Shortcuts $repoPath
     
     # Summary
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-    Write-Host "║           ✅ SETUP COMPLETED SUCCESSFULLY! ✅                 ║" -ForegroundColor Green
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host "==============================================================" -ForegroundColor Green
+    Write-Host "  SETUP COMPLETED SUCCESSFULLY" -ForegroundColor Green
+    Write-Host "==============================================================" -ForegroundColor Green
     Write-Host ""
     
-    Write-Host "📍 Installation Location: $repoPath" -ForegroundColor Green
-    Write-Host "📊 Log Files:" -ForegroundColor Cyan
+    Write-Host "Installation Location: $repoPath" -ForegroundColor Green
+    Write-Host "Log Files:" -ForegroundColor Cyan
     Write-Host "   - Main Log: $LogFile"
     Write-Host "   - Errors:   $ErrorsFile"
     Write-Host "   - Warnings: $WarningsFile"
     Write-Host ""
-    Write-Host "🚀 Next Steps:" -ForegroundColor Yellow
+    Write-Host "Next Steps:" -ForegroundColor Yellow
     Write-Host "   1. Launch EmberEye from desktop shortcut, or"
     Write-Host "   2. Run: cd $repoPath && .\.venv\Scripts\activate && python main.py"
     Write-Host "   3. To build .exe: Run build_windows.bat"
