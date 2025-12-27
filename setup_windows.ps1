@@ -178,11 +178,11 @@ function Check-Python {
         
         # Check version requirement
         if (Compare-Versions -Current $pythonVersion -Required $PYTHON_MIN_VERSION) {
-            $successMsg = "Python version meets requirement ($PYTHON_MIN_VERSION and above)"
+            $successMsg = 'Python version meets requirement (' + $PYTHON_MIN_VERSION + ' and above)'
             Write-Log $successMsg "SUCCESS"
             return $true
         } else {
-            $warningMsg = "Python version is below requirement (need $PYTHON_MIN_VERSION, found $pythonVersion)"
+            $warningMsg = 'Python version is below requirement (need ' + $PYTHON_MIN_VERSION + ', found ' + $pythonVersion + ')'
             Write-Log $warningMsg "WARNING"
             return $false
         }
