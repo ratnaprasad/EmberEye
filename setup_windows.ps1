@@ -474,9 +474,9 @@ function Main {
     
     # Check prerequisites
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host "Step 1: Checking Prerequisites" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     
     $pythonOk = Check-Python
@@ -499,9 +499,9 @@ function Main {
     
     # Clone repository
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host "Step 2: Cloning Repository" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     
     $repoPath = Clone-Repository
@@ -512,9 +512,9 @@ function Main {
     
     # Setup virtual environment
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host "Step 3: Setting Up Virtual Environment" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+    Write-Host "--------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     
     if (-not (Setup-VirtualEnvironment $repoPath)) {
