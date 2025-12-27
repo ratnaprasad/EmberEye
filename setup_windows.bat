@@ -9,9 +9,9 @@ REM ============================================================================
 setlocal enabledelayedexpansion
 
 echo.
-echo ╔════════════════════════════════════════════════════════════════╗
-echo ║      EmberEye v1.0.0-beta - Automated Windows Setup           ║
-echo ╚════════════════════════════════════════════════════════════════╝
+echo ================================================================
+echo       EmberEye v1.0.0-beta - Automated Windows Setup
+echo ================================================================
 echo.
 
 REM Check if PowerShell is available
@@ -64,12 +64,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%SCRIPT_DIR%setup_win
 
 if errorlevel 1 (
     echo.
-    echo ❌ Setup failed. Check the log files for details.
+    echo ERROR: Setup failed. Check the log files for details.
     pause
     exit /b 1
 ) else (
     echo.
-    echo ✅ Setup completed successfully!
+    echo SUCCESS: Setup completed successfully!
     pause
     exit /b 0
 )
