@@ -63,13 +63,23 @@ if exist "logo.ico" (
     set ICON_FLAG=--icon logo.ico
 )
 
+REM Build PyInstaller command with conditional data directories
+set DATA_FLAGS=
+if exist "embereye\resources" (
+    set DATA_FLAGS=!DATA_FLAGS! --add-data "embereye/resources;embereye/resources"
+)
+if exist "embereye\utils" (
+    set DATA_FLAGS=!DATA_FLAGS! --add-data "embereye/utils;embereye/utils"
+)
+if exist "embereye\config" (
+    set DATA_FLAGS=!DATA_FLAGS! --add-data "embereye/config;embereye/config"
+)
+
 pyinstaller --onefile ^
     --windowed ^
     --name "EmberEye" ^
     %ICON_FLAG% ^
-    --add-data "embereye/resources;embereye/resources" ^
-    --add-data "embereye/utils;embereye/utils" ^
-    --add-data "embereye/config;embereye/config" ^
+    %DATA_FLAGS% ^
     --hidden-import=torch ^
     --hidden-import=torchvision ^
     --hidden-import=ultralytics ^
