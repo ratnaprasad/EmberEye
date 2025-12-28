@@ -94,10 +94,24 @@ class ActivationKeyGenerator:
             print(f"Error validating activation key: {e}")
             return False, None, None
 
-# Example Usage
+"""
+Example Usage (secure):
+
+This sample avoids hard-coding secrets. Provide the secret via environment
+variable EMBEREYE_ACTIVATION_SECRET, or set it at runtime.
+
+DO NOT hard-code production secrets in source code.
+"""
+
 if __name__ == "__main__":
-    secret_key = "my_super_secret_key"
-    generator = ActivationKeyGenerator(secret_key)
+    env_secret = os.getenv("EMBEREYE_ACTIVATION_SECRET")
+    if not env_secret:
+        print("[WARN] EMBEREYE_ACTIVATION_SECRET not set. Set it before running.")
+        print("        Example (Windows): set EMBEREYE_ACTIVATION_SECRET=your_secret")
+        print("        Example (macOS/Linux): export EMBEREYE_ACTIVATION_SECRET=your_secret")
+        raise SystemExit(1)
+
+    generator = ActivationKeyGenerator(env_secret)
 
     user_id = str(uuid.uuid4())
     activation_key = generator.generate_activation_key(user_id)
