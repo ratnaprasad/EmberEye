@@ -79,6 +79,7 @@ pyinstaller --onefile ^
     --windowed ^
     --name "EmberEye" ^
     --paths . ^
+    --paths embereye ^
     %ICON_FLAG% ^
     %DATA_FLAGS% ^
     --hidden-import=torch ^
@@ -86,6 +87,8 @@ pyinstaller --onefile ^
     --hidden-import=ultralytics ^
     --hidden-import=cv2 ^
     --hidden-import=PyQt5 ^
+    --hidden-import=ee_loginwindow ^
+    --hidden-import=main_window ^
     --hidden-import=video_widget ^
     --hidden-import=video_worker ^
     --hidden-import=stream_config ^
@@ -98,8 +101,17 @@ pyinstaller --onefile ^
     --hidden-import=tcp_server_logger ^
     --hidden-import=debug_config ^
     --hidden-import=vision_detector ^
+    --hidden-import=vision_logger ^
     --hidden-import=anomalies ^
     --hidden-import=threat_rules ^
+    --hidden-import=tcp_sensor_server ^
+    --hidden-import=tcp_async_server ^
+    --hidden-import=database_manager ^
+    --hidden-import=device_status_manager ^
+    --hidden-import=error_logger ^
+    --hidden-import=crash_logger ^
+    --hidden-import=theme_manager ^
+    --hidden-import=auto_updater ^
     --collect-all=ultralytics ^
     --collect-all=torch ^
     --collect-all=cv2 ^
