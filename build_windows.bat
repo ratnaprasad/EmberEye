@@ -27,7 +27,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo ✓ Python and Git found
+echo [OK] Python and Git found
 
 REM Create virtual environment if it doesn't exist
 if not exist ".venv" (
@@ -79,7 +79,7 @@ pyinstaller --onefile ^
     --collect-all=torch ^
     --collect-all=cv2 ^
     --distpath dist ^
-    --buildpath build ^
+    --workpath build ^
     --specpath . ^
     main.py
 
