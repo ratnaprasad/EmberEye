@@ -78,6 +78,7 @@ if exist "embereye\config" (
 pyinstaller --onefile ^
     --windowed ^
     --name "EmberEye" ^
+    --paths . ^
     %ICON_FLAG% ^
     %DATA_FLAGS% ^
     --hidden-import=torch ^
