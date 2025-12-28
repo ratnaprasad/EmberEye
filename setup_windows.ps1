@@ -282,6 +282,7 @@ function Clone-Repository {
     Write-Log "Cloning EmberEye repository..."
     
     $repoPath = Join-Path $InstallPath "EmberEye"
+    $repoUrl = "https://github.com/ratnaprasad/EmberEye.git"
     
     if (Test-Path $repoPath) {
         if ($Force) {
@@ -295,9 +296,17 @@ function Clone-Repository {
     
     try {
         Write-Host "Cloning repository (this may take a minute)..." -ForegroundColor Cyan
+        Write-Host ""
+        
+        # Note: For private repositories, you may need:
+        # - SSH keys configured, OR
+        # - GitHub Personal Access Token in HTTPS URL, OR
+        # - Git Credential Manager installed
+        Write-Log "Attempting to clone: $repoUrl"
+        
         Push-Location $InstallPath
         
-        & git clone https://github.com/ratnaprasad/EmberEye.git 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
+        & git clone $repoUrl 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
         
         if ($LASTEXITCODE -eq 0) {
             Write-Log "Repository cloned successfully" "SUCCESS"
@@ -305,6 +314,14 @@ function Clone-Repository {
             return $repoPath
         } else {
             Write-Log "Git clone failed with exit code: $LASTEXITCODE" "ERROR"
+            Write-Host ""
+            Write-Host "IMPORTANT: If this is a private repository:" -ForegroundColor Yellow
+            Write-Host "  1. Ensure you have access permissions on GitHub" -ForegroundColor Cyan
+            Write-Host "  2. Configure one of the following:" -ForegroundColor Cyan
+            Write-Host "     a) SSH keys (https://docs.github.com/en/authentication/connecting-to-github-with-ssh)" -ForegroundColor Cyan
+            Write-Host "     b) Personal Access Token (https://docs.github.com/en/authentication/tokens-creating-a-personal-access-token)" -ForegroundColor Cyan
+            Write-Host "     c) Git Credential Manager (installed with Git)" -ForegroundColor Cyan
+            Write-Host ""
             Pop-Location
             return $null
         }
