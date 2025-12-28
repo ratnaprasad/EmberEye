@@ -118,9 +118,24 @@ function Write-Log {
 function Test-CommandExists {
     param([string]$Command)
     try {
+        # First try PATH
         $null = & $Command --version 2>$null
         return $true
     } catch {
+        # For Git, check common installation paths
+        if ($Command -eq "git") {
+            $gitPaths = @(
+                "C:\Program Files\Git\cmd\git.exe",
+                "C:\Program Files (x86)\Git\cmd\git.exe",
+                "C:\Program Files\Git\bin\git.exe",
+                "C:\Program Files (x86)\Git\bin\git.exe"
+            )
+            foreach ($path in $gitPaths) {
+                if (Test-Path $path) {
+                    return $true
+                }
+            }
+        }
         return $false
     }
 }
@@ -128,9 +143,29 @@ function Test-CommandExists {
 function Get-CommandVersion {
     param([string]$Command)
     try {
+        # First try PATH
         $version = & $Command --version 2>&1 | Select-Object -First 1
         return $version.Trim()
     } catch {
+        # For Git, check common installation paths
+        if ($Command -eq "git") {
+            $gitPaths = @(
+                "C:\Program Files\Git\cmd\git.exe",
+                "C:\Program Files (x86)\Git\cmd\git.exe",
+                "C:\Program Files\Git\bin\git.exe",
+                "C:\Program Files (x86)\Git\bin\git.exe"
+            )
+            foreach ($path in $gitPaths) {
+                if (Test-Path $path) {
+                    try {
+                        $version = & $path --version 2>&1 | Select-Object -First 1
+                        return $version.Trim()
+                    } catch {
+                        continue
+                    }
+                }
+            }
+        }
         return "Unknown"
     }
 }
@@ -232,9 +267,11 @@ function Install-Git {
     Write-Host "Please download and install Git from:" -ForegroundColor Yellow
     Write-Host "  https://git-scm.com/download/win" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Accept all default settings during installation." -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "After installation, run this script again." -ForegroundColor Yellow
+    Write-Host "Installation Instructions:" -ForegroundColor Yellow
+    Write-Host "  1. Accept all default settings during installation" -ForegroundColor Green
+    Write-Host "  2. Close this PowerShell window completely" -ForegroundColor Green
+    Write-Host "  3. Open a NEW PowerShell window" -ForegroundColor Green
+    Write-Host "  4. Run this script again" -ForegroundColor Green
     Write-Host ""
     Write-Log "Manual Git installation required"
     
