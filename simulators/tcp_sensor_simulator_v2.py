@@ -14,8 +14,21 @@ import threading
 import logging
 
 # Setup logger (file only, no console)
+import os
+import sys
+# Determine log file path - handle both normal Python and PyInstaller frozen apps
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller bundle
+    app_dir = os.path.dirname(sys.executable)
+else:
+    # Running as normal Python script
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+
+log_dir = os.path.join(app_dir, 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
 logging.basicConfig(
-    filename='simulator_debug.log',
+    filename=os.path.join(log_dir, 'simulator_debug.log'),
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s'
 )

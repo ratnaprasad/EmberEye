@@ -7,12 +7,25 @@ to prevent overload while maximizing throughput.
 
 import time
 import logging
+import os
+import sys
 from threading import Lock
 from typing import Dict
 
+# Determine log file path - handle both normal Python and PyInstaller frozen apps
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller bundle
+    app_dir = os.path.dirname(sys.executable)
+else:
+    # Running as normal Python script
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+
+log_dir = os.path.join(app_dir, 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
 # Setup logger (file only, no console)
 logging.basicConfig(
-    filename='logs/adaptive_fps.log',
+    filename=os.path.join(log_dir, 'adaptive_fps.log'),
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s'
 )
