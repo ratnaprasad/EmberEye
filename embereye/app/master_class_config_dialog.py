@@ -438,7 +438,6 @@ class MasterClassConfigDialog(QDialog):
                     "category-specific 'unclassified_*' during training. You can review and reassign after training.\n\n"
                     "Do you want to continue and save the new taxonomy?"
                 )
-                from PyQt5.QtWidgets import QMessageBox
                 reply = QMessageBox.question(self, "Class Change Impact", msg, QMessageBox.Yes | QMessageBox.No)
                 if reply != QMessageBox.Yes:
                     return

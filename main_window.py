@@ -1506,23 +1506,78 @@ class BEMainWindow(QMainWindow):
                 self._refresh_dataset_stats()
             except Exception:
                 pass
+            
+            # Clear current media selection and re-enable import for next batch
+            self.training_selected_video_path = None
+            self.training_selected_image_paths = []
+            self.training_has_annotations = False
+            self.training_media_imported = False
+            
+            if hasattr(self, 'import_training_btn'):
+                self.import_training_btn.setEnabled(True)
+            if hasattr(self, 'training_status_label'):
+                self.training_status_label.setText("Ready: import media to add more")
+            
             QMessageBox.information(
                 self,
                 "Training",
                 f"Registered annotated frames for training.\n"
                 f"Annotations: {ann_count} files\n"
-                f"Copied to: {target_dir}"
+                f"Copied to: {target_dir}\n\n"
+                "Ready for next batch. Click 'Import Media' to add more."
             )
         else:
             QMessageBox.warning(self, "Training", "Failed to copy annotations to training_data.")
-            QMessageBox.warning(self, "Training", "Failed to copy annotations to training_data.")
 
     def delete_training_data(self):
-        """Delete selected training data."""
-        reply = QMessageBox.question(self, "Delete", "Delete selected training data?",
-                                     QMessageBox.Yes | QMessageBox.No)
+        """Delete selected training data (annotations and source media)."""
+        has_video = bool(getattr(self, 'training_selected_video_path', None))
+        has_images = bool(getattr(self, 'training_selected_image_paths', []))
+        
+        if not (has_video or has_images):
+            QMessageBox.warning(self, "Delete", "No media selected to delete.")
+            return
+        
+        reply = QMessageBox.question(
+            self, 
+            "Delete Training Data", 
+            "Delete annotations and clear imported media?\n\n"
+            "This will:\n"
+            "• Remove saved annotations\n"
+            "• Clear the imported media reference\n\n"
+            "Proceed?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
         if reply == QMessageBox.Yes:
-            QMessageBox.information(self, "Delete", "Training data deleted.")
+            try:
+                # Delete annotation files for current media
+                if has_video:
+                    annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
+                else:
+                    annotations_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
+                
+                if os.path.exists(annotations_dir):
+                    import shutil
+                    shutil.rmtree(annotations_dir)
+                
+                # Clear media references
+                self.training_selected_video_path = None
+                self.training_selected_image_paths = []
+                self.training_has_annotations = False
+                self.training_media_imported = False
+                
+                # Re-enable import button
+                if hasattr(self, 'import_training_btn'):
+                    self.import_training_btn.setEnabled(True)
+                
+                # Update status
+                if hasattr(self, 'training_status_label'):
+                    self.training_status_label.setText("Ready: import media to begin")
+                
+                QMessageBox.information(self, "Delete", "Annotations and media reference deleted successfully.")
+            except Exception as e:
+                QMessageBox.critical(self, "Delete Error", f"Failed to delete: {str(e)}")
 
     def review_unclassified_items(self):
         """Scan training_data/dataset for labels mapped to unclassified_* and present a review list."""
@@ -1652,6 +1707,26 @@ class BEMainWindow(QMainWindow):
 
         from training_pipeline import TrainingConfig
         project_name = f"embereye_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Small dataset detected - notify user about aggressive augmentation
+        if ann_total < 100:
+            reply = QMessageBox.question(
+                self, 
+                "Small Dataset Detected",
+                f"Only {ann_total} annotation files found.\n\n"
+                "🔧 Aggressive augmentation will be applied:\n"
+                "• Increased HSV color variations\n"
+                "• Rotation, scale, shear transforms\n"
+                "• Copy-paste augmentation\n"
+                "• Extended training (150 epochs, patience=50)\n"
+                "• Reduced learning rate for stability\n\n"
+                "Recommended: Add 100-200+ images per class for best results.\n\n"
+                "Continue with aggressive augmentation?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+        
         config = TrainingConfig(
             project_name=project_name,
             epochs=self.epochs_spin.value(),
