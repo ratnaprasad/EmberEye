@@ -28,7 +28,17 @@ class SAMSegmenter:
             return True
         
         try:
-            from ultralytics import FastSAM
+            # Try importing FastSAM from ultralytics
+            try:
+                from ultralytics import FastSAM
+            except (ImportError, AttributeError) as e:
+                logger.warning(f"FastSAM not available in ultralytics package: {e}")
+                # Try alternative import (older versions)
+                try:
+                    from ultralytics.models.fastsam import FastSAM
+                except:
+                    raise ImportError("FastSAM not found in ultralytics package. Install: pip install ultralytics>=8.0.120")
+            
             logger.info("Loading FastSAM model...")
             # Download and load FastSAM-s model (small, ~23MB)
             self.model = FastSAM('FastSAM-s.pt')
@@ -193,28 +203,42 @@ class SAMSegmenter:
                 logger.error(f"Click coordinates ({x}, {y}) out of bounds for frame {w}x{h}")
                 return None
             
-            # Define rectangular region around click (50x50 pixel box)
-            margin = 50
+            # Define rectangular region around click (75-pixel margin = 150x150 region)
+            # Larger region helps GrabCut work better, especially near edges
+            margin = 75
             rect_x = max(0, x - margin)
             rect_y = max(0, y - margin)
             rect_w = min(2 * margin, w - rect_x)
             rect_h = min(2 * margin, h - rect_y)
             
+            # Ensure minimum size for GrabCut to work effectively
+            min_size = 50
+            if rect_w < min_size or rect_h < min_size:
+                logger.warning(f"Region too small for GrabCut: {rect_w}x{rect_h} (need {min_size}x{min_size})")
+                # Try expanding in opposite direction if near edge
+                if rect_w < min_size:
+                    rect_x = max(0, min(rect_x, w - min_size))
+                    rect_w = min(min_size, w - rect_x)
+                if rect_h < min_size:
+                    rect_y = max(0, min(rect_y, h - min_size))
+                    rect_h = min(min_size, h - rect_y)
+                
+                # If still too small, give up
+                if rect_w < min_size or rect_h < min_size:
+                    logger.error(f"Cannot create valid GrabCut region: final size {rect_w}x{rect_h}")
+                    return None
+            
             logger.info(f"GrabCut rect: x={rect_x}, y={rect_y}, w={rect_w}, h={rect_h}")
             
-            if rect_w < 10 or rect_h < 10:
-                logger.warning(f"Click too close to edge for GrabCut: rect {rect_w}x{rect_h}")
-                return None
-            
-            # Initialize mask
+            # Initialize mask and models
             mask = np.zeros(self.current_frame.shape[:2], np.uint8)
             bgd_model = np.zeros((1, 65), np.float64)
             fgd_model = np.zeros((1, 65), np.float64)
             
-            logger.info("Running GrabCut algorithm...")
-            # Run GrabCut
+            logger.info("Running GrabCut algorithm with 10 iterations...")
+            # Run GrabCut with more iterations for better results
             rect = (rect_x, rect_y, rect_w, rect_h)
-            cv2.grabCut(self.current_frame, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+            cv2.grabCut(self.current_frame, mask, rect, bgd_model, fgd_model, 10, cv2.GC_INIT_WITH_RECT)
             
             # Create binary mask (foreground)
             binary_mask = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
