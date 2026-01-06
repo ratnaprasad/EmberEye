@@ -1264,9 +1264,6 @@ class BEMainWindow(QMainWindow):
                 backup_msg = f"\nBackup: {applied.get('backup') or 'n/a'}" if mode == 'override' else ""
                 QMessageBox.information(self, "Import Annotations",
                                         f"Applied: {mode}{backup_msg}\nDuplicates (dry-run): {dup}\nDisagreements (dry-run): {dis}")
-                try:
-                except Exception:
-                    pass
         except Exception as e:
             QMessageBox.critical(self, "Import Annotations", f"Error: {e}")
 
