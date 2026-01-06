@@ -446,6 +446,11 @@ class AnnotationToolDialog(QDialog):
         self.media_mode = 'video' if (self.video_path and not self.image_paths) else ('images' if self.image_paths else 'none')
         self.media_base = None
         
+        # Initialize undo/redo stacks for annotations
+        self.undo_stack = []  # List of frame annotation snapshots
+        self.redo_stack = []
+        self.current_sensitivity = 5  # 1-10 scale
+        
         # Initialize timers EARLY (before any video loading)
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
@@ -469,7 +474,7 @@ class AnnotationToolDialog(QDialog):
         left_widget = QWidget()
         left_widget.setLayout(left)
         self.canvas = ImageCanvas()
-        self.canvas.on_shapes_changed = lambda _: self.refresh_box_list()
+        self.canvas.on_shapes_changed = lambda _: (self._save_undo_point(), self.refresh_box_list())
         self.canvas.setMouseTracking(True)
         # Assign class color palette (consistent across all rendering)
         self.class_colors = self._build_class_colors(self.leaf_classes or self.class_labels)
@@ -553,6 +558,36 @@ class AnnotationToolDialog(QDialog):
         self.mode_instruction_label.setStyleSheet("color: #666; font-size: 10px; padding: 5px; background: #f0f0f0; border-radius: 3px;")
         self._update_mode_instructions()
         right.addWidget(self.mode_instruction_label)
+        
+        # Segmentation sensitivity slider
+        right.addWidget(QLabel("Segmentation Sensitivity"))
+        sensitivity_layout = QHBoxLayout()
+        self.sensitivity_slider = QSlider(Qt.Horizontal)
+        self.sensitivity_slider.setMinimum(1)
+        self.sensitivity_slider.setMaximum(10)
+        self.sensitivity_slider.setValue(5)  # Default middle
+        self.sensitivity_slider.setTickPosition(QSlider.TicksBelow)
+        self.sensitivity_slider.setTickInterval(1)
+        self.sensitivity_label = QLabel("5 (Medium)")
+        self.sensitivity_label.setMaximumWidth(80)
+        self.sensitivity_slider.valueChanged.connect(self._on_sensitivity_changed)
+        sensitivity_layout.addWidget(self.sensitivity_slider)
+        sensitivity_layout.addWidget(self.sensitivity_label)
+        right.addLayout(sensitivity_layout)
+        
+        # Undo/Redo buttons
+        undo_redo_layout = QHBoxLayout()
+        undo_btn = QPushButton("↶ Undo")
+        undo_btn.setMaximumWidth(80)
+        undo_btn.setToolTip("Ctrl+Z")
+        undo_btn.clicked.connect(self.undo)
+        redo_btn = QPushButton("↷ Redo")
+        redo_btn.setMaximumWidth(80)
+        redo_btn.setToolTip("Ctrl+Y")
+        redo_btn.clicked.connect(self.redo)
+        undo_redo_layout.addWidget(undo_btn)
+        undo_redo_layout.addWidget(redo_btn)
+        right.addLayout(undo_redo_layout)
 
         add_box_btn = QPushButton("Assign Class to New Boxes")
         add_box_btn.setStyleSheet("padding: 8px; font-size: 11px;")
@@ -933,6 +968,8 @@ class AnnotationToolDialog(QDialog):
                             class_name = f"class_{class_id}"
                         
                         # Check if box or polygon format
+                        # Box format: class x_center y_center width height (exactly 5 parts)
+                        # Polygon format: class x1 y1 x2 y2 x3 y3 ... (odd number of parts, >= 7)
                         if len(parts) == 5:
                             # Box format: class x_center y_center width height
                             x_center = float(parts[1])
@@ -956,8 +993,9 @@ class AnnotationToolDialog(QDialog):
                                 'saved': True,
                                 'type': 'box'
                             })
-                        else:
-                            # Polygon format: class x1 y1 x2 y2 ...
+                            logger.info(f"Loaded box annotation: {class_name}")
+                        elif len(parts) >= 7 and (len(parts) - 1) % 2 == 0:
+                            # Polygon format: class x1 y1 x2 y2 ... (even number of coordinates)
                             polygon = []
                             for i in range(1, len(parts), 2):
                                 if i + 1 < len(parts):
@@ -972,6 +1010,11 @@ class AnnotationToolDialog(QDialog):
                                     'saved': True,
                                     'type': 'polygon'
                                 })
+                                logger.info(f"Loaded polygon annotation: {class_name} with {len(polygon)} points")
+                            else:
+                                logger.warning(f"Polygon has fewer than 3 points, skipping")
+                        else:
+                            logger.warning(f"Unknown annotation format with {len(parts)} parts: {line.strip()}")
                     except (ValueError, IndexError) as e:
                         logger.warning(f"Failed to parse annotation line: {line.strip()} - {e}")
                         continue
@@ -1126,6 +1169,57 @@ class AnnotationToolDialog(QDialog):
         
         if hasattr(self, 'mode_instruction_label'):
             self.mode_instruction_label.setText(text)
+    
+    def _on_sensitivity_changed(self, value):
+        """Handle segmentation sensitivity slider change."""
+        self.current_sensitivity = value
+        # Map 1-10 to descriptive labels
+        labels = {
+            1: "Very Low", 2: "Low", 3: "Low", 4: "Low-Medium",
+            5: "Medium", 6: "Medium", 7: "Medium-High", 8: "High",
+            9: "High", 10: "Very High"
+        }
+        self.sensitivity_label.setText(f"{value} ({labels[value]})")
+        logger.info(f"Segmentation sensitivity set to {value}/10 ({labels[value]})")
+    
+    def _save_undo_point(self):
+        """Save current frame annotations to undo stack."""
+        if hasattr(self, 'undo_stack') and self.canvas.shapes:
+            # Store deep copy of current shapes
+            import copy
+            self.undo_stack.append(copy.deepcopy(self.canvas.shapes))
+            self.redo_stack.clear()  # Clear redo on new action
+            # Keep undo history limited to 20 actions
+            if len(self.undo_stack) > 20:
+                self.undo_stack.pop(0)
+    
+    def undo(self):
+        """Undo last annotation."""
+        if self.undo_stack:
+            import copy
+            # Save current state to redo
+            self.redo_stack.append(copy.deepcopy(self.canvas.shapes))
+            # Restore previous state
+            self.canvas.shapes = self.undo_stack.pop()
+            self.canvas.update()
+            self.refresh_box_list()
+            logger.info("Undo: Restored previous annotation state")
+        else:
+            QMessageBox.information(self, "Undo", "Nothing to undo")
+    
+    def redo(self):
+        """Redo last undone annotation."""
+        if self.redo_stack:
+            import copy
+            # Save current state to undo
+            self.undo_stack.append(copy.deepcopy(self.canvas.shapes))
+            # Restore next state
+            self.canvas.shapes = self.redo_stack.pop()
+            self.canvas.update()
+            self.refresh_box_list()
+            logger.info("Redo: Restored next annotation state")
+        else:
+            QMessageBox.information(self, "Redo", "Nothing to redo")
 
     def _get_leaf_from_label(self, label_text):
         # If hierarchical, leaf is after last arrow
@@ -1311,6 +1405,21 @@ class AnnotationToolDialog(QDialog):
     # Keyboard shortcuts
     def keyPressEvent(self, event):
         key = event.key()
+        modifiers = event.modifiers()
+        
+        # Ctrl+Z: Undo
+        if key == Qt.Key_Z and (modifiers & Qt.ControlModifier):
+            self.undo()
+            event.accept()
+            return
+        
+        # Ctrl+Y or Ctrl+Shift+Z: Redo
+        if (key == Qt.Key_Y and (modifiers & Qt.ControlModifier)) or \
+           (key == Qt.Key_Z and (modifiers & Qt.ControlModifier) and (modifiers & Qt.ShiftModifier)):
+            self.redo()
+            event.accept()
+            return
+        
         # ESC cancels polygon drawing
         if key == Qt.Key_Escape and hasattr(self.canvas, '_drawing_polygon') and self.canvas._drawing_polygon:
             self.canvas._polygon_points = []

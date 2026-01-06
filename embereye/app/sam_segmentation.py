@@ -28,46 +28,19 @@ class SAMSegmenter:
             return True
         
         try:
-            # Try importing FastSAM from ultralytics (multiple import paths for compatibility)
-            FastSAM = None
+            # Import FastSAM from ultralytics
+            logger.info("Attempting to import FastSAM...")
+            from ultralytics import FastSAM
             
-            # Try path 1: Direct import (newer versions)
-            try:
-                from ultralytics import FastSAM as FastSAM_direct
-                FastSAM = FastSAM_direct
-                logger.info("FastSAM loaded from ultralytics (direct import)")
-            except (ImportError, AttributeError):
-                pass
-            
-            # Try path 2: From ultralytics.models (older versions)
-            if FastSAM is None:
-                try:
-                    from ultralytics.models.fastsam import FastSAM as FastSAM_models
-                    FastSAM = FastSAM_models
-                    logger.info("FastSAM loaded from ultralytics.models.fastsam")
-                except (ImportError, AttributeError):
-                    pass
-            
-            # Try path 3: From segment_anything_fast package directly
-            if FastSAM is None:
-                try:
-                    from segment_anything_fast import FastSAM as FastSAM_pkg
-                    FastSAM = FastSAM_pkg
-                    logger.info("FastSAM loaded from segment_anything_fast package")
-                except (ImportError, AttributeError):
-                    pass
-            
-            if FastSAM is None:
-                raise ImportError("FastSAM not found. Please ensure compatible versions are installed: pip install 'ultralytics==8.0.122' 'segment-anything-fast>=0.1.0'")
-            
-            logger.info("Loading FastSAM model...")
-            # Download and load FastSAM-s model (small, ~23MB)
+            logger.info("Loading FastSAM-s model (small, ~23MB)...")
             self.model = FastSAM('FastSAM-s.pt')
-            logger.info("✓ FastSAM model loaded successfully")
+            logger.info("✓ FastSAM model loaded successfully on device: " + self.device)
             return True
+            
         except Exception as e:
             logger.error(f"✗ Failed to load FastSAM model: {e}")
-            logger.info("Will use GrabCut fallback instead")
+            logger.info("Will use GrabCut fallback instead (still works well)")
+            return False
             return False
     
     def set_frame(self, frame_bgr: np.ndarray):
