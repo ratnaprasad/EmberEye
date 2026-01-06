@@ -7,56 +7,66 @@
     "VEHICLE_CATEGORY",
     "SAFETY_CATEGORY",
     "ENVIRONMENT_MARKERS",
-    "DEFAULT_CATEGORY"
+    "SMOKE_SENSITIVITY",
+    "FIRE_SENSITIVITY"
   ],
   "FIRE_CATEGORY": [
-    "flame",
-    "spark",
-    "ember",
-    "heat_haze",
-    "fire"
+    "CLASS A",
+    "CLASS B",
+    "CLASS C",
+    "CLASS D",
+    "CLASS K"
   ],
   "SMOKE_CATEGORY": [
-    "smoke",
-    "smoke_heavy",
-    "smoke_toxic",
-    "steam"
+    "WHITE SMOKE",
+    "BLACK SMOKE",
+    "BLUE SMOKE",
+    "YELLOW/BROWN SMOKE"
   ],
   "STRUCTURAL_CATEGORY": [
-    "damaged_vent",
-    "structural_deform",
-    "equipment_leak",
-    "pressure_vessel"
+    "DAMAGED EQUIPMENT",
+    "HIGH_PRESSURE_EQUIPMENT",
+    "FUEL CONTAINER",
+    "ROTARY MACHINES",
+    "ELECTRICAL SWITCHGEAR"
   ],
   "HUMAN_CATEGORY": [
-    "person",
-    "person_protected",
-    "person_distress",
-    "person_rescuer"
+    "PERSON WITHOUT SAFETY WEAR",
+    "PERSON WITH PPE",
+    "PERSON IN DISTRESS",
+    "RESCUE TEAM",
+    "FIRE SENTRY"
   ],
   "VEHICLE_CATEGORY": [
-    "vehicle",
-    "ship",
-    "aircraft",
-    "industrial_vehicle"
+    "COMMERCIAL VEHICLE",
+    "SHIP",
+    "AIRCRAFT",
+    "INDUSTRIAL VEHICLE"
   ],
   "SAFETY_CATEGORY": [
-    "fire_extinguisher",
-    "emergency_exit",
-    "sprinkler",
-    "alarm_light"
+    "FIRE EXTINGUISHER",
+    "SAFETY ALARM",
+    "SPRINKLER",
+    "EMERGENCY EXIT",
+    "EMERGENCY LIGHT"
   ],
   "ENVIRONMENT_MARKERS": [
-    "indoor",
-    "outdoor",
-    "confined_space",
-    "road"
+    "INDOOR",
+    "OUTDOOR",
+    "RESTRICTED AREA",
+    "WEARHOUSE",
+    "PATHWAY"
   ],
-  "DEFAULT_CATEGORY": [
-    "unclassified_fire",
-    "unclassified_smoke",
-    "non_threat"
+  "SMOKE_SENSITIVITY": [
+    "STEAM",
+    "HARMFUL GASES",
+    "FUMES",
+    "SMOKE WITH FIRE"
   ],
-  "fire": [],
-  "Class A": []
+  "FIRE_SENSITIVITY": [
+    "EXPLOSIVES",
+    "WELDING ARC",
+    "CUTTING SPARKS",
+    "FIRE TORCH"
+  ]
 }

@@ -123,6 +123,8 @@ class ImageCanvas(QLabel):
                         painter.setBrush(brush)
                         painter.drawPolygon(qpoly)
                         painter.setBrush(Qt.NoBrush)
+                        # Get bounding rect for label positioning
+                        draw_rect = qpoly.boundingRect().toRect()
                     else:
                         # Draw rectangle
                         r = shape['rect']
@@ -181,15 +183,16 @@ class ImageCanvas(QLabel):
             geom = self._pixmap_geometry()
             if geom and geom.contains(event.pos()):
                 if event.button() == Qt.LeftButton:
-                    if self.annotation_mode == 'polygon':
-                        # AI Segmentation mode: single click triggers SAM
-                        self._handle_sam_click(event.pos(), geom)
-                    elif self.annotation_mode == 'manual_polygon':
-                        # Manual polygon: add point on each click
+                    if self.annotation_mode == 'manual_polygon':
+                        # Manual polygon: add point on each click (MUST come before other modes)
                         rel_pos = event.pos() - geom.topLeft()
                         self._polygon_points.append(rel_pos)
                         self._drawing_polygon = True
                         self.update()
+                        return  # Exit early to prevent triggering other modes
+                    elif self.annotation_mode == 'polygon':
+                        # AI Segmentation mode: single click triggers SAM
+                        self._handle_sam_click(event.pos(), geom)
                     else:
                         # Box mode: start rectangle drawing
                         self._drawing = True
@@ -843,6 +846,8 @@ class AnnotationToolDialog(QDialog):
                 return
             self.current_frame = frame
             self.canvas.set_frame(frame)
+            # Load existing annotations for this image
+            self._load_existing_annotations()
         else:
             if not self.cap:
                 return
@@ -853,6 +858,8 @@ class AnnotationToolDialog(QDialog):
                 return
             self.current_frame = frame
             self.canvas.set_frame(frame)
+            # Load existing annotations for this frame
+            self._load_existing_annotations()
 
         if not self._updating_slider:
             self._updating_slider = True
@@ -862,10 +869,100 @@ class AnnotationToolDialog(QDialog):
                 self.frame_slider.blockSignals(False)
             finally:
                 self._updating_slider = False
-
         self.update_time_labels()
         self.refresh_box_list()
         self._show_overlay()
+
+    def _load_existing_annotations(self):
+        """Load existing annotations from disk for the current frame."""
+        try:
+            import os
+            from pathlib import Path
+            
+            base = self.media_base or os.path.splitext(os.path.basename(self.video_path or "media"))[0]
+            ann_dir = get_data_path(os.path.join("annotations", base))
+            
+            # Determine annotation filename
+            if self.media_mode == 'images':
+                img_name = os.path.basename(self.image_paths[self.frame_index])
+                ann_stem = os.path.splitext(img_name)[0]
+                ann_file = os.path.join(ann_dir, f"{ann_stem}.txt")
+            else:
+                ann_file = os.path.join(ann_dir, f"frame_{self.frame_index:05d}.txt")
+            
+            # Check if annotation file exists
+            if not os.path.exists(ann_file):
+                logger.info(f"No existing annotations found at {ann_file}")
+                return
+            
+            # Load annotations
+            logger.info(f"Loading annotations from {ann_file}")
+            with open(ann_file, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    
+                    try:
+                        class_id = int(parts[0])
+                        
+                        # Find class name from id
+                        class_name = None
+                        for name, cid in self.class_id_map.items():
+                            if cid == class_id:
+                                class_name = name
+                                break
+                        
+                        if class_name is None:
+                            class_name = f"class_{class_id}"
+                        
+                        # Check if box or polygon format
+                        if len(parts) == 5:
+                            # Box format: class x_center y_center width height
+                            x_center = float(parts[1])
+                            y_center = float(parts[2])
+                            width = float(parts[3])
+                            height = float(parts[4])
+                            
+                            # Convert to pixel coordinates
+                            w = self.canvas._display_pixmap.width() if self.canvas._display_pixmap else self.current_frame.shape[1]
+                            h = self.canvas._display_pixmap.height() if self.canvas._display_pixmap else self.current_frame.shape[0]
+                            
+                            x1 = int((x_center - width / 2) * w)
+                            y1 = int((y_center - height / 2) * h)
+                            x2 = int((x_center + width / 2) * w)
+                            y2 = int((y_center + height / 2) * h)
+                            
+                            rect = QRect(x1, y1, x2 - x1, y2 - y1)
+                            self.canvas.shapes.append({
+                                'rect': rect,
+                                'class': class_name,
+                                'saved': True,
+                                'type': 'box'
+                            })
+                        else:
+                            # Polygon format: class x1 y1 x2 y2 ...
+                            polygon = []
+                            for i in range(1, len(parts), 2):
+                                if i + 1 < len(parts):
+                                    x = float(parts[i])
+                                    y = float(parts[i + 1])
+                                    polygon.append((x, y))
+                            
+                            if len(polygon) >= 3:
+                                self.canvas.shapes.append({
+                                    'polygon': polygon,
+                                    'class': class_name,
+                                    'saved': True,
+                                    'type': 'polygon'
+                                })
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Failed to parse annotation line: {line.strip()} - {e}")
+                        continue
+            
+            logger.info(f"Loaded {len(self.canvas.shapes)} annotations")
+        except Exception as e:
+            logger.error(f"Failed to load existing annotations: {e}", exc_info=True)
 
     def prev_frame(self):
         if self.frame_index > 0:
@@ -1086,8 +1183,9 @@ class AnnotationToolDialog(QDialog):
                 meta_file = os.path.join(out_dir, f"frame_{self.frame_index:05d}.json")
             with open(meta_file, "w") as mf:
                 json.dump(meta, mf, indent=2)
-            # Mark current labeled shapes as saved
+            # Mark all saved shapes with a class as saved
             for shape in self.canvas.shapes:
+                # Only mark labeled shapes as saved
                 if shape.get('class'):
                     shape['saved'] = True
             self.canvas.update()

@@ -1023,45 +1023,6 @@ class BEMainWindow(QMainWindow):
         ie_btn_layout.addWidget(import_zip_btn, 3, 1)
         
         left_panel.addLayout(ie_btn_layout)
-        
-        # Ready for Training count display
-        training_ready_group = QWidget()
-        training_ready_layout = QVBoxLayout(training_ready_group)
-        training_ready_layout.setContentsMargins(10, 10, 10, 10)
-        training_ready_group.setStyleSheet("""
-            QWidget {
-                background: rgba(0, 188, 212, 0.1);
-                border: 2px solid #00bcd4;
-                border-radius: 8px;
-            }
-        """)
-        self.training_ready_label = QLabel("📦 Ready for Training")
-        self.training_ready_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #00bcd4; border: none; background: transparent;")
-        training_ready_layout.addWidget(self.training_ready_label)
-        
-        self.training_ready_count_label = QLabel("0 annotation files")
-        self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fff; border: none; background: transparent;")
-        training_ready_layout.addWidget(self.training_ready_count_label)
-        
-        # Tree view for annotation files grouped by class
-        from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
-        self.training_files_tree = QTreeWidget()
-        self.training_files_tree.setHeaderLabels(["Files by Class"])
-        self.training_files_tree.setMaximumHeight(200)
-        self.training_files_tree.setStyleSheet("""
-            QTreeWidget {
-                background: rgba(0, 0, 0, 0.3);
-                border: 1px solid #555;
-                color: #fff;
-                font-size: 11px;
-            }
-            QTreeWidget::item:selected {
-                background: rgba(0, 188, 212, 0.3);
-            }
-        """)
-        training_ready_layout.addWidget(self.training_files_tree)
-        
-        left_panel.addWidget(training_ready_group)
 
         # Track if training just completed (to prevent refresh from resetting display)
         self.training_just_completed = False
@@ -1212,9 +1173,6 @@ class BEMainWindow(QMainWindow):
         self.training_selected_image_paths = []
         self.training_has_annotations = False
         self.training_media_imported = False
-        
-        # Initial count update
-        self._refresh_training_ready_count()
 
     def _export_classes_package(self):
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
@@ -1307,7 +1265,6 @@ class BEMainWindow(QMainWindow):
                 QMessageBox.information(self, "Import Annotations",
                                         f"Applied: {mode}{backup_msg}\nDuplicates (dry-run): {dup}\nDisagreements (dry-run): {dis}")
                 try:
-                    self._refresh_training_ready_count()
                 except Exception:
                     pass
         except Exception as e:
@@ -1335,10 +1292,6 @@ class BEMainWindow(QMainWindow):
             from embereye.app.training_sync import import_annotations_zip
             result = import_annotations_zip(path)
             QMessageBox.information(self, "Import ZIP", f"Extracted: {result.get('extracted')}\nMedia: {result.get('media')}\nDestination: {result.get('dest')}")
-            try:
-                self._refresh_training_ready_count()
-            except Exception:
-                pass
         except Exception as e:
             QMessageBox.critical(self, "Import ZIP", f"Error: {e}")
 
@@ -1377,10 +1330,6 @@ class BEMainWindow(QMainWindow):
                 return
             result = restore_annotations_backup(path)
             QMessageBox.information(self, "Revert Annotations", f"Restored to: {result.get('restored')}\nUsed backup: {result.get('used_backup')}\nSafety backup: {result.get('safety_backup') or 'n/a'}")
-            try:
-                self._refresh_training_ready_count()
-            except Exception:
-                pass
         except Exception as e:
             QMessageBox.critical(self, "Revert Annotations", f"Error: {e}")
 
@@ -1525,7 +1474,6 @@ class BEMainWindow(QMainWindow):
             return
         target_dir = self._copy_annotations_to_training(annotations_dir)
         if target_dir:
-            self._refresh_training_ready_count()
             try:
                 self._refresh_dataset_stats()
             except Exception:
@@ -2974,40 +2922,6 @@ class BEMainWindow(QMainWindow):
         except Exception as e:
             self.model_versions_list.clear()
             self.model_versions_list.addItem(f"Error loading versions: {e}")
-
-    def _refresh_training_ready_count(self):
-        """Update the 'Ready for Training' count display and file tree."""
-        # Don't update if training just completed (preserve completion message)
-        if getattr(self, 'training_just_completed', False):
-            return
-        
-        try:
-            from PyQt5.QtWidgets import QTreeWidgetItem
-            training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
-            total = self._count_annotation_files(training_ann_base)
-            
-            # Update count label
-            if total == 0:
-                self.training_ready_count_label.setText("0 annotation files")
-                self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #888; border: none; background: transparent;")
-            else:
-                self.training_ready_count_label.setText(f"{total} annotation files")
-                self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;")
-            
-            # Update tree view grouped by class
-            self.training_files_tree.clear()
-            if total > 0:
-                files_by_class = self._get_files_grouped_by_class(training_ann_base)
-                for class_name, files in sorted(files_by_class.items()):
-                    class_item = QTreeWidgetItem(self.training_files_tree, [f"{class_name} ({len(files)} files)"])
-                    class_item.setExpanded(False)  # Collapsed by default
-                    for file_path in sorted(files):
-                        file_name = os.path.basename(file_path)
-                        QTreeWidgetItem(class_item, [file_name])
-        except Exception:
-            self.training_ready_count_label.setText("Error")
-            self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #f44336; border: none; background: transparent;")
-    
     def _get_files_grouped_by_class(self, annotations_dir: str) -> dict:
         """Group annotation files by detected classes."""
         from master_class_config import load_master_classes
