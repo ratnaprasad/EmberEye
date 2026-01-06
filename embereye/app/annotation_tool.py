@@ -6,14 +6,18 @@ from resource_helper import get_data_path
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QCompleter, QSlider, QStackedLayout,
-    QWidget, QListWidget, QSizePolicy
+    QWidget, QListWidget, QSizePolicy, QRadioButton, QButtonGroup
 )
-from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer, QEvent
-from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor
+from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer, QEvent, QPointF
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPolygonF, QBrush
+from embereye.app.sam_segmentation import SAMSegmenter
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ImageCanvas(QLabel):
-    """A QLabel-based canvas to display frames and draw rectangles with labels."""
+    """A QLabel-based canvas to display frames and draw rectangles/polygons with labels."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
@@ -25,15 +29,23 @@ class ImageCanvas(QLabel):
         self._drawing = False
         self._start = QPoint()
         self._end = QPoint()
-        # list of dicts: {'rect': QRect, 'class': Optional[str]}
+        # list of dicts: {'rect': QRect, 'polygon': List[(x,y)], 'class': Optional[str], 'type': 'box'|'polygon'}
         self.shapes = []
         self.on_shapes_changed = None  # callback
         # Class → QColor mapping (assigned by dialog)
         self.class_colors = {}
+        # Annotation mode: 'box', 'polygon', or 'manual_polygon'
+        self.annotation_mode = 'box'
+        # Reference to current frame BGR for SAM
+        self.current_frame_bgr = None
+        # Manual polygon drawing state
+        self._polygon_points = []  # List of QPoint for current polygon
+        self._drawing_polygon = False
 
     def set_frame(self, frame_bgr):
         """Set the current frame and reset drawn shapes."""
         h, w, _ = frame_bgr.shape
+        self.current_frame_bgr = frame_bgr.copy()  # Store for SAM
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
         self._source_pixmap = QPixmap.fromImage(qimg)
@@ -71,20 +83,14 @@ class ImageCanvas(QLabel):
                 painter.drawPixmap(geom.topLeft(), self._display_pixmap)
                 # Draw existing shapes (offset by geometry position)
                 for shape in self.shapes:
-                    r = shape['rect']
                     label = shape.get('class')
                     saved = bool(shape.get('saved', False))
-                    # Offset rect to widget coordinates
-                    draw_rect = QRect(r)
-                    draw_rect.translate(geom.topLeft())
+                    shape_type = shape.get('type', 'box')
                     
                     # Choose color based on classification
-                    # Priority: class-assigned color > labeled green > unlabeled red
                     if label:
-                        # Use class color from palette (consistent for same class)
                         color = self.class_colors.get(label, Qt.green)
                     else:
-                        # Unlabeled boxes are red
                         color = Qt.red
                     
                     # Visual style: solid line for saved, dashed for unsaved
@@ -94,7 +100,35 @@ class ImageCanvas(QLabel):
                     pen.setCapStyle(Qt.RoundCap)
                     pen.setJoinStyle(Qt.RoundJoin)
                     painter.setPen(pen)
-                    painter.drawRect(draw_rect)
+                    
+                    if shape_type == 'polygon' and 'polygon' in shape:
+                        # Draw polygon
+                        poly = shape['polygon']
+                        qpoly = QPolygonF()
+                        for px, py in poly:
+                            # Scale polygon points to display size
+                            disp_x = px * self._display_pixmap.width()
+                            disp_y = py * self._display_pixmap.height()
+                            qpoly.append(QPointF(disp_x + geom.left(), disp_y + geom.top()))
+                        painter.drawPolygon(qpoly)
+                        # Fill with semi-transparent color
+                        # Get RGB values properly from QColor
+                        if isinstance(color, QColor):
+                            r, g, b = color.red(), color.green(), color.blue()
+                        else:
+                            # Handle Qt.GlobalColor
+                            qc = QColor(color)
+                            r, g, b = qc.red(), qc.green(), qc.blue()
+                        brush = QBrush(QColor(r, g, b, 30))
+                        painter.setBrush(brush)
+                        painter.drawPolygon(qpoly)
+                        painter.setBrush(Qt.NoBrush)
+                    else:
+                        # Draw rectangle
+                        r = shape['rect']
+                        draw_rect = QRect(r)
+                        draw_rect.translate(geom.topLeft())
+                        painter.drawRect(draw_rect)
                     
                     # Draw label text with small offset and background for readability
                     if label:
@@ -107,32 +141,174 @@ class ImageCanvas(QLabel):
                         painter.fillRect(bg_rect, QColor(0, 0, 0, 150))
                         painter.setPen(QPen(Qt.white))
                         painter.drawText(text_pos, label_text)
-                # Draw preview while drawing (also needs offset)
+                # Draw preview while drawing box (also needs offset)
                 if self._drawing:
                     pen = QPen(Qt.yellow, 2, Qt.DashLine)
                     painter.setPen(pen)
                     current_rect = QRect(self._start, self._end).normalized()
                     current_rect.translate(geom.topLeft())
                     painter.drawRect(current_rect)
+                
+                # Draw manual polygon in progress
+                if self._drawing_polygon and len(self._polygon_points) > 0:
+                    pen = QPen(Qt.cyan, 2, Qt.SolidLine)
+                    painter.setPen(pen)
+                    # Draw lines between points
+                    for i in range(len(self._polygon_points) - 1):
+                        p1 = self._polygon_points[i] + geom.topLeft()
+                        p2 = self._polygon_points[i + 1] + geom.topLeft()
+                        painter.drawLine(p1, p2)
+                    # Draw line from last point to first to show closure preview
+                    if len(self._polygon_points) >= 2:
+                        p_last = self._polygon_points[-1] + geom.topLeft()
+                        p_first = self._polygon_points[0] + geom.topLeft()
+                        pen.setStyle(Qt.DashLine)
+                        painter.setPen(pen)
+                        painter.drawLine(p_last, p_first)
+                    # Draw points as circles
+                    pen.setStyle(Qt.SolidLine)
+                    painter.setPen(pen)
+                    painter.setBrush(QBrush(Qt.cyan))
+                    for pt in self._polygon_points:
+                        painter.drawEllipse(pt + geom.topLeft(), 4, 4)
+                    painter.setBrush(Qt.NoBrush)
         else:
             super().paintEvent(event)
 
     def mousePressEvent(self, event):
         # Handle mouse press for annotation
-        if event.button() == Qt.LeftButton and self._display_pixmap is not None:
+        if self._display_pixmap is not None:
             geom = self._pixmap_geometry()
-            print(f"[DEBUG] Pixmap geom: {geom}")
             if geom and geom.contains(event.pos()):
-                print(f"[DEBUG] Position is in geom, starting draw")
-                self._drawing = True
-                # Store absolute coordinates (will be stored in pixmap space)
-                self._start = event.pos() - geom.topLeft()
-                self._end = self._start
-                print(f"[DEBUG] Start: {self._start}, End: {self._end}")
+                if event.button() == Qt.LeftButton:
+                    if self.annotation_mode == 'polygon':
+                        # AI Segmentation mode: single click triggers SAM
+                        self._handle_sam_click(event.pos(), geom)
+                    elif self.annotation_mode == 'manual_polygon':
+                        # Manual polygon: add point on each click
+                        rel_pos = event.pos() - geom.topLeft()
+                        self._polygon_points.append(rel_pos)
+                        self._drawing_polygon = True
+                        self.update()
+                    else:
+                        # Box mode: start rectangle drawing
+                        self._drawing = True
+                        self._start = event.pos() - geom.topLeft()
+                        self._end = self._start
+                        self.update()
+                elif event.button() == Qt.RightButton and self.annotation_mode == 'manual_polygon':
+                    # Right click completes polygon
+                    if len(self._polygon_points) >= 3:
+                        self._finish_manual_polygon()
+                    else:
+                        QMessageBox.warning(self, "Polygon", "Need at least 3 points to create a polygon")
+                    self._polygon_points = []
+                    self._drawing_polygon = False
+                    self.update()
+        super().mousePressEvent(event)
+    
+    def _finish_manual_polygon(self):
+        """Convert manual polygon points to normalized coordinates and add to shapes."""
+        if self._display_pixmap is None or len(self._polygon_points) < 3:
+            return
+        
+        w = self._display_pixmap.width()
+        h = self._display_pixmap.height()
+        
+        # Convert QPoint list to normalized coordinates
+        normalized_polygon = []
+        for pt in self._polygon_points:
+            norm_x = pt.x() / w
+            norm_y = pt.y() / h
+            normalized_polygon.append((norm_x, norm_y))
+        
+        # Add to shapes
+        self.shapes.append({
+            'polygon': normalized_polygon,
+            'class': None,
+            'saved': False,
+            'type': 'polygon'
+        })
+        
+        if self.on_shapes_changed:
+            self.on_shapes_changed(self.shapes)
+        
+        logger.info(f"Manual polygon created with {len(normalized_polygon)} points")
+    
+    def _handle_sam_click(self, click_pos, geom):
+        """Handle SAM segmentation click."""
+        from PyQt5.QtWidgets import QApplication, QMessageBox
+        from PyQt5.QtCore import QTimer
+        
+        try:
+            # Get click position relative to pixmap
+            rel_pos = click_pos - geom.topLeft()
+            x = rel_pos.x()
+            y = rel_pos.y()
+            
+            # Show wait cursor while processing
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            
+            # Show status message
+            if hasattr(self, 'parent') and hasattr(self.parent(), 'statusBar'):
+                status_bar = self.parent().statusBar()
+                status_bar.showMessage("Segmenting object...", 5000)
+            
+            QApplication.processEvents()
+            
+            # Run SAM segmentation
+            from embereye.app.sam_segmentation import SAMSegmenter
+            sam = SAMSegmenter()
+            sam.set_frame(self.current_frame_bgr)
+            
+            logger.info(f"Segmenting at ({x}, {y})...")
+            
+            # Get polygon in normalized coordinates [0-1]
+            polygon = sam.segment_at_point(
+                x, y,
+                self._display_pixmap.width(),
+                self._display_pixmap.height()
+            )
+            
+            # Restore cursor
+            QApplication.restoreOverrideCursor()
+            
+            if polygon and len(polygon) >= 3:
+                logger.info(f"SAM generated polygon with {len(polygon)} points")
+                # Add polygon shape
+                self.shapes.append({
+                    'polygon': polygon,
+                    'class': None,
+                    'saved': False,
+                    'type': 'polygon'
+                })
+                if self.on_shapes_changed:
+                    self.on_shapes_changed(self.shapes)
                 self.update()
             else:
-                print(f"[DEBUG] Position NOT in geom or no pixmap")
-        super().mousePressEvent(event)
+                logger.warning("SAM failed to generate valid polygon")
+                QMessageBox.warning(
+                    self,
+                    "Segmentation Failed",
+                    "Could not segment object at click point.\n\n"
+                    "The segmentation tried both FastSAM and GrabCut methods but couldn't\n"
+                    "find a clear object boundary at this location.\n\n"
+                    "Tips:\n"
+                    "• Click directly on the CENTER of the object (not edges/background)\n"
+                    "• Ensure object has clear contrast with background\n"
+                    "• Avoid clicking on shadows or reflections\n"
+                    "• Try clicking on a different part of the object\n"
+                    "• For small or complex objects, use Rectangle mode instead"
+                )
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            logger.error(f"SAM segmentation error: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Segmentation Error",
+                f"An error occurred during segmentation:\n{str(e)}\n\n"
+                "Try switching to Rectangle mode if this persists."
+            )
 
     def mouseMoveEvent(self, event):
         if self._drawing and self._display_pixmap is not None:
@@ -163,7 +339,7 @@ class ImageCanvas(QLabel):
                 if rect.width() > 5 and rect.height() > 5:
                     print(f"[DEBUG] Adding shape: {rect}")
                     # New shapes are unsaved and unlabeled by default
-                    self.shapes.append({'rect': rect, 'class': None, 'saved': False})
+                    self.shapes.append({'rect': rect, 'class': None, 'saved': False, 'type': 'box'})
                     if self.on_shapes_changed:
                         self.on_shapes_changed(self.shapes)
             self._drawing = False
@@ -181,21 +357,28 @@ class ImageCanvas(QLabel):
             self.on_shapes_changed(self.shapes)
 
     def get_normalized_shapes(self):
-        """Return list of (class, x,y,w,h) normalized to [0,1]."""
+        """Return list of items: either ('box', class, x, y, w, h) or ('polygon', class, [points])."""
         if self._display_pixmap is None:
             return []
         w = self._display_pixmap.width()
         h = self._display_pixmap.height()
         items = []
         for shape in self.shapes:
-            r = shape['rect']
             cls = shape.get('class')
-            x = r.x(); y = r.y(); bw = r.width(); bh = r.height()
-            x_center = (x + bw / 2) / float(w)
-            y_center = (y + bh / 2) / float(h)
-            nw = bw / float(w)
-            nh = bh / float(h)
-            items.append((cls, x_center, y_center, nw, nh))
+            shape_type = shape.get('type', 'box')
+            
+            if shape_type == 'polygon' and 'polygon' in shape:
+                # Polygon is already normalized in [0-1]
+                items.append(('polygon', cls, shape['polygon']))
+            else:
+                # Box format
+                r = shape['rect']
+                x = r.x(); y = r.y(); bw = r.width(); bh = r.height()
+                x_center = (x + bw / 2) / float(w)
+                y_center = (y + bh / 2) / float(h)
+                nw = bw / float(w)
+                nh = bh / float(h)
+                items.append(('box', cls, x_center, y_center, nw, nh))
         return items
 
     def assign_class_to_unlabeled(self, cls_name):
@@ -275,6 +458,9 @@ class AnnotationToolDialog(QDialog):
         # Assign class color palette (consistent across all rendering)
         self.class_colors = self._build_class_colors(self.leaf_classes or self.class_labels)
         self.canvas.class_colors = self.class_colors
+        
+        # Initialize SAM segmenter
+        self.sam_segmenter = SAMSegmenter()
 
         # Video container with overlay controls (YouTube-style)
         video_container = QWidget()
@@ -323,6 +509,31 @@ class AnnotationToolDialog(QDialog):
             self.class_combo.lineEdit().setPlaceholderText("Type to search classes…")
             self.class_combo.setCurrentIndex(-1)
         right.addWidget(self.class_combo)
+        
+        # Annotation mode toggle
+        right.addSpacing(10)
+        right.addWidget(QLabel("Annotation Mode"))
+        mode_layout = QVBoxLayout()
+        self.mode_button_group = QButtonGroup()
+        self.box_mode_radio = QRadioButton("Rectangle (drag to draw)")
+        self.seg_mode_radio = QRadioButton("AI Segmentation (click object)")
+        self.manual_poly_radio = QRadioButton("Manual Polygon (click points, right-click to finish)")
+        self.box_mode_radio.setChecked(True)
+        self.mode_button_group.addButton(self.box_mode_radio, 0)
+        self.mode_button_group.addButton(self.seg_mode_radio, 1)
+        self.mode_button_group.addButton(self.manual_poly_radio, 2)
+        self.box_mode_radio.toggled.connect(self._on_mode_changed)
+        mode_layout.addWidget(self.box_mode_radio)
+        mode_layout.addWidget(self.seg_mode_radio)
+        mode_layout.addWidget(self.manual_poly_radio)
+        right.addLayout(mode_layout)
+        
+        # Mode instructions
+        self.mode_instruction_label = QLabel()
+        self.mode_instruction_label.setWordWrap(True)
+        self.mode_instruction_label.setStyleSheet("color: #666; font-size: 10px; padding: 5px; background: #f0f0f0; border-radius: 3px;")
+        self._update_mode_instructions()
+        right.addWidget(self.mode_instruction_label)
 
         add_box_btn = QPushButton("Assign Class to New Boxes")
         add_box_btn.setStyleSheet("padding: 8px; font-size: 11px;")
@@ -765,6 +976,38 @@ class AnnotationToolDialog(QDialog):
             QMessageBox.warning(self, "Box", "Draw boxes on the frame, then assign class.")
             return
         self.refresh_box_list()
+    
+    def _on_mode_changed(self):
+        """Handle annotation mode toggle."""
+        # Clear any in-progress polygon drawing
+        if hasattr(self.canvas, '_polygon_points'):
+            self.canvas._polygon_points = []
+            self.canvas._drawing_polygon = False
+            self.canvas.update()
+        
+        if self.box_mode_radio.isChecked():
+            self.canvas.annotation_mode = 'box'
+            logger.info("Annotation mode: Rectangle")
+        elif self.seg_mode_radio.isChecked():
+            self.canvas.annotation_mode = 'polygon'
+            logger.info("Annotation mode: AI Segmentation (SAM)")
+        else:
+            self.canvas.annotation_mode = 'manual_polygon'
+            logger.info("Annotation mode: Manual Polygon")
+        
+        self._update_mode_instructions()
+    
+    def _update_mode_instructions(self):
+        """Update instruction text based on current mode."""
+        if self.box_mode_radio.isChecked():
+            text = "📦 Click and drag to draw a bounding box"
+        elif self.seg_mode_radio.isChecked():
+            text = "🤖 Click on object to auto-segment (AI-powered)"
+        else:
+            text = "✏️ Click to add points, Right-click to finish polygon. ESC to cancel."
+        
+        if hasattr(self, 'mode_instruction_label'):
+            self.mode_instruction_label.setText(text)
 
     def _get_leaf_from_label(self, label_text):
         # If hierarchical, leaf is after last arrow
@@ -777,9 +1020,10 @@ class AnnotationToolDialog(QDialog):
             QMessageBox.warning(self, "Frame", "No frame loaded.")
             return
         items = self.canvas.get_normalized_shapes()
-        labeled = [(cls, x, y, w, h) for (cls, x, y, w, h) in items if cls]
+        # Filter only labeled items
+        labeled = [item for item in items if item[1]]  # item[1] is class
         if not labeled:
-            QMessageBox.information(self, "No Boxes", "No boxes to save for this frame.")
+            QMessageBox.information(self, "No Boxes", "No annotations to save for this frame.")
             return
         # build output dir
         base = self.media_base or os.path.splitext(os.path.basename(self.video_path or "media"))[0]
@@ -806,13 +1050,23 @@ class AnnotationToolDialog(QDialog):
             cv2.imwrite(frame_path, self.current_frame)
             out_file = os.path.join(out_dir, f"frame_{self.frame_index:05d}.txt")
         
-        # Save annotations
+        # Save annotations (YOLO format supports both boxes and polygons)
         try:
             with open(out_file, "w") as f:
-                for cls, x, y, w, h in labeled:
+                for item in labeled:
+                    shape_type = item[0]
+                    cls = item[1]
                     class_id = self.class_id_map.get(cls, 0)
-                    # YOLO format: class x_center y_center width height
-                    f.write(f"{class_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
+                    
+                    if shape_type == 'polygon':
+                        # YOLO segmentation format: class x1 y1 x2 y2 x3 y3 ...
+                        polygon = item[2]
+                        coords = ' '.join([f"{x:.6f} {y:.6f}" for x, y in polygon])
+                        f.write(f"{class_id} {coords}\n")
+                    else:
+                        # YOLO box format: class x_center y_center width height
+                        x, y, w, h = item[2], item[3], item[4], item[5]
+                        f.write(f"{class_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
 
             # Also save per-frame metadata snapshot for class consistency across taxonomy changes
             meta = {
@@ -851,10 +1105,16 @@ class AnnotationToolDialog(QDialog):
             return
         self.box_list.clear()
         for idx, shape in enumerate(self.canvas.shapes):
-            r = shape['rect']
             cls = shape.get('class') or '(unlabeled)'
             state = "saved" if shape.get('saved') else "unsaved"
-            self.box_list.addItem(f"#{idx+1} [{state}] {cls} - x:{r.x()} y:{r.y()} w:{r.width()} h:{r.height()}")
+            shape_type = shape.get('type', 'box')
+            
+            if shape_type == 'polygon':
+                poly_pts = len(shape.get('polygon', []))
+                self.box_list.addItem(f"#{idx+1} [{state}] {cls} - polygon ({poly_pts} pts)")
+            else:
+                r = shape['rect']
+                self.box_list.addItem(f"#{idx+1} [{state}] {cls} - x:{r.x()} y:{r.y()} w:{r.width()} h:{r.height()}")
 
     def delete_selected_box(self):
         if not hasattr(self, 'box_list') or self.box_list is None:
@@ -932,6 +1192,13 @@ class AnnotationToolDialog(QDialog):
     # Keyboard shortcuts
     def keyPressEvent(self, event):
         key = event.key()
+        # ESC cancels polygon drawing
+        if key == Qt.Key_Escape and hasattr(self.canvas, '_drawing_polygon') and self.canvas._drawing_polygon:
+            self.canvas._polygon_points = []
+            self.canvas._drawing_polygon = False
+            self.canvas.update()
+            event.accept()
+            return
         if key in (Qt.Key_J, Qt.Key_Left):
             self.prev_frame()
             event.accept()

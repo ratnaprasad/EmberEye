@@ -48,6 +48,7 @@ class TrainingConfig:
     """Configuration for YOLO training."""
     project_name: str = "embereye_custom"
     model_size: str = "n"  # nano, small, medium, large, xlarge
+    task: str = "detect"  # 'detect' for bounding boxes, 'segment' for instance segmentation
     epochs: int = 150  # Increased for small datasets
     batch_size: int = 16
     imgsz: int = 640
@@ -583,6 +584,43 @@ class YOLOTrainingPipeline:
         self.train_seconds: int = 0
         self.final_metrics: Dict[str, float] = {}
     
+    @staticmethod
+    def detect_annotation_format(annotation_dir: Path) -> str:
+        """
+        Detect whether annotations are for detection (boxes) or segmentation (polygons).
+        Returns 'detect' or 'segment'.
+        """
+        # Check first annotation file
+        txt_files = list(annotation_dir.glob('*.txt'))
+        # Filter out labels.txt
+        txt_files = [f for f in txt_files if f.name != 'labels.txt']
+        
+        if not txt_files:
+            return 'detect'  # default
+        
+        # Read first annotation file
+        try:
+            with open(txt_files[0], 'r') as f:
+                first_line = f.readline().strip()
+            
+            if not first_line:
+                return 'detect'
+            
+            parts = first_line.split()
+            # Detection format: class_id x_center y_center width height (5 values)
+            # Segmentation format: class_id x1 y1 x2 y2 x3 y3 ... (>5 values, always even after class_id)
+            
+            if len(parts) == 5:
+                return 'detect'
+            elif len(parts) > 5 and len(parts) % 2 == 1:  # odd total (class + even coord pairs)
+                return 'segment'
+            else:
+                return 'detect'  # default
+                
+        except Exception as e:
+            logger.warning(f"Failed to detect annotation format: {e}")
+            return 'detect'
+    
     def set_epoch_callback(self, callback):
         """Set callback function for epoch progress updates.
         
@@ -617,6 +655,16 @@ class YOLOTrainingPipeline:
                 self.progress.status = TrainingStatus.ERROR
                 self.progress.error = msg
                 return False, msg
+            
+            # Auto-detect annotation format if not explicitly set
+            annotation_dir = self.base_dir / "annotations"
+            detected_format = self.detect_annotation_format(annotation_dir)
+            if detected_format == 'segment' and self.config.task == 'detect':
+                logger.info(f"Auto-detected segmentation annotations, switching to segment model")
+                self.config.task = 'segment'
+            elif detected_format == 'detect' and self.config.task == 'segment':
+                logger.warning(f"Segmentation model requested but only box annotations found, using detect model")
+                self.config.task = 'detect'
             
             stats = self.dataset_manager.get_dataset_stats()
             logger.info(f"Dataset stats: {stats}")
@@ -659,8 +707,11 @@ class YOLOTrainingPipeline:
             self.progress.status = TrainingStatus.TRAINING
             self.progress.total_epochs = self.config.epochs
             
-            logger.info(f"Loading model: yolov8{self.config.model_size}.pt")
-            self.model = YOLO(f'yolov8{self.config.model_size}.pt')
+            # Choose model based on task
+            model_suffix = '-seg' if self.config.task == 'segment' else ''
+            model_name = f'yolov8{self.config.model_size}{model_suffix}.pt'
+            logger.info(f"Loading model: {model_name}")
+            self.model = YOLO(model_name)
             
             # Add callback for epoch progress tracking
             if self.epoch_callback:
