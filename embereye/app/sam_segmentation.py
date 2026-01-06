@@ -235,14 +235,46 @@ class SAMSegmenter:
             bgd_model = np.zeros((1, 65), np.float64)
             fgd_model = np.zeros((1, 65), np.float64)
             
-            logger.info("Running GrabCut algorithm with 10 iterations...")
-            # Run GrabCut with more iterations for better results
-            rect = (rect_x, rect_y, rect_w, rect_h)
-            cv2.grabCut(self.current_frame, mask, rect, bgd_model, fgd_model, 10, cv2.GC_INIT_WITH_RECT)
+            # Use seed point strategy from the start for better control
+            # Mark click point as definitely foreground (large circle - 25px radius for humans)
+            cv2.circle(mask, (x, y), 25, cv2.GC_FGD, -1)  # cv2.GC_FGD = 1 (definite foreground)
             
-            # Create binary mask (foreground)
-            binary_mask = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
-            logger.info(f"GrabCut mask: {np.sum(binary_mask > 0)} foreground pixels")
+            # Mark inner area around click as probably foreground (extra buffer)
+            cv2.circle(mask, (x, y), 35, cv2.GC_PR_FGD, -1)  # cv2.GC_PR_FGD = 3 (probable foreground)
+            
+            # Mark edges and outer regions as definitely background to prevent leaking
+            border_width = 15
+            # Top edge
+            if rect_y > 0:
+                cv2.rectangle(mask, (rect_x, max(0, rect_y - 10)), (rect_x + rect_w, rect_y + border_width), cv2.GC_BGD, -1)
+            # Bottom edge
+            if rect_y + rect_h < h:
+                cv2.rectangle(mask, (rect_x, rect_y + rect_h - border_width), (rect_x + rect_w, min(h, rect_y + rect_h + 10)), cv2.GC_BGD, -1)
+            # Left edge
+            if rect_x > 0:
+                cv2.rectangle(mask, (max(0, rect_x - 10), rect_y), (rect_x + border_width, rect_y + rect_h), cv2.GC_BGD, -1)
+            # Right edge
+            if rect_x + rect_w < w:
+                cv2.rectangle(mask, (rect_x + rect_w - border_width, rect_y), (min(w, rect_x + rect_w + 10), rect_y + rect_h), cv2.GC_BGD, -1)
+            
+            logger.info(f"GrabCut with strong seed points: FG circle at ({x},{y}) r=25, PR_FG buffer r=35")
+            logger.info("Running GrabCut algorithm with 15 iterations...")
+            # Run GrabCut with mask-based initialization (seed points)
+            cv2.grabCut(self.current_frame, mask, None, bgd_model, fgd_model, 15, cv2.GC_INIT_WITH_MASK)
+            
+            # Create binary mask - include both definite and probable foreground
+            binary_mask = np.where((mask == 1) | (mask == 3), 1, 0).astype('uint8')
+            foreground_count = np.sum(binary_mask > 0)
+            logger.info(f"GrabCut mask with seed points: {foreground_count} foreground pixels")
+            
+            # If still getting almost nothing, use morphological fallback
+            if foreground_count < 150:
+                logger.info("Seed points found too few pixels ({foreground_count}), using morphological fallback...")
+                # Create a simple blob at click point - guaranteed result
+                binary_mask = np.zeros(self.current_frame.shape[:2], np.uint8)
+                cv2.circle(binary_mask, (x, y), 40, 1, -1)  # 40px radius blob
+                foreground_count = np.sum(binary_mask > 0)
+                logger.info(f"Morphological fallback: {foreground_count} foreground pixels")
             
             # Convert to polygon
             polygon = self._mask_to_polygon(binary_mask)
