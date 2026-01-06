@@ -6,5 +6,21 @@
     "new_images": 39,
     "best_accuracy": 0.0,
     "loss": 0.0
+  },
+  {
+    "version": "v2",
+    "timestamp": "2026-01-05T06:53:17.120378",
+    "training_images": 94,
+    "new_images": 94,
+    "best_accuracy": 0.0,
+    "loss": 0.0
+  },
+  {
+    "version": "v3",
+    "timestamp": "2026-01-05T08:37:51.093299",
+    "training_images": 94,
+    "new_images": 94,
+    "best_accuracy": 0.0,
+    "loss": 0.0
   }
 ]

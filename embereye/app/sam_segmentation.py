@@ -1,0 +1,272 @@
+"""
+FastSAM integration for click-to-segment annotation in EmberEye.
+Provides lightweight AI-powered segmentation for annotation tool.
+"""
+
+import cv2
+import numpy as np
+import torch
+from typing import List, Tuple, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class SAMSegmenter:
+    """FastSAM-based segmentation helper for annotation tool."""
+    
+    def __init__(self):
+        self.model = None
+        self.current_frame = None
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.use_grabcut_fallback = True  # Enable GrabCut fallback
+        logger.info(f"SAM Segmenter initialized on device: {self.device}")
+    
+    def load_model(self):
+        """Lazy load FastSAM model on first use."""
+        if self.model is not None:
+            return True
+        
+        try:
+            from ultralytics import FastSAM
+            logger.info("Loading FastSAM model...")
+            # Download and load FastSAM-s model (small, ~23MB)
+            self.model = FastSAM('FastSAM-s.pt')
+            logger.info("✓ FastSAM model loaded successfully")
+            return True
+        except Exception as e:
+            logger.error(f"✗ Failed to load FastSAM model: {e}")
+            logger.info("Will use GrabCut fallback instead")
+            return False
+    
+    def set_frame(self, frame_bgr: np.ndarray):
+        """Set the current frame for segmentation."""
+        self.current_frame = frame_bgr.copy()
+    
+    def segment_at_point(self, x: int, y: int, frame_width: int, frame_height: int) -> Optional[List[Tuple[float, float]]]:
+        """
+        Generate segmentation mask at click point and return polygon coordinates.
+        
+        Args:
+            x, y: Click coordinates in display space
+            frame_width, frame_height: Display dimensions
+        
+        Returns:
+            List of (x, y) normalized polygon points [0-1], or None if failed
+        """
+        if self.current_frame is None:
+            logger.warning("No frame set for segmentation")
+            return None
+        
+        # Try to load FastSAM model (will use GrabCut if loading fails)
+        fastsam_available = self.load_model()
+        
+        if not fastsam_available:
+            logger.info("FastSAM not available, using GrabCut fallback directly")
+            h, w = self.current_frame.shape[:2]
+            scale_x = w / frame_width
+            scale_y = h / frame_height
+            orig_x = int(x * scale_x)
+            orig_y = int(y * scale_y)
+            return self._grabcut_segment(orig_x, orig_y, w, h)
+        
+        try:
+            # Get original image dimensions
+            h, w = self.current_frame.shape[:2]
+            scale_x = w / frame_width
+            scale_y = h / frame_height
+            
+            # Convert click to original image coordinates
+            orig_x = int(x * scale_x)
+            orig_y = int(y * scale_y)
+            
+            logger.info(f"Segmenting at display ({x},{y}) -> original ({orig_x},{orig_y})")
+            
+            # Run FastSAM inference on entire image
+            logger.info("Running FastSAM inference...")
+            results = self.model(
+                self.current_frame,
+                device=self.device,
+                retina_masks=True,
+                imgsz=640,
+                conf=0.25,  # Lower confidence to get more masks
+                iou=0.7,
+            )
+            
+            if not results or len(results) == 0:
+                logger.warning("No segmentation results from FastSAM, trying GrabCut fallback")
+                if self.use_grabcut_fallback:
+                    return self._grabcut_segment(orig_x, orig_y, w, h)
+                return None
+            
+            # Get masks from results
+            masks = results[0].masks
+            if masks is None or len(masks.data) == 0:
+                logger.warning("No masks found in FastSAM results, trying GrabCut fallback")
+                if self.use_grabcut_fallback:
+                    return self._grabcut_segment(orig_x, orig_y, w, h)
+                return None
+            
+            logger.info(f"FastSAM generated {len(masks.data)} masks")
+            
+            # Find mask containing click point
+            best_mask = None
+            best_mask_idx = -1
+            min_distance = float('inf')
+            
+            for idx, mask in enumerate(masks.data):
+                mask_np = mask.cpu().numpy()
+                
+                # Resize mask to original image size if needed
+                if len(mask_np.shape) == 3:
+                    mask_np = mask_np[0]  # Remove batch dimension
+                    
+                if mask_np.shape[:2] != (h, w):
+                    mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
+                
+                # Check if click point is inside mask
+                if 0 <= orig_y < mask_np.shape[0] and 0 <= orig_x < mask_np.shape[1]:
+                    if mask_np[orig_y, orig_x] > 0.3:
+                        # Found mask at click point
+                        best_mask = mask_np
+                        best_mask_idx = idx
+                        logger.info(f"Found mask #{idx} at click point")
+                        break
+                    
+                    # Calculate distance to nearest mask pixel for fallback
+                    mask_pixels = np.argwhere(mask_np > 0.3)
+                    if len(mask_pixels) > 0:
+                        distances = np.sqrt(((mask_pixels - np.array([orig_y, orig_x])) ** 2).sum(axis=1))
+                        min_dist = distances.min()
+                        if min_dist < min_distance:
+                            min_distance = min_dist
+                            best_mask = mask_np
+                            best_mask_idx = idx
+            
+            if best_mask is None:
+                logger.warning("No mask found near click point, trying GrabCut fallback")
+                if self.use_grabcut_fallback:
+                    return self._grabcut_segment(orig_x, orig_y, w, h)
+                return None
+            
+            logger.info(f"Using mask #{best_mask_idx} (distance: {min_distance:.1f}px)")
+            
+            # Convert mask to polygon
+            polygon = self._mask_to_polygon(best_mask)
+            
+            if polygon is None or len(polygon) < 3:
+                logger.warning("Failed to extract polygon from mask")
+                return None
+            
+            # Normalize polygon coordinates to [0-1]
+            h, w = self.current_frame.shape[:2]
+            normalized_polygon = []
+            for px, py in polygon:
+                norm_x = px / w
+                norm_y = py / h
+                normalized_polygon.append((norm_x, norm_y))
+            
+            logger.info(f"Generated polygon with {len(normalized_polygon)} points")
+            return normalized_polygon
+            
+        except Exception as e:
+            logger.error(f"Segmentation failed: {e}", exc_info=True)
+            return None
+    
+    def _grabcut_segment(self, x: int, y: int, w: int, h: int) -> Optional[List[Tuple[float, float]]]:
+        """
+        Simple GrabCut-based segmentation around click point.
+        Used as fallback when FastSAM fails.
+        
+        Args:
+            x, y: Click coordinates in original image space
+            w, h: Image dimensions
+        
+        Returns:
+            Normalized polygon points or None
+        """
+        try:
+            logger.info("Using GrabCut segmentation fallback")
+            
+            # Define rectangular region around click (50x50 pixel box)
+            margin = 50
+            rect_x = max(0, x - margin)
+            rect_y = max(0, y - margin)
+            rect_w = min(2 * margin, w - rect_x)
+            rect_h = min(2 * margin, h - rect_y)
+            
+            if rect_w < 10 or rect_h < 10:
+                logger.warning("Click too close to edge for GrabCut")
+                return None
+            
+            # Initialize mask
+            mask = np.zeros(self.current_frame.shape[:2], np.uint8)
+            bgd_model = np.zeros((1, 65), np.float64)
+            fgd_model = np.zeros((1, 65), np.float64)
+            
+            # Run GrabCut
+            rect = (rect_x, rect_y, rect_w, rect_h)
+            cv2.grabCut(self.current_frame, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+            
+            # Create binary mask (foreground)
+            binary_mask = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+            
+            # Convert to polygon
+            polygon = self._mask_to_polygon(binary_mask)
+            
+            if polygon is None or len(polygon) < 3:
+                logger.warning("GrabCut failed to generate valid polygon")
+                return None
+            
+            # Normalize coordinates
+            normalized_polygon = []
+            for px, py in polygon:
+                normalized_polygon.append((px / w, py / h))
+            
+            logger.info(f"GrabCut generated polygon with {len(normalized_polygon)} points")
+            return normalized_polygon
+            
+        except Exception as e:
+            logger.error(f"GrabCut segmentation failed: {e}")
+            return None
+    
+    def _mask_to_polygon(self, mask: np.ndarray, epsilon_factor: float = 0.002) -> Optional[List[Tuple[int, int]]]:
+        """
+        Convert binary mask to polygon contour.
+        
+        Args:
+            mask: Binary mask (HxW)
+            epsilon_factor: Contour approximation factor (lower = more points)
+        
+        Returns:
+            List of (x, y) polygon points, or None
+        """
+        try:
+            # Ensure mask is binary uint8
+            mask_uint8 = (mask > 0.5).astype(np.uint8) * 255
+            
+            # Find contours
+            contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                return None
+            
+            # Use largest contour
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Approximate contour to reduce points
+            epsilon = epsilon_factor * cv2.arcLength(largest_contour, True)
+            approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+            
+            # Convert to list of tuples
+            polygon = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
+            
+            # YOLO requires at least 3 points
+            if len(polygon) < 3:
+                return None
+            
+            return polygon
+            
+        except Exception as e:
+            logger.error(f"Failed to convert mask to polygon: {e}")
+            return None

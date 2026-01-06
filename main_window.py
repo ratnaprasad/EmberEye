@@ -1043,6 +1043,24 @@ class BEMainWindow(QMainWindow):
         self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fff; border: none; background: transparent;")
         training_ready_layout.addWidget(self.training_ready_count_label)
         
+        # Tree view for annotation files grouped by class
+        from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
+        self.training_files_tree = QTreeWidget()
+        self.training_files_tree.setHeaderLabels(["Files by Class"])
+        self.training_files_tree.setMaximumHeight(200)
+        self.training_files_tree.setStyleSheet("""
+            QTreeWidget {
+                background: rgba(0, 0, 0, 0.3);
+                border: 1px solid #555;
+                color: #fff;
+                font-size: 11px;
+            }
+            QTreeWidget::item:selected {
+                background: rgba(0, 188, 212, 0.3);
+            }
+        """)
+        training_ready_layout.addWidget(self.training_files_tree)
+        
         left_panel.addWidget(training_ready_group)
 
         # Track if training just completed (to prevent refresh from resetting display)
@@ -1072,8 +1090,14 @@ class BEMainWindow(QMainWindow):
 
         left_panel.addStretch(1)
         
-        # Move to Training and Delete buttons
+        # QC Review, Move to Training and Delete buttons
         action_btn_layout = QHBoxLayout()
+        
+        qc_review_btn = QPushButton("🔍 QC Review")
+        qc_review_btn.setToolTip("Review and edit annotations before moving to training")
+        qc_review_btn.clicked.connect(self.open_qc_review)
+        action_btn_layout.addWidget(qc_review_btn)
+        
         move_btn = QPushButton("→ Move to Training")
         move_btn.clicked.connect(self.move_to_training)
         action_btn_layout.addWidget(move_btn)
@@ -1578,6 +1602,41 @@ class BEMainWindow(QMainWindow):
                 QMessageBox.information(self, "Delete", "Annotations and media reference deleted successfully.")
             except Exception as e:
                 QMessageBox.critical(self, "Delete Error", f"Failed to delete: {str(e)}")
+    
+    def open_qc_review(self):
+        """Open QC Review dialog to review and edit annotations before training."""
+        has_video = bool(getattr(self, 'training_selected_video_path', None))
+        has_images = bool(getattr(self, 'training_selected_image_paths', []))
+        
+        if not (has_video or has_images):
+            QMessageBox.warning(self, "QC Review", "No media selected. Import media or ZIP first.")
+            return
+        
+        # Get annotations directory
+        if has_video:
+            annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
+        else:
+            annotations_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
+        
+        if not os.path.exists(annotations_dir) or not self._has_annotations(annotations_dir):
+            QMessageBox.warning(self, "QC Review", "No annotations found. Annotate media first.")
+            return
+        
+        # Open QC Review dialog
+        from qc_review_dialog import QCReviewDialog
+        dialog = QCReviewDialog(annotations_dir, parent=self)
+        result = dialog.exec_()
+        
+        if result == QCReviewDialog.Accepted:
+            # Refresh count after review
+            ann_count = self._count_annotation_files(annotations_dir)
+            QMessageBox.information(
+                self,
+                "QC Review Complete",
+                f"Review complete!\n\n"
+                f"Annotations: {ann_count} files\n\n"
+                f"Click 'Move to Training' to proceed."
+            )
 
     def review_unclassified_items(self):
         """Scan training_data/dataset for labels mapped to unclassified_* and present a review list."""
@@ -2917,23 +2976,74 @@ class BEMainWindow(QMainWindow):
             self.model_versions_list.addItem(f"Error loading versions: {e}")
 
     def _refresh_training_ready_count(self):
-        """Update the 'Ready for Training' count display."""
+        """Update the 'Ready for Training' count display and file tree."""
         # Don't update if training just completed (preserve completion message)
         if getattr(self, 'training_just_completed', False):
             return
         
         try:
+            from PyQt5.QtWidgets import QTreeWidgetItem
             training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
             total = self._count_annotation_files(training_ann_base)
+            
+            # Update count label
             if total == 0:
                 self.training_ready_count_label.setText("0 annotation files")
                 self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #888; border: none; background: transparent;")
             else:
                 self.training_ready_count_label.setText(f"{total} annotation files")
                 self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;")
+            
+            # Update tree view grouped by class
+            self.training_files_tree.clear()
+            if total > 0:
+                files_by_class = self._get_files_grouped_by_class(training_ann_base)
+                for class_name, files in sorted(files_by_class.items()):
+                    class_item = QTreeWidgetItem(self.training_files_tree, [f"{class_name} ({len(files)} files)"])
+                    class_item.setExpanded(False)  # Collapsed by default
+                    for file_path in sorted(files):
+                        file_name = os.path.basename(file_path)
+                        QTreeWidgetItem(class_item, [file_name])
         except Exception:
             self.training_ready_count_label.setText("Error")
             self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #f44336; border: none; background: transparent;")
+    
+    def _get_files_grouped_by_class(self, annotations_dir: str) -> dict:
+        """Group annotation files by detected classes."""
+        from master_class_config import load_master_classes
+        
+        files_by_class = {}
+        flat_classes = []
+        
+        # Build flat class list
+        classes_dict = load_master_classes()
+        for category in classes_dict.get("IncidentEnvironment", []):
+            for leaf_class in classes_dict.get(category, []):
+                flat_classes.append(leaf_class)
+        
+        # Scan all annotation files
+        if not os.path.exists(annotations_dir):
+            return files_by_class
+        
+        for root, dirs, files in os.walk(annotations_dir):
+            for fname in files:
+                if fname.endswith('.txt') and fname != 'labels.txt':
+                    file_path = os.path.join(root, fname)
+                    try:
+                        with open(file_path, 'r') as f:
+                            for line in f:
+                                parts = line.strip().split()
+                                if len(parts) >= 5:
+                                    class_id = int(parts[0])
+                                    class_name = flat_classes[class_id] if class_id < len(flat_classes) else f"class_{class_id}"
+                                    if class_name not in files_by_class:
+                                        files_by_class[class_name] = []
+                                    if file_path not in files_by_class[class_name]:
+                                        files_by_class[class_name].append(file_path)
+                    except Exception:
+                        pass
+        
+        return files_by_class
 
     def _refresh_dataset_stats(self):
         """Update Dataset Stats panel using DatasetInspector."""
