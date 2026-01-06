@@ -203,9 +203,9 @@ class SAMSegmenter:
                 logger.error(f"Click coordinates ({x}, {y}) out of bounds for frame {w}x{h}")
                 return None
             
-            # Define rectangular region around click (75-pixel margin = 150x150 region)
-            # Larger region helps GrabCut work better, especially near edges
-            margin = 75
+            # Define rectangular region around click (50-pixel margin = 100x100 region)
+            # Smaller region reduces interference from background objects
+            margin = 50
             rect_x = max(0, x - margin)
             rect_y = max(0, y - margin)
             rect_w = min(2 * margin, w - rect_x)
@@ -242,14 +242,13 @@ class SAMSegmenter:
             # Mark the rect region as probably background (will refine)
             mask[rect_y:rect_y+rect_h, rect_x:rect_x+rect_w] = cv2.GC_PR_BGD
             
-            # Mark click point area as definitely foreground (human/object center)
-            # Use smaller radius to be more conservative
-            cv2.circle(mask, (x, y), 20, cv2.GC_FGD, -1)
+            # Mark click point area as definitely foreground with LARGE radius
+            # This forces GrabCut to include the clicked object, not background machinery
+            cv2.circle(mask, (x, y), 40, cv2.GC_FGD, -1)
             
-            # Mark slightly larger area as probably foreground
-            cv2.circle(mask, (x, y), 30, cv2.GC_PR_FGD, -1)
+            # No probable foreground layer - keep it simple and strong
             
-            logger.info(f"GrabCut mask setup: FG circle r=20px, PR_FG circle r=30px at ({x},{y})")
+            logger.info(f"GrabCut mask setup: Strong FG circle r=40px at ({x},{y}), search region {rect_w}x{rect_h}")
             logger.info("Running GrabCut algorithm with 10 iterations...")
             # Run GrabCut with mask-based initialization (seed points)
             cv2.grabCut(self.current_frame, mask, None, bgd_model, fgd_model, 10, cv2.GC_INIT_WITH_MASK)
@@ -259,12 +258,20 @@ class SAMSegmenter:
             foreground_count = np.sum(binary_mask > 0)
             logger.info(f"GrabCut mask with seed points: {foreground_count} foreground pixels")
             
-            # If GrabCut found almost nothing, use simple circular region
-            if foreground_count < 100:
+            # Accept GrabCut results if reasonable (even small ones)
+            # GrabCut is just a fallback - FastSAM would work much better
+            if foreground_count < 500:
+                logger.warning(f"⚠️  GrabCut segmentation quality is poor ({foreground_count} pixels)")
+                logger.warning("⚠️  For better AI segmentation, install FastSAM:")
+                logger.warning("⚠️  pip install --upgrade ultralytics>=8.1.0")
+                logger.warning("⚠️  Or use Rectangle mode for more accurate annotations")
+            
+            # Only fall back to circle if completely failed
+            if foreground_count < 200:
                 logger.info(f"GrabCut found too few pixels ({foreground_count}), using circle fallback...")
                 binary_mask = np.zeros(self.current_frame.shape[:2], np.uint8)
-                # Draw circle at click point - reasonable default for humans
-                cv2.circle(binary_mask, (x, y), 40, 1, -1)
+                # Draw larger circle to better cover objects
+                cv2.circle(binary_mask, (x, y), 50, 1, -1)
                 foreground_count = np.sum(binary_mask > 0)
                 logger.info(f"Circle fallback: {foreground_count} foreground pixels")
             
