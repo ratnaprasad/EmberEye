@@ -1076,12 +1076,15 @@ class AnnotationToolDialog(QDialog):
     
     def _on_mode_changed(self):
         """Handle annotation mode toggle."""
-        # Clear any in-progress polygon drawing
+        # Clear any in-progress drawing state
         if hasattr(self.canvas, '_polygon_points'):
             self.canvas._polygon_points = []
+        if hasattr(self.canvas, '_drawing_polygon'):
             self.canvas._drawing_polygon = False
-            self.canvas.update()
+        if hasattr(self.canvas, '_drawing'):
+            self.canvas._drawing = False
         
+        # Update the annotation mode
         if self.box_mode_radio.isChecked():
             self.canvas.annotation_mode = 'box'
             logger.info("Annotation mode: Rectangle")
@@ -1092,6 +1095,8 @@ class AnnotationToolDialog(QDialog):
             self.canvas.annotation_mode = 'manual_polygon'
             logger.info("Annotation mode: Manual Polygon")
         
+        # Force canvas update to clear any visual artifacts
+        self.canvas.update()
         self._update_mode_instructions()
     
     def _update_mode_instructions(self):
