@@ -267,14 +267,67 @@ class SAMSegmenter:
             foreground_count = np.sum(binary_mask > 0)
             logger.info(f"GrabCut mask with seed points: {foreground_count} foreground pixels")
             
-            # If still getting almost nothing, use morphological fallback
+            # If still getting almost nothing, use edge detection fallback
             if foreground_count < 150:
-                logger.info("Seed points found too few pixels ({foreground_count}), using morphological fallback...")
-                # Create a simple blob at click point - guaranteed result
-                binary_mask = np.zeros(self.current_frame.shape[:2], np.uint8)
-                cv2.circle(binary_mask, (x, y), 40, 1, -1)  # 40px radius blob
-                foreground_count = np.sum(binary_mask > 0)
-                logger.info(f"Morphological fallback: {foreground_count} foreground pixels")
+                logger.info(f"GrabCut found too few pixels ({foreground_count}), using edge detection fallback...")
+                
+                # Extract region around click point
+                margin = 100
+                roi_x1 = max(0, x - margin)
+                roi_y1 = max(0, y - margin)
+                roi_x2 = min(w, x + margin)
+                roi_y2 = min(h, y + margin)
+                roi = self.current_frame[roi_y1:roi_y2, roi_x1:roi_x2]
+                
+                # Convert to grayscale
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                
+                # Apply edge detection
+                edges = cv2.Canny(gray, 50, 150)
+                logger.info(f"Canny edge detection on {roi.shape} region")
+                
+                # Dilate edges to form closed contours
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                dilated = cv2.dilate(edges, kernel, iterations=2)
+                
+                # Find contours in the ROI
+                contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                logger.info(f"Found {len(contours)} edge-based contours")
+                
+                # Find contour closest to center of ROI (where click was)
+                center_x = x - roi_x1
+                center_y = y - roi_y1
+                best_contour = None
+                best_distance = float('inf')
+                
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    if area < 100:  # Skip tiny contours
+                        continue
+                    
+                    # Find distance from contour to click point
+                    distances = cv2.pointPolygonTest(contour, (center_x, center_y), True)
+                    if abs(distances) < best_distance:
+                        best_distance = abs(distances)
+                        best_contour = contour
+                
+                # If found a good contour, use it; otherwise fall back to circle
+                if best_contour is not None and len(best_contour) >= 3:
+                    logger.info(f"Using edge-detected contour with {len(best_contour)} points")
+                    # Create mask from contour
+                    binary_mask = np.zeros((h, w), np.uint8)
+                    # Adjust contour coordinates back to full image space
+                    adjusted_contour = best_contour + np.array([[[roi_x1, roi_y1]]], dtype=np.int32)
+                    cv2.drawContours(binary_mask, [adjusted_contour], 0, 1, -1)
+                    foreground_count = np.sum(binary_mask > 0)
+                    logger.info(f"Edge-detected mask: {foreground_count} foreground pixels")
+                else:
+                    logger.info("No good edge contour found, using circle fallback...")
+                    # Circle fallback - larger radius for better coverage
+                    binary_mask = np.zeros(self.current_frame.shape[:2], np.uint8)
+                    cv2.circle(binary_mask, (x, y), 50, 1, -1)  # 50px radius blob
+                    foreground_count = np.sum(binary_mask > 0)
+                    logger.info(f"Circle fallback: {foreground_count} foreground pixels")
             
             # Convert to polygon
             polygon = self._mask_to_polygon(binary_mask)
