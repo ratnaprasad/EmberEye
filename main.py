@@ -4,6 +4,15 @@ import os
 import platform
 import logging
 
+# Configure logging to output to console for debugging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
 # Suppress Qt stylesheet warnings about unknown properties
 # This prevents console spam and potential exe build issues
 os.environ['QT_LOGGING_RULES'] = '*=false'
