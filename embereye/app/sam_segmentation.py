@@ -235,99 +235,38 @@ class SAMSegmenter:
             bgd_model = np.zeros((1, 65), np.float64)
             fgd_model = np.zeros((1, 65), np.float64)
             
-            # Use seed point strategy from the start for better control
-            # Mark click point as definitely foreground (large circle - 25px radius for humans)
-            cv2.circle(mask, (x, y), 25, cv2.GC_FGD, -1)  # cv2.GC_FGD = 1 (definite foreground)
+            # Strategy: Set everything to probable background first, then mark foreground
+            # This constrains GrabCut to work within the rect region only
+            mask[:, :] = cv2.GC_BGD  # Everything is background by default
             
-            # Mark inner area around click as probably foreground (extra buffer)
-            cv2.circle(mask, (x, y), 35, cv2.GC_PR_FGD, -1)  # cv2.GC_PR_FGD = 3 (probable foreground)
+            # Mark the rect region as probably background (will refine)
+            mask[rect_y:rect_y+rect_h, rect_x:rect_x+rect_w] = cv2.GC_PR_BGD
             
-            # Mark edges and outer regions as definitely background to prevent leaking
-            border_width = 15
-            # Top edge
-            if rect_y > 0:
-                cv2.rectangle(mask, (rect_x, max(0, rect_y - 10)), (rect_x + rect_w, rect_y + border_width), cv2.GC_BGD, -1)
-            # Bottom edge
-            if rect_y + rect_h < h:
-                cv2.rectangle(mask, (rect_x, rect_y + rect_h - border_width), (rect_x + rect_w, min(h, rect_y + rect_h + 10)), cv2.GC_BGD, -1)
-            # Left edge
-            if rect_x > 0:
-                cv2.rectangle(mask, (max(0, rect_x - 10), rect_y), (rect_x + border_width, rect_y + rect_h), cv2.GC_BGD, -1)
-            # Right edge
-            if rect_x + rect_w < w:
-                cv2.rectangle(mask, (rect_x + rect_w - border_width, rect_y), (min(w, rect_x + rect_w + 10), rect_y + rect_h), cv2.GC_BGD, -1)
+            # Mark click point area as definitely foreground (human/object center)
+            # Use smaller radius to be more conservative
+            cv2.circle(mask, (x, y), 20, cv2.GC_FGD, -1)
             
-            logger.info(f"GrabCut with strong seed points: FG circle at ({x},{y}) r=25, PR_FG buffer r=35")
-            logger.info("Running GrabCut algorithm with 15 iterations...")
+            # Mark slightly larger area as probably foreground
+            cv2.circle(mask, (x, y), 30, cv2.GC_PR_FGD, -1)
+            
+            logger.info(f"GrabCut mask setup: FG circle r=20px, PR_FG circle r=30px at ({x},{y})")
+            logger.info("Running GrabCut algorithm with 10 iterations...")
             # Run GrabCut with mask-based initialization (seed points)
-            cv2.grabCut(self.current_frame, mask, None, bgd_model, fgd_model, 15, cv2.GC_INIT_WITH_MASK)
+            cv2.grabCut(self.current_frame, mask, None, bgd_model, fgd_model, 10, cv2.GC_INIT_WITH_MASK)
             
             # Create binary mask - include both definite and probable foreground
             binary_mask = np.where((mask == 1) | (mask == 3), 1, 0).astype('uint8')
             foreground_count = np.sum(binary_mask > 0)
             logger.info(f"GrabCut mask with seed points: {foreground_count} foreground pixels")
             
-            # If still getting almost nothing, use edge detection fallback
-            if foreground_count < 150:
-                logger.info(f"GrabCut found too few pixels ({foreground_count}), using edge detection fallback...")
-                
-                # Extract region around click point
-                margin = 100
-                roi_x1 = max(0, x - margin)
-                roi_y1 = max(0, y - margin)
-                roi_x2 = min(w, x + margin)
-                roi_y2 = min(h, y + margin)
-                roi = self.current_frame[roi_y1:roi_y2, roi_x1:roi_x2]
-                
-                # Convert to grayscale
-                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                
-                # Apply edge detection
-                edges = cv2.Canny(gray, 50, 150)
-                logger.info(f"Canny edge detection on {roi.shape} region")
-                
-                # Dilate edges to form closed contours
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                dilated = cv2.dilate(edges, kernel, iterations=2)
-                
-                # Find contours in the ROI
-                contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                logger.info(f"Found {len(contours)} edge-based contours")
-                
-                # Find contour closest to center of ROI (where click was)
-                center_x = x - roi_x1
-                center_y = y - roi_y1
-                best_contour = None
-                best_distance = float('inf')
-                
-                for contour in contours:
-                    area = cv2.contourArea(contour)
-                    if area < 100:  # Skip tiny contours
-                        continue
-                    
-                    # Find distance from contour to click point
-                    distances = cv2.pointPolygonTest(contour, (center_x, center_y), True)
-                    if abs(distances) < best_distance:
-                        best_distance = abs(distances)
-                        best_contour = contour
-                
-                # If found a good contour, use it; otherwise fall back to circle
-                if best_contour is not None and len(best_contour) >= 3:
-                    logger.info(f"Using edge-detected contour with {len(best_contour)} points")
-                    # Create mask from contour
-                    binary_mask = np.zeros((h, w), np.uint8)
-                    # Adjust contour coordinates back to full image space
-                    adjusted_contour = best_contour + np.array([[[roi_x1, roi_y1]]], dtype=np.int32)
-                    cv2.drawContours(binary_mask, [adjusted_contour], 0, 1, -1)
-                    foreground_count = np.sum(binary_mask > 0)
-                    logger.info(f"Edge-detected mask: {foreground_count} foreground pixels")
-                else:
-                    logger.info("No good edge contour found, using circle fallback...")
-                    # Circle fallback - larger radius for better coverage
-                    binary_mask = np.zeros(self.current_frame.shape[:2], np.uint8)
-                    cv2.circle(binary_mask, (x, y), 50, 1, -1)  # 50px radius blob
-                    foreground_count = np.sum(binary_mask > 0)
-                    logger.info(f"Circle fallback: {foreground_count} foreground pixels")
+            # If GrabCut found almost nothing, use simple circular region
+            if foreground_count < 100:
+                logger.info(f"GrabCut found too few pixels ({foreground_count}), using circle fallback...")
+                binary_mask = np.zeros(self.current_frame.shape[:2], np.uint8)
+                # Draw circle at click point - reasonable default for humans
+                cv2.circle(binary_mask, (x, y), 40, 1, -1)
+                foreground_count = np.sum(binary_mask > 0)
+                logger.info(f"Circle fallback: {foreground_count} foreground pixels")
             
             # Convert to polygon
             polygon = self._mask_to_polygon(binary_mask)
