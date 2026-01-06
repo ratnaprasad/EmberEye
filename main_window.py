@@ -1023,6 +1023,58 @@ class BEMainWindow(QMainWindow):
         ie_btn_layout.addWidget(import_zip_btn, 3, 1)
         
         left_panel.addLayout(ie_btn_layout)
+        
+        # Ready for Training count display
+        training_ready_group = QWidget()
+        training_ready_layout = QVBoxLayout(training_ready_group)
+        training_ready_layout.setContentsMargins(10, 10, 10, 10)
+        training_ready_group.setStyleSheet("""
+            QWidget {
+                background: rgba(0, 188, 212, 0.1);
+                border: 2px solid #00bcd4;
+                border-radius: 8px;
+            }
+        """)
+        
+        # Header with delete button
+        header_layout = QHBoxLayout()
+        self.training_ready_label = QLabel("📦 Ready for Training")
+        self.training_ready_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #00bcd4; border: none; background: transparent;")
+        header_layout.addWidget(self.training_ready_label)
+        header_layout.addStretch()
+        
+        delete_all_btn = QPushButton("🗑")
+        delete_all_btn.setMaximumWidth(30)
+        delete_all_btn.setToolTip("Delete all training data")
+        delete_all_btn.setStyleSheet("background-color: #f44336; color: white; border: none; padding: 2px; border-radius: 3px;")
+        delete_all_btn.clicked.connect(self._delete_all_training_data)
+        header_layout.addWidget(delete_all_btn)
+        
+        training_ready_layout.addLayout(header_layout)
+        
+        self.training_ready_count_label = QLabel("0 annotation files")
+        self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fff; border: none; background: transparent;")
+        training_ready_layout.addWidget(self.training_ready_count_label)
+        
+        # Tree view for annotation files grouped by class
+        from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
+        self.training_files_tree = QTreeWidget()
+        self.training_files_tree.setHeaderLabels(["Files by Class"])
+        self.training_files_tree.setMaximumHeight(200)
+        self.training_files_tree.setStyleSheet("""
+            QTreeWidget {
+                background: rgba(0, 0, 0, 0.3);
+                border: 1px solid #555;
+                color: #fff;
+                font-size: 11px;
+            }
+            QTreeWidget::item:selected {
+                background: rgba(0, 188, 212, 0.3);
+            }
+        """)
+        training_ready_layout.addWidget(self.training_files_tree)
+        
+        left_panel.addWidget(training_ready_group)
 
         # Track if training just completed (to prevent refresh from resetting display)
         self.training_just_completed = False
@@ -1173,6 +1225,9 @@ class BEMainWindow(QMainWindow):
         self.training_selected_image_paths = []
         self.training_has_annotations = False
         self.training_media_imported = False
+        
+        # Initial count update
+        self._refresh_training_ready_count()
 
     def _export_classes_package(self):
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
@@ -1264,6 +1319,10 @@ class BEMainWindow(QMainWindow):
                 backup_msg = f"\nBackup: {applied.get('backup') or 'n/a'}" if mode == 'override' else ""
                 QMessageBox.information(self, "Import Annotations",
                                         f"Applied: {mode}{backup_msg}\nDuplicates (dry-run): {dup}\nDisagreements (dry-run): {dis}")
+                try:
+                    self._refresh_training_ready_count()
+                except Exception:
+                    pass
         except Exception as e:
             QMessageBox.critical(self, "Import Annotations", f"Error: {e}")
 
@@ -1289,6 +1348,10 @@ class BEMainWindow(QMainWindow):
             from embereye.app.training_sync import import_annotations_zip
             result = import_annotations_zip(path)
             QMessageBox.information(self, "Import ZIP", f"Extracted: {result.get('extracted')}\nMedia: {result.get('media')}\nDestination: {result.get('dest')}")
+            try:
+                self._refresh_training_ready_count()
+            except Exception:
+                pass
         except Exception as e:
             QMessageBox.critical(self, "Import ZIP", f"Error: {e}")
 
@@ -1327,6 +1390,10 @@ class BEMainWindow(QMainWindow):
                 return
             result = restore_annotations_backup(path)
             QMessageBox.information(self, "Revert Annotations", f"Restored to: {result.get('restored')}\nUsed backup: {result.get('used_backup')}\nSafety backup: {result.get('safety_backup') or 'n/a'}")
+            try:
+                self._refresh_training_ready_count()
+            except Exception:
+                pass
         except Exception as e:
             QMessageBox.critical(self, "Revert Annotations", f"Error: {e}")
 
@@ -1471,6 +1538,7 @@ class BEMainWindow(QMainWindow):
             return
         target_dir = self._copy_annotations_to_training(annotations_dir)
         if target_dir:
+            self._refresh_training_ready_count()
             try:
                 self._refresh_dataset_stats()
             except Exception:
@@ -2867,6 +2935,114 @@ class BEMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Display Error", f"Error displaying results: {e}")
 
+    def _refresh_training_ready_count(self):
+        """Update the 'Ready for Training' count display and file tree."""
+        # Don't update if training just completed (preserve completion message)
+        if getattr(self, 'training_just_completed', False):
+            return
+        
+        try:
+            from PyQt5.QtWidgets import QTreeWidgetItem
+            training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
+            total = self._count_annotation_files(training_ann_base)
+            
+            # Update count label
+            if total == 0:
+                self.training_ready_count_label.setText("0 annotation files")
+                self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #888; border: none; background: transparent;")
+            else:
+                self.training_ready_count_label.setText(f"{total} annotation files")
+                self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4CAF50; border: none; background: transparent;")
+            
+            # Update tree view grouped by class
+            self.training_files_tree.clear()
+            if total > 0:
+                files_by_class = self._get_files_grouped_by_class(training_ann_base)
+                for class_name, files in sorted(files_by_class.items()):
+                    class_item = QTreeWidgetItem(self.training_files_tree, [f"{class_name} ({len(files)} files)"])
+                    class_item.setExpanded(False)  # Collapsed by default
+                    for file_path in sorted(files):
+                        file_name = os.path.basename(file_path)
+                        QTreeWidgetItem(class_item, [file_name])
+        except Exception:
+            self.training_ready_count_label.setText("Error")
+            self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #f44336; border: none; background: transparent;")
+    
+    def _get_files_grouped_by_class(self, annotations_dir: str) -> dict:
+        """Group annotation files by detected classes."""
+        from master_class_config import load_master_classes
+        
+        files_by_class = {}
+        flat_classes = []
+        
+        # Build flat class list
+        classes_dict = load_master_classes()
+        for category in classes_dict.get("IncidentEnvironment", []):
+            for leaf_class in classes_dict.get(category, []):
+                flat_classes.append(leaf_class)
+        
+        # Scan all annotation files
+        if not os.path.exists(annotations_dir):
+            return files_by_class
+        
+        for root, dirs, files in os.walk(annotations_dir):
+            for file_name in files:
+                if not file_name.endswith('.txt'):
+                    continue
+                
+                file_path = os.path.join(root, file_name)
+                try:
+                    with open(file_path, 'r') as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if not parts:
+                                continue
+                            class_id = int(parts[0])
+                            if 0 <= class_id < len(flat_classes):
+                                class_name = flat_classes[class_id]
+                                if class_name not in files_by_class:
+                                    files_by_class[class_name] = []
+                                if file_path not in files_by_class[class_name]:
+                                    files_by_class[class_name].append(file_path)
+                except Exception:
+                    continue
+        
+        return files_by_class
+    
+    def _delete_all_training_data(self):
+        """Delete all data in training_data/annotations folder."""
+        try:
+            training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
+            total = self._count_annotation_files(training_ann_base)
+            
+            if total == 0:
+                QMessageBox.information(self, "Delete", "No training data to delete.")
+                return
+            
+            reply = QMessageBox.question(
+                self,
+                "Delete All Training Data",
+                f"Delete ALL {total} annotation files from Ready for Training?\n\n"
+                "⚠️ This action cannot be undone!\n\n"
+                "This will permanently delete:\n"
+                "• All annotation files (.txt)\n"
+                "• All associated images\n"
+                "• All metadata files (.json)\n\n"
+                "Proceed with deletion?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                import shutil
+                if os.path.exists(training_ann_base):
+                    shutil.rmtree(training_ann_base)
+                    os.makedirs(training_ann_base, exist_ok=True)
+                
+                self._refresh_training_ready_count()
+                QMessageBox.information(self, "Deleted", f"Successfully deleted {total} annotation files.")
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Error", f"Failed to delete training data: {str(e)}")
 
     def _copy_annotations_to_training(self, source_dir: str) -> str:
         """Copy annotated frames (images + txt) into training_data/annotations."""
