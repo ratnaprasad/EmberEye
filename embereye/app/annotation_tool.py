@@ -6,7 +6,7 @@ from resource_helper import get_data_path
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QCompleter, QSlider, QStackedLayout,
-    QWidget, QListWidget, QSizePolicy, QRadioButton, QButtonGroup
+    QWidget, QListWidget, QSizePolicy, QRadioButton, QButtonGroup, QScrollArea
 )
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer, QEvent, QPointF
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPolygonF, QBrush
@@ -463,6 +463,57 @@ class AnnotationToolDialog(QDialog):
         # UI
         main = QVBoxLayout(self)
         
+        # TOP: Media controls (moved from bottom)
+        top_control_bar = QWidget()
+        top_control_bar.setStyleSheet("background-color: rgba(0,0,0,220); color: white;")
+        top_control_bar.setFixedHeight(60)
+        top_control_layout = QHBoxLayout(top_control_bar)
+        top_control_layout.setContentsMargins(12, 6, 12, 6)
+        top_control_layout.setSpacing(12)
+
+        self.play_btn = QPushButton("▶ Play")
+        self.play_btn.setStyleSheet("color: white; font-size: 12px; font-weight: bold; padding: 6px 12px; border: 1px solid white; border-radius: 4px;")
+        self.play_btn.setFixedWidth(80)
+        self.play_btn.setFixedHeight(40)
+        self.play_btn.setEnabled(False)
+        self.play_btn.clicked.connect(self.toggle_play)
+        top_control_layout.addWidget(self.play_btn)
+
+        self.prev_btn = QPushButton("◀ Prev")
+        self.prev_btn.setStyleSheet("color: white; font-size: 12px; font-weight: bold; padding: 6px 12px; border: 1px solid white; border-radius: 4px;")
+        self.prev_btn.setFixedWidth(80)
+        self.prev_btn.setFixedHeight(40)
+        self.prev_btn.setEnabled(False)
+        self.prev_btn.clicked.connect(self.prev_frame)
+        top_control_layout.addWidget(self.prev_btn)
+
+        self.next_btn = QPushButton("Next ▶")
+        self.next_btn.setStyleSheet("color: white; font-size: 12px; font-weight: bold; padding: 6px 12px; border: 1px solid white; border-radius: 4px;")
+        self.next_btn.setFixedWidth(80)
+        self.next_btn.setFixedHeight(40)
+        self.next_btn.setEnabled(False)
+        self.next_btn.clicked.connect(self.next_frame)
+        top_control_layout.addWidget(self.next_btn)
+
+        self.time_left_label = QLabel("00:00")
+        self.time_left_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold; min-width: 50px;")
+        top_control_layout.addWidget(self.time_left_label)
+
+        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider.setEnabled(False)
+        self.frame_slider.setTickPosition(QSlider.TicksBelow)
+        self.frame_slider.setSingleStep(1)
+        self.frame_slider.setStyleSheet("QSlider::groove:horizontal { background: rgba(255,255,255,100); height: 6px; margin: 0px; } QSlider::handle:horizontal { width: 12px; margin: -3px 0; background: white; border-radius: 6px; }")
+        self.frame_slider.valueChanged.connect(self.on_slider_value_changed)
+        self.frame_slider.sliderMoved.connect(self.on_slider_moved)
+        top_control_layout.addWidget(self.frame_slider, 1)
+
+        self.time_right_label = QLabel("00:00")
+        self.time_right_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold; min-width: 50px;")
+        top_control_layout.addWidget(self.time_right_label)
+        
+        main.addWidget(top_control_bar)
+        
         splitter = QSplitter()
         splitter.setOrientation(Qt.Horizontal)
         splitter.setCollapsible(0, False)
@@ -496,24 +547,24 @@ class AnnotationToolDialog(QDialog):
         left.addWidget(video_container)
         splitter.addWidget(left_widget)
 
-        # Right: video selection and annotation controls
-        right = QVBoxLayout()
+        # Right: annotation controls (Select Media removed, now scrollable)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_scroll.setMaximumWidth(400)
+        
         right_widget = QWidget()
+        right = QVBoxLayout()
         right_widget.setLayout(right)
-        right_widget.setMaximumWidth(400)
+        right_scroll.setWidget(right_widget)
 
         right.addWidget(QLabel("Media"))
         self.video_label = QLabel(self.video_path or (f"{len(self.image_paths)} image(s) selected" if self.image_paths else "No media selected"))
         self.video_label.setWordWrap(True)
         self.video_label.setStyleSheet("color: #aaa; font-size: 11px;")
         right.addWidget(self.video_label)
-        
-        select_btn = QPushButton("Select Media…")
-        select_btn.setStyleSheet("padding: 8px; font-size: 12px;")
-        select_btn.clicked.connect(self.select_media)
-        right.addWidget(select_btn)
 
-        right.addSpacing(10)
+        right.addSpacing(5)
         right.addWidget(QLabel("Label Class"))
         self.class_combo = QComboBox()
         self.class_combo.setEditable(True)
@@ -626,65 +677,14 @@ class AnnotationToolDialog(QDialog):
         right.addWidget(save_all_btn)
 
         right.addStretch(1)
-        splitter.addWidget(right_widget)
+        splitter.addWidget(right_scroll)
         
         # Set stretch factors: 70% for video (left), 30% for controls (right)
         splitter.setStretchFactor(0, 70)
         splitter.setStretchFactor(1, 30)
 
-        # Bottom: Controls and Close
+        # Bottom: Close button only
         bottom = QHBoxLayout()
-        
-        # Control bar at bottom
-        control_bar = QWidget()
-        control_bar.setStyleSheet("background-color: rgba(0,0,0,220); color: white;")
-        control_bar.setFixedHeight(60)
-        control_layout = QHBoxLayout(control_bar)
-        control_layout.setContentsMargins(12, 6, 12, 6)
-        control_layout.setSpacing(12)
-
-        self.play_btn = QPushButton("▶ Play")
-        self.play_btn.setStyleSheet("color: white; font-size: 12px; font-weight: bold; padding: 6px 12px; border: 1px solid white; border-radius: 4px;")
-        self.play_btn.setFixedWidth(80)
-        self.play_btn.setFixedHeight(40)
-        self.play_btn.setEnabled(False)
-        self.play_btn.clicked.connect(self.toggle_play)
-        control_layout.addWidget(self.play_btn)
-
-        self.prev_btn = QPushButton("◀ Prev")
-        self.prev_btn.setStyleSheet("color: white; font-size: 12px; font-weight: bold; padding: 6px 12px; border: 1px solid white; border-radius: 4px;")
-        self.prev_btn.setFixedWidth(80)
-        self.prev_btn.setFixedHeight(40)
-        self.prev_btn.setEnabled(False)
-        self.prev_btn.clicked.connect(self.prev_frame)
-        control_layout.addWidget(self.prev_btn)
-
-        self.next_btn = QPushButton("Next ▶")
-        self.next_btn.setStyleSheet("color: white; font-size: 12px; font-weight: bold; padding: 6px 12px; border: 1px solid white; border-radius: 4px;")
-        self.next_btn.setFixedWidth(80)
-        self.next_btn.setFixedHeight(40)
-        self.next_btn.setEnabled(False)
-        self.next_btn.clicked.connect(self.next_frame)
-        control_layout.addWidget(self.next_btn)
-
-        self.time_left_label = QLabel("00:00")
-        self.time_left_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold; min-width: 50px;")
-        control_layout.addWidget(self.time_left_label)
-
-        self.frame_slider = QSlider(Qt.Horizontal)
-        self.frame_slider.setEnabled(False)
-        self.frame_slider.setTickPosition(QSlider.TicksBelow)
-        self.frame_slider.setSingleStep(1)
-        self.frame_slider.setStyleSheet("QSlider::groove:horizontal { background: rgba(255,255,255,100); height: 6px; margin: 0px; } QSlider::handle:horizontal { width: 12px; margin: -3px 0; background: white; border-radius: 6px; }")
-        self.frame_slider.valueChanged.connect(self.on_slider_value_changed)
-        self.frame_slider.sliderMoved.connect(self.on_slider_moved)
-        control_layout.addWidget(self.frame_slider, 1)
-
-        self.time_right_label = QLabel("00:00")
-        self.time_right_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold; min-width: 50px;")
-        control_layout.addWidget(self.time_right_label)
-        
-        bottom.addWidget(control_bar)
         bottom.addStretch(1)
         
         close_btn = QPushButton("Close")
