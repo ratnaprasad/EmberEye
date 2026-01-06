@@ -186,7 +186,12 @@ class SAMSegmenter:
             Normalized polygon points or None
         """
         try:
-            logger.info("Using GrabCut segmentation fallback")
+            logger.info(f"Using GrabCut segmentation fallback at ({x}, {y}) in frame {w}x{h}")
+            
+            # Validate click coordinates
+            if x < 0 or x >= w or y < 0 or y >= h:
+                logger.error(f"Click coordinates ({x}, {y}) out of bounds for frame {w}x{h}")
+                return None
             
             # Define rectangular region around click (50x50 pixel box)
             margin = 50
@@ -195,8 +200,10 @@ class SAMSegmenter:
             rect_w = min(2 * margin, w - rect_x)
             rect_h = min(2 * margin, h - rect_y)
             
+            logger.info(f"GrabCut rect: x={rect_x}, y={rect_y}, w={rect_w}, h={rect_h}")
+            
             if rect_w < 10 or rect_h < 10:
-                logger.warning("Click too close to edge for GrabCut")
+                logger.warning(f"Click too close to edge for GrabCut: rect {rect_w}x{rect_h}")
                 return None
             
             # Initialize mask
@@ -204,12 +211,14 @@ class SAMSegmenter:
             bgd_model = np.zeros((1, 65), np.float64)
             fgd_model = np.zeros((1, 65), np.float64)
             
+            logger.info("Running GrabCut algorithm...")
             # Run GrabCut
             rect = (rect_x, rect_y, rect_w, rect_h)
             cv2.grabCut(self.current_frame, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
             
             # Create binary mask (foreground)
             binary_mask = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+            logger.info(f"GrabCut mask: {np.sum(binary_mask > 0)} foreground pixels")
             
             # Convert to polygon
             polygon = self._mask_to_polygon(binary_mask)
@@ -227,7 +236,7 @@ class SAMSegmenter:
             return normalized_polygon
             
         except Exception as e:
-            logger.error(f"GrabCut segmentation failed: {e}")
+            logger.error(f"GrabCut segmentation failed: {e}", exc_info=True)
             return None
     
     def _mask_to_polygon(self, mask: np.ndarray, epsilon_factor: float = 0.002) -> Optional[List[Tuple[int, int]]]:
@@ -242,17 +251,31 @@ class SAMSegmenter:
             List of (x, y) polygon points, or None
         """
         try:
+            logger.info(f"Converting mask to polygon, mask shape: {mask.shape}, unique values: {np.unique(mask)}")
+            
             # Ensure mask is binary uint8
             mask_uint8 = (mask > 0.5).astype(np.uint8) * 255
+            
+            logger.info(f"Binary mask has {np.sum(mask_uint8 > 0)} non-zero pixels")
             
             # Find contours
             contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
+            logger.info(f"Found {len(contours)} contours")
+            
             if not contours:
+                logger.warning("No contours found in mask")
                 return None
             
             # Use largest contour
             largest_contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            
+            logger.info(f"Largest contour has area: {area}")
+            
+            if area < 10:
+                logger.warning(f"Contour area too small: {area}")
+                return None
             
             # Approximate contour to reduce points
             epsilon = epsilon_factor * cv2.arcLength(largest_contour, True)
@@ -260,6 +283,8 @@ class SAMSegmenter:
             
             # Convert to list of tuples
             polygon = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
+            
+            logger.info(f"Polygon has {len(polygon)} points")
             
             # YOLO requires at least 3 points
             if len(polygon) < 3:

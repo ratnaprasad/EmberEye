@@ -244,10 +244,23 @@ class ImageCanvas(QLabel):
         from PyQt5.QtCore import QTimer
         
         try:
+            # Check if frame is available
+            if self.current_frame_bgr is None:
+                logger.error("current_frame_bgr is None - cannot segment")
+                QApplication.restoreOverrideCursor()
+                QMessageBox.warning(
+                    self,
+                    "No Frame",
+                    "No frame loaded for segmentation. Please load a frame first."
+                )
+                return
+            
             # Get click position relative to pixmap
             rel_pos = click_pos - geom.topLeft()
             x = rel_pos.x()
             y = rel_pos.y()
+            
+            logger.info(f"SAM click at display coords ({x}, {y}), frame shape: {self.current_frame_bgr.shape}, display size: {self._display_pixmap.width()}x{self._display_pixmap.height()}")
             
             # Show wait cursor while processing
             QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -264,7 +277,7 @@ class ImageCanvas(QLabel):
             sam = SAMSegmenter()
             sam.set_frame(self.current_frame_bgr)
             
-            logger.info(f"Segmenting at ({x}, {y})...")
+            logger.info(f"Running segmentation at ({x}, {y})...")
             
             # Get polygon in normalized coordinates [0-1]
             polygon = sam.segment_at_point(
