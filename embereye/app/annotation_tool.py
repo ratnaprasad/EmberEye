@@ -538,7 +538,10 @@ class AnnotationToolDialog(QDialog):
         self.mode_button_group.addButton(self.box_mode_radio, 0)
         self.mode_button_group.addButton(self.seg_mode_radio, 1)
         self.mode_button_group.addButton(self.manual_poly_radio, 2)
+        # Connect all radio buttons to mode change handler
         self.box_mode_radio.toggled.connect(self._on_mode_changed)
+        self.seg_mode_radio.toggled.connect(self._on_mode_changed)
+        self.manual_poly_radio.toggled.connect(self._on_mode_changed)
         mode_layout.addWidget(self.box_mode_radio)
         mode_layout.addWidget(self.seg_mode_radio)
         mode_layout.addWidget(self.manual_poly_radio)
