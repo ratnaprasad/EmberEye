@@ -1531,7 +1531,12 @@ class BEMainWindow(QMainWindow):
             if not video_path and not image_paths:
                 QMessageBox.warning(self, "Annotation", "Please import media (video or images) first.")
                 return
-            from embereye.app.annotation_tool import AnnotationToolDialog as AEDlg  # ensure latest
+            # Prefer package version if available; fall back to top-level shim
+            AEDlg = None
+            try:
+                from embereye.app.annotation_tool import AnnotationToolDialog as AEDlg  # ensure latest
+            except Exception:
+                AEDlg = AnnotationToolDialog
             dlg = AEDlg(self, video_path=video_path, image_paths=image_paths, class_labels=hierarchical, leaf_classes=leaf_classes)
             dlg.exec_()
         except Exception as e:
