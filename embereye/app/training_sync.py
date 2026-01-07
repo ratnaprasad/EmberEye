@@ -755,12 +755,13 @@ def import_annotations_v2(input_file: str, mode: str = "merge", dry_run: bool = 
 
 
 def import_annotations_zip(input_zip: str) -> Dict[str, Any]:
-    """Import raw annotations ZIP by extracting into training_data/annotations/.
+    """Import raw annotations ZIP by extracting into annotations/ for QC review.
 
     No merge logic is applied; it copies frames + txt + json as-is. Use this when the
-    export was created via export_annotations_zip and you want a full dataset transfer.
+    export was created via export_annotations_zip. After QC review, use 'Move to Training'
+    to copy the approved annotations to training_data/annotations/.
     """
-    target_root = get_data_path(os.path.join("training_data", "annotations"))
+    target_root = get_data_path("annotations")
     os.makedirs(target_root, exist_ok=True)
     extracted = 0
     bases = 0
@@ -770,7 +771,7 @@ def import_annotations_zip(input_zip: str) -> Dict[str, Any]:
             if name.startswith("annotations/") and not name.endswith("/"):
                 # annotations/<media_base>/...
                 rel_path = name.split("annotations/", 1)[1]
-                # Destination under training_data/annotations/
+                # Destination under annotations/ (for QC review)
                 dest = os.path.join(target_root, rel_path)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with zf.open(name) as src, open(dest, "wb") as dst:

@@ -5,7 +5,7 @@ Review and edit annotations before moving to training dataset.
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
-    QComboBox, QListWidget, QListWidgetItem, QMessageBox, QFrame
+    QComboBox, QListWidget, QListWidgetItem, QMessageBox, QFrame, QSlider, QCheckBox
 )
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QFont
@@ -32,12 +32,36 @@ class QCReviewDialog(QDialog):
         self.hierarchical_labels = get_hierarchical_class_labels()
         self.flat_classes = self._get_flat_class_list()
         
-        # Load all annotation files
-        self.annotation_files = sorted(list(self.annotations_dir.glob("*.txt")))
-        if not self.annotation_files:
+        # Load all annotation files (recursive to support multi-base QC review)
+        self.all_annotation_files = sorted(list(self.annotations_dir.rglob("*.txt")))
+        if not self.all_annotation_files:
             QMessageBox.warning(self, "No Annotations", "No annotation files found in directory.")
             self.reject()
             return
+        # Current view defaults to all files
+        self.annotation_files = list(self.all_annotation_files)
+        # Compute media bases and quick-jump indices from the full set
+        self.file_bases = []
+        base_first_index = {}
+        for i, fpath in enumerate(self.all_annotation_files):
+            try:
+                rel = fpath.relative_to(self.annotations_dir)
+            except Exception:
+                rel = Path(fpath)
+            parts = rel.parts
+            if len(parts) > 1:
+                base = parts[0]
+            else:
+                base = self.annotations_dir.name
+            self.file_bases.append(base)
+            if base not in base_first_index:
+                base_first_index[base] = i
+        self.media_bases = sorted(base_first_index.keys())
+        self.base_first_index = base_first_index
+        # Counts per base for quick stats
+        from collections import Counter
+        self.base_counts = dict(Counter(self.file_bases))
+        self.filter_base_enabled = False
         
         self.current_index = 0
         self.current_annotations = []  # List of (class_id, x_center, y_center, width, height)
@@ -64,10 +88,40 @@ class QCReviewDialog(QDialog):
         self.frame_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         top_layout.addWidget(self.frame_label)
         top_layout.addStretch()
+
+        # Media base jump control
+        top_layout.addWidget(QLabel("Media base:"))
+        self.base_combo = QComboBox()
+        self.base_combo.addItem("All bases")
+        for b in self.media_bases:
+            self.base_combo.addItem(b)
+        self.base_combo.currentIndexChanged.connect(self._on_base_changed)
+        top_layout.addWidget(self.base_combo)
+
+        # Toggle to filter the list to only the selected base
+        self.filter_checkbox = QCheckBox("Show only this base")
+        self.filter_checkbox.stateChanged.connect(self._on_filter_toggled)
+        top_layout.addWidget(self.filter_checkbox)
+
+        # Base stats label
+        self.base_stats_label = QLabel()
+        self.base_stats_label.setStyleSheet("color: #888;")
+        top_layout.addWidget(self.base_stats_label)
         
         prev_btn = QPushButton("◀ Previous")
         prev_btn.clicked.connect(self.prev_frame)
         top_layout.addWidget(prev_btn)
+        
+        # Slider to scrub through frames quickly
+        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider.setMinimum(1)
+        self.frame_slider.setMaximum(max(1, len(self.annotation_files)))
+        self.frame_slider.setValue(1)
+        self.frame_slider.setSingleStep(1)
+        self.frame_slider.setPageStep(10)
+        self.frame_slider.setFixedWidth(320)
+        self.frame_slider.valueChanged.connect(self._on_slider_changed)
+        top_layout.addWidget(self.frame_slider)
         
         next_btn = QPushButton("Next ▶")
         next_btn.clicked.connect(self.next_frame)
@@ -148,6 +202,7 @@ class QCReviewDialog(QDialog):
         layout.addLayout(bottom_layout)
         
         self.update_stats()
+        self._update_base_stats()
     
     def load_current_frame(self):
         """Load and display current frame with annotations."""
@@ -179,14 +234,22 @@ class QCReviewDialog(QDialog):
         with open(ann_file, 'r') as f:
             for line in f:
                 parts = line.strip().split()
-                if len(parts) == 5:
-                    self.current_annotations.append([
-                        int(parts[0]),
-                        float(parts[1]),
-                        float(parts[2]),
-                        float(parts[3]),
-                        float(parts[4])
-                    ])
+                if len(parts) >= 5:
+                    # Check if rectangle (5 values) or polygon (odd number >= 5)
+                    if len(parts) == 5:
+                        # Rectangle: class_id xc yc width height
+                        self.current_annotations.append([
+                            int(parts[0]),
+                            float(parts[1]),
+                            float(parts[2]),
+                            float(parts[3]),
+                            float(parts[4])
+                        ])
+                    elif len(parts) % 2 == 1:  # Polygon: odd number of values (class_id x1 y1 x2 y2 ... xn yn)
+                        annotation = [int(parts[0])]
+                        for i in range(1, len(parts)):
+                            annotation.append(float(parts[i]))
+                        self.current_annotations.append(annotation)
         
         # Draw annotations on image
         display_image = self._draw_annotations(image.copy())
@@ -208,8 +271,105 @@ class QCReviewDialog(QDialog):
         
         # Update UI
         self.frame_label.setText(f"Frame {self.current_index + 1} / {len(self.annotation_files)}")
+        # Keep slider in sync with current index
+        if hasattr(self, 'frame_slider') and self.frame_slider:
+            try:
+                self.frame_slider.blockSignals(True)
+                self.frame_slider.setMaximum(max(1, len(self.annotation_files)))
+                self.frame_slider.setValue(self.current_index + 1)
+            finally:
+                self.frame_slider.blockSignals(False)
         self.refresh_annotation_list()
         self.selected_annotation_idx = None
+
+    def _on_base_changed(self, index: int):
+        # Apply filter if enabled; otherwise just jump
+        if self.filter_checkbox.isChecked() and index > 0:
+            self._apply_base_filter(self.base_combo.currentText())
+            return
+        # If 'All bases' selected or filter disabled, restore full list and jump
+        if index <= 0:
+            # Restore full set
+            self.annotation_files = list(self.all_annotation_files)
+            self.current_index = 0
+            self.load_current_frame()
+            return
+        # Jump to first frame of selected base within the current list
+        base = self.base_combo.currentText()
+        # Find first index of this base in current list
+        target_path = None
+        # Use full mapping to locate first overall, then map into current view
+        first_overall_idx = self.base_first_index.get(base)
+        if first_overall_idx is not None:
+            target_path = self.all_annotation_files[first_overall_idx]
+        if target_path is not None:
+            try:
+                self.save_current_annotations()
+            except Exception:
+                pass
+            # Find target in current (possibly filtered) list
+            try:
+                self.current_index = self.annotation_files.index(target_path)
+            except ValueError:
+                # Not in current view; reload full view to ensure jump is visible
+                self.annotation_files = list(self.all_annotation_files)
+                self.current_index = first_overall_idx
+            self.load_current_frame()
+
+    def _on_filter_toggled(self, state: int):
+        checked = state == Qt.Checked
+        self.filter_base_enabled = checked
+        if checked and self.base_combo.currentIndex() > 0:
+            self._apply_base_filter(self.base_combo.currentText())
+        else:
+            # Restore all files
+            try:
+                self.save_current_annotations()
+            except Exception:
+                pass
+            self.annotation_files = list(self.all_annotation_files)
+            self.current_index = 0
+            self.load_current_frame()
+        self._update_base_stats()
+
+    def _apply_base_filter(self, base: str):
+        # Filter current view to only files belonging to the given base
+        try:
+            self.save_current_annotations()
+        except Exception:
+            pass
+        filtered = [f for f, b in zip(self.all_annotation_files, self.file_bases) if b == base]
+        if not filtered:
+            return
+        self.annotation_files = filtered
+        self.current_index = 0
+        self.load_current_frame()
+        self._update_base_stats()
+
+    def _update_base_stats(self):
+        # Update the base stats label depending on selection and filter state
+        total_all = len(self.all_annotation_files)
+        if self.base_combo.currentIndex() <= 0:
+            # All bases selected
+            if self.filter_base_enabled:
+                # Should not occur (filter requires a specific base), but handle gracefully
+                self.base_stats_label.setText(f"All bases • Frames: {len(self.annotation_files)} of {total_all}")
+            else:
+                self.base_stats_label.setText(f"All bases • Frames: {total_all}")
+            return
+        base = self.base_combo.currentText()
+        count = self.base_counts.get(base, 0)
+        if self.filter_base_enabled:
+            self.base_stats_label.setText(f"Base '{base}' • Frames: {len(self.annotation_files)} of {count}")
+        else:
+            self.base_stats_label.setText(f"Base '{base}' • Frames: {count} (unfiltered)")
+
+    def _on_slider_changed(self, value: int):
+        # Slider is 1-based for users
+        idx = int(value) - 1
+        if 0 <= idx < len(self.annotation_files):
+            self.current_index = idx
+            self.load_current_frame()
     
     def _find_image_for_annotation(self, ann_file: Path) -> Path:
         """Find corresponding image file for annotation."""
@@ -232,21 +392,54 @@ class QCReviewDialog(QDialog):
         return None
     
     def _draw_annotations(self, image: np.ndarray) -> np.ndarray:
-        """Draw bounding boxes on image."""
+        """Draw bounding boxes and polygons on image."""
         h, w = image.shape[:2]
         
-        for idx, (class_id, xc, yc, bw, bh) in enumerate(self.current_annotations):
-            # Convert normalized to pixel coordinates
-            x1 = int((xc - bw/2) * w)
-            y1 = int((yc - bh/2) * h)
-            x2 = int((xc + bw/2) * w)
-            y2 = int((yc + bh/2) * h)
+        for idx, annotation in enumerate(self.current_annotations):
+            class_id = annotation[0]
             
             # Color: green if selected, red otherwise
             color = (0, 255, 0) if idx == self.selected_annotation_idx else (255, 100, 100)
             thickness = 3 if idx == self.selected_annotation_idx else 2
             
-            cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+            # Determine if rectangle or polygon
+            if len(annotation) == 5:
+                # Rectangle: class_id xc yc width height
+                _, xc, yc, bw, bh = annotation
+                # Convert normalized to pixel coordinates
+                x1 = int((xc - bw/2) * w)
+                y1 = int((yc - bh/2) * h)
+                x2 = int((xc + bw/2) * w)
+                y2 = int((yc + bh/2) * h)
+                
+                cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+                
+                # Label position for rectangle
+                label_x, label_y = x1, y1
+                
+            else:
+                # Polygon: class_id x1 y1 x2 y2 ... xn yn
+                points = []
+                for i in range(1, len(annotation), 2):
+                    if i + 1 < len(annotation):
+                        px = int(annotation[i] * w)
+                        py = int(annotation[i + 1] * h)
+                        points.append([px, py])
+                
+                if len(points) >= 3:
+                    pts = np.array(points, dtype=np.int32)
+                    cv2.polylines(image, [pts], True, color, thickness)
+                    
+                    # Fill with semi-transparent overlay
+                    overlay = image.copy()
+                    cv2.fillPoly(overlay, [pts], color)
+                    alpha = 0.15 if idx != self.selected_annotation_idx else 0.25
+                    cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+                    
+                    # Label position for polygon (at first point)
+                    label_x, label_y = points[0]
+                else:
+                    continue
             
             # Draw class label
             class_name = self.flat_classes[class_id] if class_id < len(self.flat_classes) else f"class_{class_id}"
@@ -257,17 +450,27 @@ class QCReviewDialog(QDialog):
             font_thickness = 2
             (text_w, text_h), _ = cv2.getTextSize(label, font, font_scale, font_thickness)
             
-            cv2.rectangle(image, (x1, y1 - text_h - 8), (x1 + text_w + 4, y1), color, -1)
-            cv2.putText(image, label, (x1 + 2, y1 - 4), font, font_scale, (255, 255, 255), font_thickness)
+            cv2.rectangle(image, (label_x, label_y - text_h - 8), (label_x + text_w + 4, label_y), color, -1)
+            cv2.putText(image, label, (label_x + 2, label_y - 4), font, font_scale, (255, 255, 255), font_thickness)
         
         return image
     
     def refresh_annotation_list(self):
         """Refresh annotations list widget."""
         self.ann_list.clear()
-        for idx, (class_id, xc, yc, bw, bh) in enumerate(self.current_annotations):
+        for idx, annotation in enumerate(self.current_annotations):
+            class_id = annotation[0]
             class_name = self.flat_classes[class_id] if class_id < len(self.flat_classes) else f"class_{class_id}"
-            item = QListWidgetItem(f"#{idx+1}: {class_name} ({xc:.3f}, {yc:.3f})")
+            
+            if len(annotation) == 5:
+                # Rectangle
+                xc, yc = annotation[1], annotation[2]
+                item = QListWidgetItem(f"#{idx+1}: {class_name} (Box at {xc:.3f}, {yc:.3f})")
+            else:
+                # Polygon
+                num_points = (len(annotation) - 1) // 2
+                item = QListWidgetItem(f"#{idx+1}: {class_name} (Polygon, {num_points} points)")
+            
             self.ann_list.addItem(item)
     
     def on_annotation_selected(self, item):
@@ -278,7 +481,9 @@ class QCReviewDialog(QDialog):
         if 0 <= self.selected_annotation_idx < len(self.current_annotations):
             class_id = self.current_annotations[self.selected_annotation_idx][0]
             if class_id < len(self.flat_classes):
+                self.class_combo.blockSignals(True)
                 self.class_combo.setCurrentIndex(class_id)
+                self.class_combo.blockSignals(False)
         
         self.load_current_frame()  # Redraw with selection
     
@@ -320,8 +525,21 @@ class QCReviewDialog(QDialog):
             if image_file and image_file.exists():
                 image_file.unlink()
             
-            # Remove from list
+            # Remove from list(s)
+            removed = self.annotation_files[self.current_index]
             del self.annotation_files[self.current_index]
+            # Also remove from master list
+            try:
+                idx_master = self.all_annotation_files.index(removed)
+                removed_base = self.file_bases[idx_master]
+                # Update master lists
+                self.all_annotation_files.pop(idx_master)
+                self.file_bases.pop(idx_master)
+                # Update counts for this base
+                if removed_base in self.base_counts:
+                    self.base_counts[removed_base] = max(0, self.base_counts[removed_base] - 1)
+            except ValueError:
+                pass
             
             if not self.annotation_files:
                 QMessageBox.information(self, "Complete", "All frames deleted.")
@@ -334,13 +552,21 @@ class QCReviewDialog(QDialog):
             
             self.load_current_frame()
             self.update_stats()
+            self._update_base_stats()
     
     def save_current_annotations(self):
-        """Save current annotations to file."""
+        """Save current annotations to file, preserving polygons and boxes."""
         ann_file = self.annotation_files[self.current_index]
         with open(ann_file, 'w') as f:
-            for class_id, xc, yc, bw, bh in self.current_annotations:
-                f.write(f"{class_id} {xc} {yc} {bw} {bh}\n")
+            for ann in self.current_annotations:
+                if len(ann) == 5:
+                    # Rectangle
+                    class_id, xc, yc, bw, bh = ann
+                    f.write(f"{class_id} {xc} {yc} {bw} {bh}\n")
+                else:
+                    # Polygon: class_id x1 y1 ... xn yn
+                    line = " ".join([str(ann[0])] + [f"{v}" for v in ann[1:]])
+                    f.write(line + "\n")
     
     def prev_frame(self):
         """Navigate to previous frame."""
