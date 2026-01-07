@@ -5,23 +5,20 @@ from PyInstaller.utils.hooks import collect_all
 datas = [('logo.png', '.'), ('stream_config.json', '.')]
 binaries = []
 hiddenimports = [
-    # Top-level modules
+    # Top-level modules (for backward compatibility)
     'video_widget', 'main_window', 'stream_config', 'streamconfig_dialog',
     'sensor_fusion', 'baseline_manager', 'pfds_manager', 'database_manager',
     'device_status_manager', 'error_logger', 'crash_logger', 'theme_manager',
     'auto_updater', 'calibrationcapture', 'CalibrationWindow', 'camera_calibrator',
     'annotation_tool', 'adaptive_fps', 'metrics', 'vision_detector',
-    'vision_logger', 'video_worker',
-    # Explicit package-qualified modules to ensure inclusion at runtime
-    'embereye.app.annotation_tool',
-    'embereye.app.sam_segmentation',
-    'embereye.app.streamconfig_dialog',
-    'embereye.app.stream_config',
-    'embereye.app.video_widget',
-    'embereye.app.video_worker'
+    'vision_logger', 'video_worker'
 ]
 
-# Collect OpenCV assets/hooks only
+# Collect embereye package (ensures all submodules and embereye.app.* are available)
+tmp_ret = collect_all('embereye')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# Collect OpenCV assets/hooks
 tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
