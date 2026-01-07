@@ -10,10 +10,20 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer, QEvent, QPointF
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPolygonF, QBrush
-from embereye.app.sam_segmentation import SAMSegmenter
+
 import logging
 
+# Try to import SAMSegmenter; gracefully disable if torch DLL fails
+try:
+    from embereye.app.sam_segmentation import SAMSegmenter
+    _sam_available = True
+except Exception as e:
+    logger_startup = logging.getLogger(__name__)
+    logger_startup.warning(f"Failed to import SAMSegmenter at startup: {e}. AI segmentation will be disabled.")
+    _sam_available = False
+    SAMSegmenter = None
 logger = logging.getLogger(__name__)
+
 
 
 class ImageCanvas(QLabel):
@@ -531,8 +541,15 @@ class AnnotationToolDialog(QDialog):
         self.class_colors = self._build_class_colors(self.leaf_classes or self.class_labels)
         self.canvas.class_colors = self.class_colors
         
-        # Initialize SAM segmenter
-        self.sam_segmenter = SAMSegmenter()
+        # Initialize SAM segmenter (disabled if torch unavailable)
+        self.sam_segmenter = None
+        if _sam_available and SAMSegmenter is not None:
+            try:
+                self.sam_segmenter = SAMSegmenter()
+                logger.info("✓ SAM segmenter initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize SAMSegmenter: {e}")
+                logger.info("AI segmentation will be unavailable. Use Rectangle or Manual Polygon modes.")
 
         # Video container with overlay controls (YouTube-style)
         video_container = QWidget()
@@ -999,10 +1016,34 @@ class AnnotationToolDialog(QDialog):
                                 'type': 'box'
                             })
                             logger.info(f"Loaded box annotation: {class_name}")
-                        elif len(parts) >= 7 and (len(parts) - 1) % 2 == 0:
-                            # Polygon format: class x1 y1 x2 y2 ... (even number of coordinates)
-                            polygon = []
+                            # Check if SAM segmenter is available
+                            if SAMSegmenter is None or not _sam_available:
+                                logger.warning("AI Segmentation not available (torch/CUDA not accessible)")
+                                QApplication.restoreOverrideCursor()
+                                QMessageBox.warning(
+                                    self,
+                                    "AI Segmentation Unavailable",
+                                    "AI Segmentation (FastSAM) requires torch/CUDA which is not accessible on this system.\n\n"
+                                    "Available annotation modes:\n"
+                                    "  • Rectangle: Draw boxes manually\n"
+                                    "  • Manual Polygon: Draw polygons point-by-point\n\n"
+                                    "Workaround: Use Rectangle or Manual Polygon modes for annotations."
+                                )
+                                return
                             for i in range(1, len(parts), 2):
+                            try:
+                                sam = SAMSegmenter()
+                                sam.set_frame(self.current_frame_bgr)
+                            except Exception as e:
+                                logger.error(f"Failed to create SAMSegmenter at click time: {e}")
+                                QApplication.restoreOverrideCursor()
+                                QMessageBox.warning(
+                                    self,
+                                    "Segmentation Failed",
+                                    f"Failed to initialize AI segmentation:\n{str(e)}\n\n"
+                                    "Please try using Rectangle or Manual Polygon modes."
+                                )
+                                return
                                 if i + 1 < len(parts):
                                     x = float(parts[i])
                                     y = float(parts[i + 1])

@@ -18,15 +18,23 @@ class SAMSegmenter:
     def __init__(self):
         self.model = None
         self.current_frame = None
-        # Default to CPU; attempt CUDA if torch is available at runtime
+        # Default to CPU; attempt CUDA only if torch is available and working
         self.device = 'cpu'
         try:
-            _torch = importlib.import_module('torch')
-            cuda_attr = getattr(_torch, 'cuda', None)
-            if cuda_attr and cuda_attr.is_available():
-                self.device = 'cuda'
+            try:
+                _torch = importlib.import_module('torch')
+                if _torch is not None:
+                    cuda_attr = getattr(_torch, 'cuda', None)
+                    if cuda_attr is not None:
+                        is_available = getattr(cuda_attr, 'is_available', None)
+                        if is_available is not None and callable(is_available):
+                            if is_available():
+                                self.device = 'cuda'
+            except (ImportError, AttributeError, OSError) as e:
+                # torch DLL load error, CUDA unavailable, or attribute missing - all OK
+                logger.debug(f"CUDA not available: {type(e).__name__}: {e}")
         except Exception:
-            # torch not available or failed to initialize; keep CPU
+            # Catch-all for any unexpected torch issues; keep CPU
             self.device = 'cpu'
         self.use_grabcut_fallback = True  # Enable GrabCut fallback
         logger.info(f"SAM Segmenter initialized on device: {self.device}")
