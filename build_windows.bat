@@ -58,67 +58,28 @@ if errorlevel 1 (
 REM Build executable
 echo [4/5] Building executable (this may take 2-5 minutes)...
 
-set ICON_FLAG=
-if exist "logo.ico" (
-    set ICON_FLAG=--icon logo.ico
+REM Use Windows-specific spec that excludes torch/ultralytics to avoid DLL init errors
+if exist "EmberEye_win.spec" (
+    echo [*] Using EmberEye_win.spec (excludes torch/ultralytics)
+    pyinstaller --clean EmberEye_win.spec
+) else (
+    echo WARNING: EmberEye_win.spec not found, falling back to inline build
+    set ICON_FLAG=
+    if exist "logo.ico" (
+        set ICON_FLAG=--icon logo.ico
+    )
+    pyinstaller --onefile ^
+        --windowed ^
+        --name "EmberEye" ^
+        --paths . ^
+        --paths embereye ^
+        %ICON_FLAG% ^
+        --collect-all=cv2 ^
+        --distpath dist ^
+        --workpath build ^
+        --specpath . ^
+        main.py
 )
-
-REM Build PyInstaller command with conditional data directories
-set DATA_FLAGS=
-if exist "embereye\resources" (
-    set DATA_FLAGS=!DATA_FLAGS! --add-data "embereye/resources;embereye/resources"
-)
-if exist "embereye\utils" (
-    set DATA_FLAGS=!DATA_FLAGS! --add-data "embereye/utils;embereye/utils"
-)
-if exist "embereye\config" (
-    set DATA_FLAGS=!DATA_FLAGS! --add-data "embereye/config;embereye/config"
-)
-
-pyinstaller --onefile ^
-    --windowed ^
-    --name "EmberEye" ^
-    --paths . ^
-    --paths embereye ^
-    %ICON_FLAG% ^
-    %DATA_FLAGS% ^
-    --hidden-import=torch ^
-    --hidden-import=torchvision ^
-    --hidden-import=ultralytics ^
-    --hidden-import=cv2 ^
-    --hidden-import=PyQt5 ^
-    --hidden-import=ee_loginwindow ^
-    --hidden-import=main_window ^
-    --hidden-import=video_widget ^
-    --hidden-import=video_worker ^
-    --hidden-import=stream_config ^
-    --hidden-import=streamconfig_dialog ^
-    --hidden-import=streamconfig_editdialog ^
-    --hidden-import=sensor_fusion ^
-    --hidden-import=baseline_manager ^
-    --hidden-import=pfds_manager ^
-    --hidden-import=resource_helper ^
-    --hidden-import=tcp_server_logger ^
-    --hidden-import=debug_config ^
-    --hidden-import=vision_detector ^
-    --hidden-import=vision_logger ^
-    --hidden-import=anomalies ^
-    --hidden-import=threat_rules ^
-    --hidden-import=tcp_sensor_server ^
-    --hidden-import=tcp_async_server ^
-    --hidden-import=database_manager ^
-    --hidden-import=device_status_manager ^
-    --hidden-import=error_logger ^
-    --hidden-import=crash_logger ^
-    --hidden-import=theme_manager ^
-    --hidden-import=auto_updater ^
-    --collect-all=ultralytics ^
-    --collect-all=torch ^
-    --collect-all=cv2 ^
-    --distpath dist ^
-    --workpath build ^
-    --specpath . ^
-    main.py
 
 if errorlevel 1 (
     echo ERROR: PyInstaller build failed
@@ -131,13 +92,13 @@ echo ========================================
 echo BUILD RESULTS
 echo ========================================
 echo.
-echo Executable: dist\EmberEye.exe
-echo Size: ~1GB (includes all dependencies)
+echo Executable: dist\EmberEye\EmberEye.exe
+echo Build directory: dist\EmberEye\
 echo.
 echo Next steps:
-echo 1. Test the executable: dist\EmberEye.exe
-echo 2. Create installer (optional): run build_installer.bat
-echo 3. Distribute to team
+echo 1. Test the executable: dist\EmberEye\EmberEye.exe
+echo 2. Create ZIP package: Compress-Archive -Path dist/EmberEye/* -DestinationPath EmberEye_Windows.zip -Force
+echo 3. Distribute EmberEye_Windows.zip to team
 echo.
 echo ========================================
 echo.
