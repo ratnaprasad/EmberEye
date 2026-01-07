@@ -5,9 +5,9 @@ Provides lightweight AI-powered segmentation for annotation tool.
 
 import cv2
 import numpy as np
-import torch
 from typing import List, Tuple, Optional
 import logging
+import importlib
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,16 @@ class SAMSegmenter:
     def __init__(self):
         self.model = None
         self.current_frame = None
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Default to CPU; attempt CUDA if torch is available at runtime
+        self.device = 'cpu'
+        try:
+            _torch = importlib.import_module('torch')
+            cuda_attr = getattr(_torch, 'cuda', None)
+            if cuda_attr and cuda_attr.is_available():
+                self.device = 'cuda'
+        except Exception:
+            # torch not available or failed to initialize; keep CPU
+            self.device = 'cpu'
         self.use_grabcut_fallback = True  # Enable GrabCut fallback
         logger.info(f"SAM Segmenter initialized on device: {self.device}")
     
@@ -28,19 +37,21 @@ class SAMSegmenter:
             return True
         
         try:
-            # Import FastSAM from ultralytics
+            # Import FastSAM from ultralytics dynamically to avoid build-time import issues
             logger.info("Attempting to import FastSAM...")
-            from ultralytics import FastSAM
-            
+            ul = importlib.import_module('ultralytics')
+            FastSAM = getattr(ul, 'FastSAM', None)
+            if FastSAM is None:
+                raise ImportError('FastSAM not found in ultralytics')
+
             logger.info("Loading FastSAM-s model (small, ~23MB)...")
             self.model = FastSAM('FastSAM-s.pt')
             logger.info("✓ FastSAM model loaded successfully on device: " + self.device)
             return True
-            
+
         except Exception as e:
             logger.error(f"✗ Failed to load FastSAM model: {e}")
             logger.info("Will use GrabCut fallback instead (still works well)")
-            return False
             return False
     
     def set_frame(self, frame_bgr: np.ndarray):
