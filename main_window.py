@@ -1225,6 +1225,7 @@ class BEMainWindow(QMainWindow):
         self.training_selected_image_paths = []
         self.training_has_annotations = False
         self.training_media_imported = False
+        self.imported_zip_bases = []  # Track imported ZIP media bases for QC workflow
         
         # Initial count update
         self._refresh_training_ready_count()
@@ -1347,11 +1348,26 @@ class BEMainWindow(QMainWindow):
                 return
             from embereye.app.training_sync import import_annotations_zip
             result = import_annotations_zip(path)
-            QMessageBox.information(self, "Import ZIP", f"Extracted: {result.get('extracted')}\nMedia: {result.get('media')}\nDestination: {result.get('dest')}")
-            try:
-                self._refresh_training_ready_count()
-            except Exception:
-                pass
+            
+            # Extract the imported media base names to enable QC review
+            dest_path = result.get('dest', '')
+            if os.path.exists(dest_path):
+                # Find all media base directories imported
+                imported_bases = [d for d in os.listdir(dest_path) 
+                                if os.path.isdir(os.path.join(dest_path, d))]
+                if imported_bases:
+                    # Store first imported base for QC review (user can review each separately)
+                    self.imported_zip_bases = imported_bases
+                    self.training_media_imported = True
+            
+            QMessageBox.information(
+                self, 
+                "Import ZIP", 
+                f"Imported {result.get('media', 0)} media base(s) with {result.get('extracted', 0)} files\n\n"
+                f"Next steps:\n"
+                f"1. Click '🔍 QC Review' to review annotations\n"
+                f"2. Click '→ Move to Training' to finalize"
+            )
         except Exception as e:
             QMessageBox.critical(self, "Import ZIP", f"Error: {e}")
 
@@ -1525,13 +1541,57 @@ class BEMainWindow(QMainWindow):
         """Register annotated frames into training_data/annotations for training."""
         has_video = bool(getattr(self, 'training_selected_video_path', None))
         has_images = bool(getattr(self, 'training_selected_image_paths', []) )
-        if not (has_video or has_images):
+        has_imported_zip = bool(getattr(self, 'imported_zip_bases', []))
+        
+        if not (has_video or has_images or has_imported_zip):
             QMessageBox.warning(self, "Training", "Select or import media first.")
             return
+        
+        # Get annotations directory based on source
         if has_video:
             annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
-        else:
+        elif has_images:
             annotations_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
+        else:
+            # For imported ZIPs, move all bases to training
+            from PyQt5.QtWidgets import QInputDialog
+            bases = getattr(self, 'imported_zip_bases', [])
+            items = ["All media bases"] + bases
+            selected, ok = QInputDialog.getItem(
+                self,
+                "Move to Training",
+                "Select which media to move:",
+                items,
+                0,
+                False
+            )
+            if not ok:
+                return
+            
+            if selected == "All media bases":
+                # Move all imported bases
+                total_moved = 0
+                for base in bases:
+                    annotations_dir = get_data_path(os.path.join("annotations", base))
+                    target_dir = self._copy_annotations_to_training(annotations_dir)
+                    if target_dir:
+                        total_moved += self._count_annotation_files(annotations_dir)
+                
+                if total_moved > 0:
+                    self._refresh_training_ready_count()
+                    self.imported_zip_bases = []  # Clear after moving
+                    QMessageBox.information(
+                        self,
+                        "Training",
+                        f"Moved {total_moved} annotation files from {len(bases)} media base(s) to training.\n\n"
+                        "Ready for next batch. Click 'Import Media' or 'Import ZIP' to add more."
+                    )
+                else:
+                    QMessageBox.warning(self, "Training", "No annotations were moved.")
+                return
+            else:
+                # Move single selected base
+                annotations_dir = get_data_path(os.path.join("annotations", selected))
         ann_count = self._count_annotation_files(annotations_dir)
         if ann_count == 0:
             QMessageBox.warning(self, "Training", "No annotations found. Annotate or ensure labels exist before moving to training.")
@@ -1620,16 +1680,38 @@ class BEMainWindow(QMainWindow):
         """Open QC Review dialog to review and edit annotations before training."""
         has_video = bool(getattr(self, 'training_selected_video_path', None))
         has_images = bool(getattr(self, 'training_selected_image_paths', []))
+        has_imported_zip = bool(getattr(self, 'imported_zip_bases', []))
         
-        if not (has_video or has_images):
-            QMessageBox.warning(self, "QC Review", "No media selected. Import media or ZIP first.")
-            return
+        # Get annotations directory based on source
+        annotations_dir = None
         
-        # Get annotations directory
         if has_video:
             annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
-        else:
+        elif has_images:
             annotations_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
+        elif has_imported_zip:
+            # For imported ZIPs, allow reviewing all bases together
+            from PyQt5.QtWidgets import QInputDialog
+            bases = getattr(self, 'imported_zip_bases', [])
+            items = ["All media bases"] + bases
+            # Default to 'All media bases' for walking through everything
+            selected_base, ok = QInputDialog.getItem(
+                self,
+                "Select Media Base",
+                "Choose media base to review:",
+                items,
+                0,
+                False
+            )
+            if not ok:
+                return
+            if selected_base == "All media bases":
+                annotations_dir = get_data_path("annotations")
+            else:
+                annotations_dir = get_data_path(os.path.join("annotations", selected_base))
+        else:
+            QMessageBox.warning(self, "QC Review", "No media selected. Import media or ZIP first.")
+            return
         
         if not os.path.exists(annotations_dir) or not self._has_annotations(annotations_dir):
             QMessageBox.warning(self, "QC Review", "No annotations found. Annotate media first.")
@@ -1997,8 +2079,9 @@ class BEMainWindow(QMainWindow):
         try:
             if not annotations_dir or not os.path.exists(annotations_dir):
                 return False
-            for fname in os.listdir(annotations_dir):
-                if fname.endswith(".txt"):
+            # Check recursively for any .txt files
+            for root, dirs, files in os.walk(annotations_dir):
+                if any(f.endswith('.txt') for f in files):
                     return True
             return False
         except Exception:

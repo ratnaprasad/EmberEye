@@ -551,10 +551,14 @@ class AnnotationToolDialog(QDialog):
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        right_scroll.setMaximumWidth(400)
+        right_scroll.setMinimumWidth(300)
+        right_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         
         right_widget = QWidget()
+        right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right = QVBoxLayout()
+        right.setSpacing(8)
+        right.setContentsMargins(10, 5, 10, 5)
         right_widget.setLayout(right)
         right_scroll.setWidget(right_widget)
 
@@ -648,7 +652,8 @@ class AnnotationToolDialog(QDialog):
         # Boxes list and actions
         right.addWidget(QLabel("Boxes in Frame"))
         self.box_list = QListWidget()
-        self.box_list.setMaximumHeight(120)
+        self.box_list.setMinimumHeight(80)
+        self.box_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right.addWidget(self.box_list)
 
         clear_btn = QPushButton("Clear Boxes")
@@ -679,9 +684,9 @@ class AnnotationToolDialog(QDialog):
         right.addStretch(1)
         splitter.addWidget(right_scroll)
         
-        # Set stretch factors: 70% for video (left), 30% for controls (right)
-        splitter.setStretchFactor(0, 70)
-        splitter.setStretchFactor(1, 30)
+        # Set stretch factors: 65% for video (left), 35% for controls (right) - more flexible
+        splitter.setStretchFactor(0, 65)
+        splitter.setStretchFactor(1, 35)
 
         # Bottom: Close button only
         bottom = QHBoxLayout()
