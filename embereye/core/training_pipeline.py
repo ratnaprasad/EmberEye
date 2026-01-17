@@ -210,7 +210,8 @@ class DatasetManager:
             # Collect all annotation files
             annotation_files = self._collect_annotations()
             if not annotation_files:
-                return False, "No annotations found!"
+                error_msg = self._get_annotation_help_message()
+                return False, error_msg
             
             logger.info(f"Found {len(annotation_files)} annotation files")
             
@@ -257,13 +258,42 @@ class DatasetManager:
                     logger.warning(f"Failed to delete cache {cache_file.name}: {e}")
     
     def _collect_annotations(self) -> List[Path]:
-        """Collect all annotation files recursively."""
+        """Collect all annotation files recursively from multiple possible locations."""
         annotations = []
-        if self.annotations_dir.exists():
-            for root, dirs, files in os.walk(self.annotations_dir):
-                for file in files:
-                    if file.endswith('.txt') and file != 'labels.txt':
-                        annotations.append(Path(root) / file)
+        
+        # Search paths in order of preference
+        search_paths = [
+            self.annotations_dir,  # Primary: configured directory
+            Path("annotations"),   # Fallback 1: current directory
+            Path("../annotations"), # Fallback 2: parent directory (for packaged apps)
+        ]
+        
+        # On Windows packaged app, also search in project-relative paths
+        try:
+            from embereye.utils.resource_helper import get_resource_path
+            resource_ann = Path(get_resource_path("annotations"))
+            if resource_ann not in search_paths:
+                search_paths.insert(0, resource_ann)
+        except:
+            pass
+        
+        # Search each path and collect valid annotation files
+        for search_path in search_paths:
+            if search_path.exists():
+                logger.info(f"Searching annotations in: {search_path}")
+                for root, dirs, files in os.walk(search_path):
+                    for file in files:
+                        if file.endswith('.txt') and file != 'labels.txt':
+                            ann_file = Path(root) / file
+                            if ann_file not in annotations:  # Avoid duplicates
+                                annotations.append(ann_file)
+                if annotations:  # Stop searching if we found some
+                    logger.info(f"Found {len(annotations)} annotations in {search_path}")
+                    break
+        
+        if not annotations:
+            logger.warning(f"No annotations found in search paths: {[str(p) for p in search_paths]}")
+        
         return annotations
     
     def _validate_annotations(self, files: List[Path]) -> List[Path]:
@@ -288,6 +318,37 @@ class DatasetManager:
             except:
                 continue
         return valid
+    
+    def _get_annotation_help_message(self) -> str:
+        """Get helpful message when no annotations found (Windows packaging issue)."""
+        import sys
+        
+        if getattr(sys, 'frozen', False):
+            # Running as packaged .exe
+            from embereye.utils.resource_helper import get_workspace_dir
+            workspace = get_workspace_dir()
+            ann_path = os.path.join(workspace, 'annotations')
+            return (
+                f"❌ No annotations found in Windows package mode!\n\n"
+                f"📍 Expected annotations path:\n"
+                f"{ann_path}\n\n"
+                f"🔧 Solutions:\n"
+                f"1. Copy annotation files from your project to:\n"
+                f"   {ann_path}\n\n"
+                f"2. Or place annotations folder in same directory as EmberEye.exe\n\n"
+                f"3. Or annotate new images using Tools > Annotation Tool within the app"
+            )
+        else:
+            # Running from source
+            return (
+                f"❌ No annotations found!\n\n"
+                f"📍 Expected annotations path:\n"
+                f"{self.annotations_dir}\n\n"
+                f"🔧 Solutions:\n"
+                f"1. Use Tools > Annotation Tool to create annotations\n\n"
+                f"2. Or run: python annotation_tool.py\n\n"
+                f"3. Ensure annotation files are in YOLO format (.txt files)"
+            )
     
     def _split_dataset(self, files: List[Path], config: TrainingConfig):
         """Split dataset into train/val/test."""

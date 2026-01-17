@@ -1,0 +1,10 @@
+{
+  "annotation_search_paths": [
+    "./annotations",
+    "../annotations",
+    "~/EmberEye/annotations"
+  ],
+  "training_data_dir": "./training_data",
+  "auto_link_annotations": true,
+  "comment": "On Windows .exe, set annotation_search_paths to where your annotations are located"
+}
