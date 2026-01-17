@@ -1,8 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import os
 
 # Minimal Windows spec excluding torch/ultralytics to avoid DLL init errors
-datas = [('logo.png', '.'), ('stream_config.json', '.')]
+datas = [('logo.png', '.'), ('stream_config.json', '.'), ('training_config.json', '.')]
+
+# Include annotations folder if it exists (for training support)
+if os.path.isdir('annotations'):
+    datas.append(('annotations', 'annotations'))
+
 binaries = []
 hiddenimports = [
     # Top-level modules (for backward compatibility)
