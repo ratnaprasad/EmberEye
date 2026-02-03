@@ -1,0 +1,18 @@
+# Fix for lines 1161-1173 in studio_main_window.py
+# Replace these lines exactly:
+
+        # Tabs
+        tabs = QTabWidget()
+        tabs.addTab(TrainingTab(self), "Training (ForgeLab)")
+        
+        # Import and add annotation tab
+        try:
+            from annotation_tab import AnnotationTab
+            tabs.addTab(AnnotationTab(self), "🖊️ Annotation")
+        except ImportError as e:
+            print(f"Could not load annotation tab: {e}")
+        
+        tabs.addTab(DatasetTab(), "Datasets (EmberArchive)")
+        tabs.addTab(SettingsTab(), "Settings")
+
+        layout.addWidget(tabs)
