@@ -80,7 +80,7 @@ print()
 # Database verification
 print("💾 Database:")
 try:
-    from database_manager import StudioDatabaseManager
+    from studio_db_manager import StudioDatabaseManager
     db = StudioDatabaseManager("verify_test.db")
     print("  ✓ DatabaseManager instantiated")
     

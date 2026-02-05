@@ -10,7 +10,7 @@ Main Modules:
 - ignissim: Simulation hub for testing
 """
 
-from .database_manager import StudioDatabaseManager
+from .studio_db_manager import StudioDatabaseManager
 from .studio_login import StudioLoginWindow
 from .studio_main_window import StudioMainWindow
 

@@ -5,6 +5,7 @@ Eliminates dialog sizing issues with responsive fullscreen layout
 """
 
 import os
+import sys
 import cv2
 import json
 from datetime import datetime
@@ -42,18 +43,9 @@ except:
     _sam_available = False
     SAMSegmenter = None
 
-
-def get_data_path(relative_path=""):
-    """Get path to workspace data directory"""
-    workspace_root = Path(__file__).parent
-    data_dir = workspace_root / "workspace_data"
-    data_dir.mkdir(exist_ok=True)
-    
-    if relative_path:
-        full_path = data_dir / relative_path
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        return str(full_path)
-    return str(data_dir)
+# Import centralized get_data_path
+sys.path.insert(0, str(Path(__file__).parent.parent / "embereye"))
+from utils.resource_helper import get_data_path
 
 
 class AnnotationCanvas(QLabel):

@@ -28,21 +28,11 @@ from PyQt5.QtGui import QFont, QPixmap, QImage, QIcon
 from forgelab import (
     TrainingConfig, TrainingProgress, TrainingStatus, YOLOTrainingPipeline
 )
-from database_manager import StudioDatabaseManager
+from studio_db_manager import StudioDatabaseManager
 
-
-# Helper function to get workspace data path
-def get_data_path(relative_path=""):
-    """Get path to workspace data directory"""
-    workspace_root = Path(__file__).parent
-    data_dir = workspace_root / "workspace_data"
-    data_dir.mkdir(exist_ok=True)
-    
-    if relative_path:
-        full_path = data_dir / relative_path
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        return str(full_path)
-    return str(data_dir)
+# Import centralized get_data_path from embereye
+sys.path.insert(0, str(Path(__file__).parent.parent / "embereye"))
+from utils.resource_helper import get_data_path
 
 
 class TrainingTab(QWidget):
@@ -302,7 +292,26 @@ class TrainingTab(QWidget):
         elif has_imported_zip:
             from PyQt5.QtWidgets import QInputDialog
             bases = getattr(self, 'imported_zip_bases', [])
-            items = ["All media bases"] + bases
+            
+            # Bug fix: Verify bases actually have annotations before showing dialog
+            valid_bases = []
+            for base in bases:
+                base_path = get_data_path(os.path.join("annotations", base))
+                if self._has_annotations(base_path):
+                    valid_bases.append(base)
+            
+            if not valid_bases:
+                QMessageBox.warning(
+                    self, 
+                    "QC Review", 
+                    f"No annotations found in imported bases!\n\n"
+                    f"Imported bases: {', '.join(bases)}\n"
+                    f"Location: {get_data_path('annotations')}\n\n"
+                    f"Annotations may not have been extracted properly."
+                )
+                return
+            
+            items = ["All media bases"] + valid_bases
             selected_base, ok = QInputDialog.getItem(
                 self,
                 "Select Media Base",
@@ -1109,6 +1118,22 @@ class TrainingTab(QWidget):
                 if imported_bases:
                     self.imported_zip_bases = imported_bases
                     self.training_media_imported = True
+                    
+                    # Verify annotations were actually extracted (Bug fix: QC Review not finding annotations)
+                    total_annotations = 0
+                    for base in imported_bases:
+                        base_path = os.path.join(dest_path, base)
+                        total_annotations += self._count_annotation_files(base_path)
+                    
+                    if total_annotations == 0:
+                        QMessageBox.warning(
+                            self,
+                            "Import ZIP",
+                            f"ZIP imported but no annotation .txt files found!\n\n"
+                            f"Extracted {result.get('extracted', 0)} files to:\n{dest_path}\n\n"
+                            f"Please ensure ZIP contains annotations/*.txt files"
+                        )
+                        return
 
             QMessageBox.information(
                 self,

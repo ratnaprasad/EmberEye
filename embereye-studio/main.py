@@ -20,11 +20,12 @@ BASE_DIR = Path(__file__).parent.parent.absolute()
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
 
+
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.QtCore import Qt
 
 # Import studio components (local to this directory)
-from database_manager import StudioDatabaseManager
+from studio_db_manager import StudioDatabaseManager
 from studio_login import StudioLoginWindow
 from studio_main_window import StudioMainWindow
 

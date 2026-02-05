@@ -28,21 +28,11 @@ from PyQt5.QtGui import QFont, QPixmap, QImage
 from forgelab import (
     TrainingConfig, TrainingProgress, TrainingStatus, YOLOTrainingPipeline
 )
-from database_manager import StudioDatabaseManager
+from studio_db_manager import StudioDatabaseManager
 
-
-# Helper function to get workspace data path
-def get_data_path(relative_path=""):
-    """Get path to workspace data directory"""
-    workspace_root = Path(__file__).parent
-    data_dir = workspace_root / "workspace_data"
-    data_dir.mkdir(exist_ok=True)
-    
-    if relative_path:
-        full_path = data_dir / relative_path
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        return str(full_path)
-    return str(data_dir)
+# Import centralized get_data_path from embereye
+sys.path.insert(0, str(Path(__file__).parent.parent / "embereye"))
+from utils.resource_helper import get_data_path
 
 
 class TrainingTab(QWidget):

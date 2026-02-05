@@ -760,27 +760,64 @@ def import_annotations_zip(input_zip: str) -> Dict[str, Any]:
     No merge logic is applied; it copies frames + txt + json as-is. Use this when the
     export was created via export_annotations_zip. After QC review, use 'Move to Training'
     to copy the approved annotations to training_data/annotations/.
+    
+    Supports multiple ZIP structures:
+    1. annotations/<base>/*.{txt,jpg,png} - standard export format
+    2. <base>/*.{txt,jpg,png} - direct base folders
+    3. *.{txt,jpg,png} - flat structure (creates default base)
     """
     target_root = get_data_path("annotations")
     os.makedirs(target_root, exist_ok=True)
     extracted = 0
-    bases = 0
+    bases_set = set()
+    
     with zipfile.ZipFile(input_zip, "r") as zf:
-        # Extract per media base under annotations/
-        for name in zf.namelist():
-            if name.startswith("annotations/") and not name.endswith("/"):
-                # annotations/<media_base>/...
+        file_list = zf.namelist()
+        
+        # Detect ZIP structure
+        has_annotations_prefix = any(f.startswith("annotations/") for f in file_list)
+        
+        for name in file_list:
+            if name.endswith("/"):  # Skip directories
+                continue
+                
+            # Only process image and annotation files
+            if not (name.endswith(".txt") or name.endswith((".jpg", ".png", ".jpeg"))):
+                continue
+            
+            # Determine destination path based on structure
+            if has_annotations_prefix and name.startswith("annotations/"):
+                # Standard format: annotations/<base>/file.txt
                 rel_path = name.split("annotations/", 1)[1]
-                # Destination under annotations/ (for QC review)
                 dest = os.path.join(target_root, rel_path)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with zf.open(name) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                extracted += 1
-        # Count bases from manifest if present
+                if "/" in rel_path:
+                    base = rel_path.split("/")[0]
+                    bases_set.add(base)
+            else:
+                # Alternative formats
+                parts = name.split("/")
+                if len(parts) > 1:
+                    # Format: <base>/file.txt
+                    base = parts[0]
+                    bases_set.add(base)
+                    dest = os.path.join(target_root, name)
+                else:
+                    # Flat format: file.txt (create default base)
+                    base = "imported_media"
+                    bases_set.add(base)
+                    dest = os.path.join(target_root, base, name)
+            
+            # Extract file
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with zf.open(name) as src, open(dest, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            extracted += 1
+        
+        # Count bases from manifest if present, otherwise use detected bases
         try:
             manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
             bases = len(manifest.get("bases", []))
         except Exception:
-            pass
+            bases = len(bases_set)
+            
     return {"status": "ok", "extracted": extracted, "media": bases, "dest": target_root}
