@@ -4,7 +4,7 @@ import sys
 import time
 from pathlib import Path
 
-from _test_utils import get_log_path, log_line
+from _test_utils import get_log_path, log_line, capture_text_screenshot
 
 
 def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
@@ -77,6 +77,11 @@ def main() -> int:
         log_line(log_path, f"[RTSP] Running for {duration:.1f}s")
         time.sleep(duration)
 
+        capture_text_screenshot(
+            "rtsp_pipeline",
+            f"RTSP pipeline test completed\nDuration: {duration:.1f}s",
+            log_path,
+        )
         log_line(log_path, "[RTSP] Completed")
         return 0
     finally:

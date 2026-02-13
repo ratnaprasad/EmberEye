@@ -10,7 +10,7 @@ def get_resource_path(relative_path):
     """
     Get absolute path to resource, works for dev and PyInstaller.
     
-    When running from source: uses current directory
+    When running from source: searches current directory and parent directories
     When packaged: uses PyInstaller's temporary extraction directory
     """
     try:
@@ -18,13 +18,23 @@ def get_resource_path(relative_path):
         base_path = sys._MEIPASS
         result = os.path.join(base_path, relative_path)
         print(f"[RESOURCE] Packaged mode - Looking for {relative_path} at: {result}")
+        print(f"[RESOURCE] File exists: {os.path.exists(result)}")
+        return result
     except Exception:
-        base_path = os.path.abspath(".")
-        result = os.path.join(base_path, relative_path)
-        print(f"[RESOURCE] Source mode - Looking for {relative_path} at: {result}")
-    
-    print(f"[RESOURCE] File exists: {os.path.exists(result)}")
-    return result
+        # Source mode: search current directory and up to 3 parent directories
+        current = Path(os.path.abspath("."))
+        search_paths = [current] + list(current.parents)[:3]
+        
+        for base_path in search_paths:
+            result = os.path.join(base_path, relative_path)
+            if os.path.exists(result):
+                print(f"[RESOURCE] Source mode - Found {relative_path} at: {result}")
+                return result
+        
+        # Fallback: return path from current directory even if not found
+        result = os.path.join(current, relative_path)
+        print(f"[RESOURCE] Source mode - {relative_path} not found, using: {result}")
+        return result
 
 def get_writable_path(filename):
     """

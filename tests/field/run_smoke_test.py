@@ -3,7 +3,7 @@ import sys
 import time
 from pathlib import Path
 
-from _test_utils import get_log_path, log_line
+from _test_utils import get_log_path, log_line, capture_text_screenshot
 
 
 def main() -> int:
@@ -34,6 +34,11 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             proc.kill()
 
+    capture_text_screenshot(
+        "smoke_test",
+        f"Smoke test completed\nDuration: {duration:.1f}s",
+        log_path,
+    )
     log_line(log_path, "[SMOKE] Completed")
     return 0
 

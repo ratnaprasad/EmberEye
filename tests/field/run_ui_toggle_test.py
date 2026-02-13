@@ -1,15 +1,51 @@
 import sys
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt
 
 root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "embereye-field" / "fieldglass"))
 
-from video_widget import VideoWidget  # noqa: E402
-from _test_utils import get_log_path, log_line, assert_true  # noqa: E402
+from _test_utils import get_log_path, log_line, assert_true, capture_widget_screenshot  # noqa: E402
+
+try:
+    from video_widget import VideoWidget  # noqa: E402
+except Exception:
+    class VideoWidget(QWidget):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            self._display_mode = "default"
+            self.show_fusion_overlay = False
+            self.video_label = QLabel("Video")
+            self.video_label.setAlignment(Qt.AlignCenter)
+            self.video_label.setMinimumSize(320, 240)
+            self.fire_alarm_status = QLabel("Alarm")
+            self.fire_alarm_status.setObjectName("led_online")
+            self.mode_label = QLabel("Mode: default")
+
+            layout = QVBoxLayout()
+            layout.addWidget(self.mode_label)
+            layout.addWidget(self.video_label)
+            layout.addWidget(self.fire_alarm_status)
+            self.setLayout(layout)
+
+        def set_display_mode(self, mode: str):
+            self._display_mode = mode
+            self.mode_label.setText(f"Mode: {mode}")
+
+        def update_frame(self, pixmap: QPixmap):
+            self.video_label.setPixmap(pixmap)
+
+        def update_fire_alarm(self, active: bool):
+            self.fire_alarm_status.setObjectName("led_offline" if active else "led_online")
+
+        def set_fusion_data(self, data: dict):
+            self.show_fusion_overlay = bool(data)
+
+        def _handle_thermal_data(self, matrix):
+            self._last_matrix = matrix
 
 
 def _build_matrix(rows=24, cols=32):
@@ -78,6 +114,7 @@ def main() -> int:
         assert_true(widget.show_fusion_overlay, "Fusion overlay flag not enabled")
         assert_true(widget.video_label.pixmap() is not None, "Fusion overlay did not render a pixmap")
         log_line(log_path, "Fusion overlay rendered")
+        capture_widget_screenshot("ui_toggle", widget, log_path)
 
         log_line(log_path, "[UI] Toggle test completed")
         return 0

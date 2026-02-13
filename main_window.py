@@ -801,10 +801,11 @@ class BEMainWindow(QMainWindow):
             # Conditionally initialize Grafana metrics tab if enabled in config
             if self.config.get('enable_grafana', False):
                 self.init_grafana_tab()
-            # Always initialize Anomalies tab
+            # Initialize Anomalies tab
             self.init_anomalies_tab()
-            # Initialize Training Manager tab
-            self.init_training_manager_tab()
+            # Training Manager tab is disabled - Field Edition focuses on monitoring only
+            # Training functionality is exclusive to EmberEye Studio
+            # self.init_training_manager_tab()
             # Initialize Failed Devices tab if available
             if hasattr(self, 'device_status_manager'):
                 try:
@@ -4040,7 +4041,7 @@ class BEMainWindow(QMainWindow):
         layout = QFormLayout(dlg)
 
         name_edit = QLineEdit(); name_edit.setPlaceholderText("Device Name")
-        ip_edit = QLineEdit(); ip_edit.setPlaceholderText("IP Address (e.g., 192.168.1.50)")
+        ip_edit = QLineEdit(); ip_edit.setPlaceholderText("IP:Port (e.g., 127.0.0.1:5000)")
         loc_combo = QComboBox(); loc_combo.addItem("")
         # Populate location IDs from stream config
         try:
@@ -4076,14 +4077,28 @@ class BEMainWindow(QMainWindow):
             mode = mode_combo.currentText()
             poll = poll_spin.value()
             if not name or not ip:
-                QMessageBox.warning(dlg, "Missing Data", "Please enter device name and IP address.")
+                QMessageBox.warning(dlg, "Missing Data", "Please enter device name and IP:Port.")
                 return
-            if not is_valid_ip(ip):
-                QMessageBox.warning(dlg, "Invalid IP", "Please enter a valid IP address.")
-                return
+            # Parse IP:Port format
+            if ':' in ip:
+                try:
+                    ip_part, port_part = ip.rsplit(':', 1)
+                    port = int(port_part)
+                    if not is_valid_ip(ip_part):
+                        QMessageBox.warning(dlg, "Invalid IP", "Please enter a valid IP:Port (e.g., 127.0.0.1:5000).")
+                        return
+                    ip_address = f"{ip_part}:{port}"  # Store in IP:Port format
+                except (ValueError, Exception):
+                    QMessageBox.warning(dlg, "Invalid Format", "Please enter IP:Port format (e.g., 127.0.0.1:5000).")
+                    return
+            else:
+                if not is_valid_ip(ip):
+                    QMessageBox.warning(dlg, "Invalid IP", "Please enter a valid IP:Port (e.g., 127.0.0.1:5000).")
+                    return
+                ip_address = f"{ip}:9001"  # Default port
             try:
-                self.pfds.add_device(name, ip, loc if loc else None, mode, int(poll))
-                QMessageBox.information(dlg, "Saved", f"PFDS device '{name}' saved.\nIP: {ip}\nLocation: {loc or 'N/A'}\nMode: {mode}\nPoll: {poll}s")
+                self.pfds.add_device(name, ip_address, loc if loc else None, mode, int(poll))
+                QMessageBox.information(dlg, "Saved", f"PFDS device '{name}' saved.\nIP: {ip_address}\nLocation: {loc or 'N/A'}\nMode: {mode}\nPoll: {poll}s")
             except Exception as e:
                 QMessageBox.critical(dlg, "Save Failed", f"Could not save device: {e}")
             dlg.accept()

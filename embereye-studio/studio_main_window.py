@@ -35,7 +35,7 @@ from studio_db_manager import StudioDatabaseManager
 embereye_path = str(Path(__file__).parent.parent / "embereye")
 if embereye_path not in sys.path:
     sys.path.append(embereye_path)
-from utils.resource_helper import get_data_path
+from embereye.utils.resource_helper import get_data_path
 
 
 class TrainingTab(QWidget):

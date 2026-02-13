@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QComboBox, QListWidget, QListWidgetItem, QMessageBox, QFrame, QSlider, QCheckBox, QApplication
 )
+from PyQt5.QtGui import QGuiApplication
 from PyQt5.QtCore import Qt, QRectF, QSize, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QFont
 import os
@@ -84,6 +85,26 @@ class QCReviewDialog(QDialog):
         QTimer.singleShot(0, self._post_layout_sync)
         self._constrain_to_screen()
         self.load_current_frame()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._clamp_to_screen()
+        self._lock_image_frame_size()
+
+    def _clamp_to_screen(self):
+        # Ensure dialog never exceeds available screen size
+        screen = None
+        if self.windowHandle() and self.windowHandle().screen():
+            screen = self.windowHandle().screen()
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        max_w = avail.width()
+        max_h = avail.height()
+        if self.width() > max_w or self.height() > max_h:
+            self.resize(min(self.width(), max_w), min(self.height(), max_h))
     
     def _get_flat_class_list(self):
         """Get flat list of all leaf classes."""
@@ -315,6 +336,7 @@ class QCReviewDialog(QDialog):
         # Rescale to current dialog size without changing the dialog itself
         if self._last_pixmap is not None:
             self._apply_pixmap(fast_mode=True)
+        self._clamp_to_screen()
 
     def _sync_image_label_size(self):
         # Keep image label locked to the image frame's content area
@@ -338,10 +360,7 @@ class QCReviewDialog(QDialog):
         max_w = max(800, available.width())
         max_h = max(600, available.height())
         # Lock to screen size so layout cannot expand past device bounds
-        self.setMaximumSize(max_w, max_h)
-        self.setMinimumSize(max_w, max_h)
-        if self.width() != max_w or self.height() != max_h:
-            self.resize(max_w, max_h)
+        self.setFixedSize(max_w, max_h)
 
     def _apply_pixmap(self, fast_mode=False):
         if self._last_pixmap is None:

@@ -32,7 +32,7 @@ from studio_db_manager import StudioDatabaseManager
 
 # Import centralized get_data_path from embereye
 sys.path.insert(0, str(Path(__file__).parent.parent / "embereye"))
-from utils.resource_helper import get_data_path
+from embereye.utils.resource_helper import get_data_path
 
 
 class TrainingTab(QWidget):

@@ -19,6 +19,10 @@ def main() -> int:
         root / "run_rtsp_pipeline_test.py",
         root / "run_ui_toggle_test.py",
         root / "run_hybrid_alarm_test.py",
+        root / "run_threshold_config_test.py",
+        root / "run_multi_camera_grid_test.py",
+        root / "run_pfds_integration_test.py",
+        root / "run_tcp_server_test.py",
     ]
 
     for script in scripts:
