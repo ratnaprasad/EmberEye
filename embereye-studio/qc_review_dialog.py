@@ -80,6 +80,7 @@ class QCReviewDialog(QDialog):
         self._last_pixmap = None
         self._last_fast_mode = False
         self._pending_pixmap_update = False
+        self._fixed_dialog_size = None
         
         self.init_ui()
         QTimer.singleShot(0, self._post_layout_sync)
@@ -350,6 +351,9 @@ class QCReviewDialog(QDialog):
         self._sync_image_label_size()
         if self._last_pixmap is not None:
             self._apply_pixmap(fast_mode=True)
+        if self._fixed_dialog_size is None:
+            self._fixed_dialog_size = self.size()
+            self.setFixedSize(self._fixed_dialog_size)
 
     def _constrain_to_screen(self):
         # Ensure the dialog never exceeds the current screen's available geometry
@@ -359,8 +363,9 @@ class QCReviewDialog(QDialog):
         available = screen.availableGeometry()
         max_w = max(800, available.width())
         max_h = max(600, available.height())
-        # Lock to screen size so layout cannot expand past device bounds
-        self.setFixedSize(max_w, max_h)
+        self.setMaximumSize(max_w, max_h)
+        if self.width() > max_w or self.height() > max_h:
+            self.resize(min(self.width(), max_w), min(self.height(), max_h))
 
     def _apply_pixmap(self, fast_mode=False):
         if self._last_pixmap is None:
