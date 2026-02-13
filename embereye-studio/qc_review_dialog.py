@@ -5,15 +5,23 @@ Review and edit annotations before moving to training dataset.
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
-    QComboBox, QListWidget, QListWidgetItem, QMessageBox, QFrame, QSlider, QCheckBox
+    QComboBox, QListWidget, QListWidgetItem, QMessageBox, QFrame, QSlider, QCheckBox, QApplication
 )
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QRectF, QSize, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QFont
 import os
 import cv2
 import numpy as np
 from pathlib import Path
 from master_class_config import load_master_classes, get_hierarchical_class_labels
+
+
+class _FixedImageLabel(QLabel):
+    def sizeHint(self):
+        return QSize(0, 0)
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
 
 
 class QCReviewDialog(QDialog):
@@ -68,8 +76,13 @@ class QCReviewDialog(QDialog):
         self.current_annotations = []  # List of (class_id, x_center, y_center, width, height)
         self.selected_annotation_idx = None
         self.image_cache = {}
+        self._last_pixmap = None
+        self._last_fast_mode = False
+        self._pending_pixmap_update = False
         
         self.init_ui()
+        QTimer.singleShot(0, self._post_layout_sync)
+        self._constrain_to_screen()
         self.load_current_frame()
     
     def _get_flat_class_list(self):
@@ -134,22 +147,25 @@ class QCReviewDialog(QDialog):
         main_layout = QHBoxLayout()
         
         # Left: Image display
-        image_frame = QFrame()
-        image_frame.setFrameStyle(QFrame.Box | QFrame.Sunken)
+        self.image_frame = QFrame()
+        self.image_frame.setFrameStyle(QFrame.Box | QFrame.Sunken)
         from PyQt5.QtWidgets import QSizePolicy
-        image_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        image_layout = QVBoxLayout(image_frame)
+        self.image_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        image_layout = QVBoxLayout(self.image_frame)
+        image_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.image_label = QLabel()
+        self.image_label = _FixedImageLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("background-color: #2b2b2b;")
         self.image_label.setScaledContents(False)
-        self.image_label.setMinimumSize(400, 300)
+        self.image_label.setMinimumSize(1, 1)
+        # Set maximum size to prevent label from expanding beyond screen
+        self.image_label.setMaximumSize(1920, 1080)
         from PyQt5.QtWidgets import QSizePolicy
-        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.image_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         image_layout.addWidget(self.image_label)
-        
-        main_layout.addWidget(image_frame, 4)
+
+        main_layout.addWidget(self.image_frame, 4)
         
         # Right: Annotations list + controls
         right_panel = QVBoxLayout()
@@ -213,8 +229,12 @@ class QCReviewDialog(QDialog):
         self.update_stats()
         self._update_base_stats()
     
-    def load_current_frame(self):
-        """Load and display current frame with annotations."""
+    def load_current_frame(self, fast_mode=False):
+        """Load and display current frame with annotations.
+        
+        Args:
+            fast_mode: If True, use faster (lower quality) scaling for performance
+        """
         if not (0 <= self.current_index < len(self.annotation_files)):
             return
         
@@ -270,13 +290,10 @@ class QCReviewDialog(QDialog):
         q_image = QImage(display_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
         q_pixmap = QPixmap.fromImage(q_image)
         
-        # Scale to fit label
-        scaled = q_pixmap.scaled(
-            self.image_label.size(), 
-            Qt.KeepAspectRatio, 
-            Qt.SmoothTransformation
-        )
-        self.image_label.setPixmap(scaled)
+        # Store pixmap and apply scaling to current dialog size
+        self._last_pixmap = q_pixmap
+        self._sync_image_label_size()
+        self._apply_pixmap(fast_mode=fast_mode)
         
         # Update UI
         self.frame_label.setText(f"Frame {self.current_index + 1} / {len(self.annotation_files)}")
@@ -290,6 +307,69 @@ class QCReviewDialog(QDialog):
                 self.frame_slider.blockSignals(False)
         self.refresh_annotation_list()
         self.selected_annotation_idx = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._constrain_to_screen()
+        self._sync_image_label_size()
+        # Rescale to current dialog size without changing the dialog itself
+        if self._last_pixmap is not None:
+            self._apply_pixmap(fast_mode=True)
+
+    def _sync_image_label_size(self):
+        # Keep image label locked to the image frame's content area
+        if not hasattr(self, "image_frame") or self.image_frame is None:
+            return
+        content_size = self.image_frame.contentsRect().size()
+        if content_size.width() > 10 and content_size.height() > 10:
+            self.image_label.setFixedSize(content_size)
+
+    def _post_layout_sync(self):
+        self._sync_image_label_size()
+        if self._last_pixmap is not None:
+            self._apply_pixmap(fast_mode=True)
+
+    def _constrain_to_screen(self):
+        # Ensure the dialog never exceeds the current screen's available geometry
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        max_w = max(800, available.width())
+        max_h = max(600, available.height())
+        # Lock to screen size so layout cannot expand past device bounds
+        self.setMaximumSize(max_w, max_h)
+        self.setMinimumSize(max_w, max_h)
+        if self.width() != max_w or self.height() != max_h:
+            self.resize(max_w, max_h)
+
+    def _apply_pixmap(self, fast_mode=False):
+        if self._last_pixmap is None:
+            return
+        # Target size is the image frame's content area
+        target_size = self.image_frame.contentsRect().size()
+        if target_size.width() < 10 or target_size.height() < 10:
+            if not self._pending_pixmap_update:
+                self._pending_pixmap_update = True
+                QTimer.singleShot(0, self._retry_apply_pixmap)
+            return
+
+        safe_width = max(1, target_size.width() - 10)
+        safe_height = max(1, target_size.height() - 10)
+        target_size = QSize(safe_width, safe_height)
+
+        transform_mode = Qt.FastTransformation if fast_mode else Qt.SmoothTransformation
+        scaled = self._last_pixmap.scaled(
+            target_size,
+            Qt.KeepAspectRatio,
+            transform_mode
+        )
+        self.image_label.setPixmap(scaled)
+
+    def _retry_apply_pixmap(self):
+        self._pending_pixmap_update = False
+        self._sync_image_label_size()
+        self._apply_pixmap(fast_mode=True)
 
     def _on_base_changed(self, index: int):
         # Apply filter if enabled; otherwise just jump
@@ -374,11 +454,13 @@ class QCReviewDialog(QDialog):
             self.base_stats_label.setText(f"Base '{base}' • Frames: {count} (unfiltered)")
 
     def _on_slider_changed(self, value: int):
+        """Handle slider value changes."""
         # Slider is 1-based for users
         idx = int(value) - 1
         if 0 <= idx < len(self.annotation_files):
             self.current_index = idx
-            self.load_current_frame()
+            # Use fast loading for slider scrubbing
+            self.load_current_frame(fast_mode=True)
     
     def _find_image_for_annotation(self, ann_file: Path) -> Path:
         """Find corresponding image file for annotation."""

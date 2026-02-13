@@ -348,7 +348,7 @@ pytest test_embereye_suite_fixed.py --cov=. --cov-report=html
 - **Test Needed:** Verify stream config save no longer blocks UI
 
 ### 2. TCP Simulator Updates
-- **File:** `tcp_sensor_simulator.py`
+- **File:** `tcp_sensor_simulator_v3.py`
 - **Changes:** Added 4 packet format variants (separate, embedded, continuous, no_loc)
 - **Test Status:** ✅ Covered in `test_tcp_packet_parsing()`
 

@@ -106,6 +106,7 @@ def ensure_runtime_folders():
     
     folders = [
         'annotations',
+        os.path.join('annotations', 'qcapproved'),
         'training_data',
         os.path.join('training_data', 'annotations'),
         'models',

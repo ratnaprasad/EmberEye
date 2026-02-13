@@ -49,23 +49,52 @@ ffmpeg -version
 
 ## Quick Start
 
-### Windows
+### Automated Startup (Recommended)
+
+**Windows:**
 ```batch
 cd D:\EE\EmberEye\simulators\rtsp
 start_camera.bat
 ```
 
-### Linux/macOS
+**Linux/macOS:**
 ```bash
 cd /path/to/EmberEye/simulators/rtsp
 chmod +x start_camera.sh
 ./start_camera.sh
 ```
 
-### Manual Python Command
-```bash
+This will automatically:
+1. Start MediaMTX RTSP server
+2. Wait for server initialization
+3. Start streaming IMG_1318.MOV to `rtsp://localhost:8554/camera1`
+
+### Stop All Services
+
+**Windows:**
+```batch
 cd D:\EE\EmberEye\simulators\rtsp
-python rtsp_camera_simulator.py --video ..\data\IMG_1318.MOV
+stop_camera.bat
+```
+
+**Linux/macOS:**
+```bash
+cd /path/to/EmberEye/simulators/rtsp
+chmod +x stop_camera.sh
+./stop_camera.sh
+```
+
+### Manual Python Command (Advanced)
+```bash
+# Start MediaMTX first
+cd D:\EE\EmberEye\simulators\rtsp\mediamtx
+start mediamtx.exe   # Windows
+# or
+./mediamtx &         # Linux/macOS
+
+# Then start simulator
+cd ..
+python rtsp_camera_simulator.py --video data\IMG_1318.MOV
 ```
 
 ## Configuration
@@ -152,17 +181,54 @@ Format: `rtsp://[host]:[port]/[stream_name]`
 
 ## Usage in EmberEye
 
-1. **Start Simulator**
-   ```bash
+### Full Workflow
+
+1. **Start RTSP Simulator**
+   ```batch
    cd D:\EE\EmberEye\simulators\rtsp
    start_camera.bat
    ```
+   - MediaMTX server starts automatically
+   - Camera stream begins after 3 seconds
+   - Stream URL: `rtsp://localhost:8554/camera1`
 
-2. **Configure in EmberEye**
-   - Open EmberEye application
+2. **Start EmberEye Field Application**
+   ```batch
+   cd D:\EE\EmberEye
+   python embereye-field\main.py
+   ```
+
+3. **Configure in EmberEye Field**
+   - Camera should already be configured as "Demo Room (Simulator)"
+   - If not, add camera with:
+     - Type: RTSP
+     - URL: `rtsp://localhost:8554/camera1`
+     - Name: Demo Room
+   - Video should start playing immediately
+
+4. **Stop All Services** (when done)
+   ```batch
+   cd D:\EE\EmberEye\simulators\rtsp
+   stop_camera.bat
+   ```
+
+### Quick Reference
+
+**Stream URL:** `rtsp://localhost:8554/camera1`  
+**Video File:** `simulators/rtsp/data/IMG_1318.MOV`  
+**Port:** 8554 (default RTSP port)  
+**Stream Name:** camera1  
+
+### Manual Configuration (if needed)
+
+1. **Start Simulator** (see above)
+
+2. **In EmberEye**
+   - Open EmberEye Field application
    - Go to Camera Settings / Add Camera
    - Set Camera Type: `RTSP`
    - Set URL: `rtsp://localhost:8554/camera1`
+   - Set Name: `Demo Room` (or any name)
    - Click `Connect` or `Test`
 
 3. **Verify Stream**

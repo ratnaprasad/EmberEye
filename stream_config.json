@@ -6,7 +6,7 @@
         {
             "loc_id": "demo_room",
             "name": "Demo Room (Simulator)",
-            "url": "rtsp://127.0.0.1:8554/demo",
+            "url": "rtsp://localhost:8554/camera1",
             "group": "Default"
         },
         {

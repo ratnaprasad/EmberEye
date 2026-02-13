@@ -54,6 +54,7 @@ from incidents import (
     ThermalVisionAnalyzer
 )
 from embersync import IncidentExporter, IncidentExportMetadata, DetectionFrame
+from embereye.core.vision_detector import VisionDetector, SEVERITY_RANK
 
 logger = logging.getLogger(__name__)
 
@@ -308,12 +309,53 @@ class BEMainWindow(QMainWindow):
             if getattr(widget, 'loc_id', None) == loc_id:
                 # Run fusion with only vision score (other sources can be cached for full fusion)
                 fusion_result = self.sensor_fusion.fuse(vision_score=score)
+                try:
+                    key = str(loc_id) if loc_id is not None else "_broadcast"
+                    self._fusion_by_loc_id[key] = fusion_result
+                    self._fusion_ts_by_loc_id[key] = time.time()
+                except Exception:
+                    pass
                 if hasattr(widget, 'update_fire_alarm'):
                     try:
                         widget.update_fire_alarm(fusion_result['alarm'])
                     except Exception as e:
                         print(f"Alarm update error (vision): {e}")
                 break
+
+    def _evaluate_rule_alarm(self, detections, yolo_score=0.0, fusion_result=None):
+        """Evaluate rule-based alarm from detection classes."""
+        result = {
+            'rule_alarm': False,
+            'severity': 'NORMAL',
+            'reasons': [],
+            'score': 0,
+        }
+        if not detections or not self._rule_engine:
+            return result
+        try:
+            threat = self._rule_engine._classify_detections(detections, context=None)
+            severity = threat.get('severity', 'NORMAL')
+            reasons = threat.get('reasons', []) or []
+            score = threat.get('score', 0)
+            rule_alarm = False
+
+            if severity == 'CRITICAL':
+                rule_alarm = True
+            elif severity == 'HIGH':
+                if yolo_score >= self._rule_min_yolo_conf:
+                    rule_alarm = True
+                elif fusion_result and float(fusion_result.get('confidence', 0.0)) >= self._rule_min_fusion_conf:
+                    rule_alarm = True
+
+            result.update({
+                'rule_alarm': rule_alarm,
+                'severity': severity,
+                'reasons': reasons,
+                'score': score,
+            })
+        except Exception as e:
+            print(f"Rule evaluation error: {e}")
+        return result
 
     def apply_sensor_config(self, settings: dict):
         """Apply sensor configuration settings from dialog to runtime objects.
@@ -438,6 +480,15 @@ class BEMainWindow(QMainWindow):
                           smoke_threshold_pct=smoke_thr,
                           flame_threshold_pct=flame_thr)
         print(f"Loaded fusion thresholds: Smoke={smoke_thr}%, Flame={flame_thr}%, Temp={temp_thr}°C, Gas={gas_thr}ppm")
+        # Hybrid alarm support (rules + fusion)
+        self._fusion_by_loc_id = {}
+        self._fusion_ts_by_loc_id = {}
+        try:
+            self._rule_engine = VisionDetector(yolo_model_path="__no_model__")
+        except Exception:
+            self._rule_engine = None
+        self._rule_min_fusion_conf = 0.3
+        self._rule_min_yolo_conf = 0.5
         self.baseline_manager = BaselineManager()
         self.baseline_manager.load_from_disk()
         
@@ -626,6 +677,12 @@ class BEMainWindow(QMainWindow):
             # Run fusion if any relevant data
             if fusion_args:
                 fusion_result = self.sensor_fusion.fuse(**fusion_args)
+                try:
+                    key = str(loc_id) if loc_id is not None else "_broadcast"
+                    self._fusion_by_loc_id[key] = fusion_result
+                    self._fusion_ts_by_loc_id[key] = time.time()
+                except Exception:
+                    pass
                 
                 # Update alarm status and hot cells on target widget(s)
                 target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
@@ -989,302 +1046,13 @@ class BEMainWindow(QMainWindow):
         self.tabs.addTab(incidents_tab, "INCIDENTS" if is_modern else "Incidents")
 
     def init_training_manager_tab(self):
-        """Create Training Manager tab for YOLO model training."""
-        from PyQt5.QtWidgets import (QFileDialog, QProgressBar, QSpinBox, QCheckBox, 
-                                     QDateEdit, QTextEdit, QPushButton)
-        from PyQt5.QtCore import QDate
+        """DISABLED: Training Manager tab is not available in Field Edition.
         
-        training_tab = QWidget()
-        main_layout = QVBoxLayout(training_tab)
-        
-        # Header with training stats
-        header_layout = QHBoxLayout()
-        self.training_completed_label = QLabel("Completed Training: 0")
-        self.training_active_label = QLabel("Training: 0")
-        header_layout.addWidget(self.training_completed_label)
-        header_layout.addWidget(self.training_active_label)
-        header_layout.addStretch(1)
-        main_layout.addLayout(header_layout)
-        
-        # Sub-tabs: Training and Sandbox
-        training_subtabs = QTabWidget()
-        
-        # --- Training Sub-tab ---
-        training_widget = QWidget()
-        training_layout = QHBoxLayout(training_widget)
-        
-        # Left panel: Data management
-        left_panel = QVBoxLayout()
-        
-        # Import and Annotate buttons
-        btn_layout = QHBoxLayout()
-        import_btn = QPushButton("📥 Import Media")
-        self.import_training_btn = import_btn
-        import_btn.clicked.connect(self.import_training_media)
-        btn_layout.addWidget(import_btn)
-        
-        annotate_btn = QPushButton("🖊️ Annotate Media")
-        self.annotate_btn = annotate_btn
-        annotate_btn.clicked.connect(self.open_annotation_tool)
-        btn_layout.addWidget(annotate_btn)
-        btn_layout.addStretch(1)
-        left_panel.addLayout(btn_layout)
-
-        # Import/Export for Classes and Annotations (grid layout for better organization)
-        ie_btn_layout = QGridLayout()
-        ie_btn_layout.setSpacing(5)
-        
-        # Row 0: Classes
-        export_classes_btn = QPushButton("⬆ Export Classes")
-        export_classes_btn.setToolTip("Export current class hierarchy to a JSON package")
-        export_classes_btn.clicked.connect(self._export_classes_package)
-        ie_btn_layout.addWidget(export_classes_btn, 0, 0)
-
-        import_classes_btn = QPushButton("⬇ Import Classes")
-        import_classes_btn.setToolTip("Import classes from a package with merge/override")
-        import_classes_btn.clicked.connect(self._import_classes_package)
-        ie_btn_layout.addWidget(import_classes_btn, 0, 1)
-
-        # Row 1: Annotations
-        export_ann_btn = QPushButton("⬆ Export Annotations")
-        export_ann_btn.setToolTip("Export annotations from workspace to a JSON package")
-        export_ann_btn.clicked.connect(self._export_annotations_package)
-        ie_btn_layout.addWidget(export_ann_btn, 1, 0)
-
-        import_ann_btn = QPushButton("⬇ Import Annotations")
-        import_ann_btn.setToolTip("Import annotations with conflict-safe merge or override")
-        import_ann_btn.clicked.connect(self._import_annotations_package)
-        ie_btn_layout.addWidget(import_ann_btn, 1, 1)
-
-        # Row 2: Revert
-        revert_classes_btn = QPushButton("↩ Revert Classes")
-        revert_classes_btn.setToolTip("Restore master_classes.json from a backup")
-        revert_classes_btn.clicked.connect(self._revert_classes_from_backup)
-        ie_btn_layout.addWidget(revert_classes_btn, 2, 0)
-
-        revert_ann_btn = QPushButton("↩ Revert Annotations")
-        revert_ann_btn.setToolTip("Restore annotations from a ZIP backup")
-        revert_ann_btn.clicked.connect(self._revert_annotations_from_backup)
-        ie_btn_layout.addWidget(revert_ann_btn, 2, 1)
-
-        # Row 3: ZIP Archive
-        export_zip_btn = QPushButton("⬆ Export ZIP")
-        export_zip_btn.setToolTip("Create a ZIP archive with images + labels + metadata")
-        export_zip_btn.clicked.connect(self._export_annotations_zip)
-        ie_btn_layout.addWidget(export_zip_btn, 3, 0)
-
-        import_zip_btn = QPushButton("⬇ Import ZIP")
-        import_zip_btn.setToolTip("Import a ZIP archive containing images + labels")
-        import_zip_btn.clicked.connect(self._import_annotations_zip)
-        ie_btn_layout.addWidget(import_zip_btn, 3, 1)
-        
-        left_panel.addLayout(ie_btn_layout)
-        
-        # Ready for Training count display
-        training_ready_group = QWidget()
-        training_ready_layout = QVBoxLayout(training_ready_group)
-        training_ready_layout.setContentsMargins(10, 10, 10, 10)
-        training_ready_group.setStyleSheet("""
-            QWidget {
-                background: rgba(0, 188, 212, 0.1);
-                border: 2px solid #00bcd4;
-                border-radius: 8px;
-            }
-        """)
-        
-        # Header with delete button
-        header_layout = QHBoxLayout()
-        self.training_ready_label = QLabel("📦 Ready for Training")
-        self.training_ready_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #00bcd4; border: none; background: transparent;")
-        header_layout.addWidget(self.training_ready_label)
-        header_layout.addStretch()
-        
-        delete_all_btn = QPushButton("🗑")
-        delete_all_btn.setMaximumWidth(30)
-        delete_all_btn.setToolTip("Delete all training data")
-        delete_all_btn.setStyleSheet("background-color: #f44336; color: white; border: none; padding: 2px; border-radius: 3px;")
-        delete_all_btn.clicked.connect(self._delete_all_training_data)
-        header_layout.addWidget(delete_all_btn)
-        
-        training_ready_layout.addLayout(header_layout)
-        
-        self.training_ready_count_label = QLabel("0 annotation files")
-        self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #fff; border: none; background: transparent;")
-        training_ready_layout.addWidget(self.training_ready_count_label)
-        
-        # Tree view for annotation files grouped by class
-        from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
-        self.training_files_tree = QTreeWidget()
-        self.training_files_tree.setHeaderLabels(["Files by Class"])
-        self.training_files_tree.setMaximumHeight(200)
-        self.training_files_tree.setStyleSheet("""
-            QTreeWidget {
-                background: rgba(0, 0, 0, 0.3);
-                border: 1px solid #555;
-                color: #fff;
-                font-size: 11px;
-            }
-            QTreeWidget::item:selected {
-                background: rgba(0, 188, 212, 0.3);
-            }
-        """)
-        training_ready_layout.addWidget(self.training_files_tree)
-        
-        left_panel.addWidget(training_ready_group)
-
-        # Track if training just completed (to prevent refresh from resetting display)
-        self.training_just_completed = False
-
-        # Dataset Stats display
-        dataset_stats_group = QWidget()
-        dataset_stats_layout = QVBoxLayout(dataset_stats_group)
-        dataset_stats_layout.setContentsMargins(10, 10, 10, 10)
-        dataset_stats_group.setStyleSheet("""
-            QWidget {
-                background: rgba(76, 175, 80, 0.08);
-                border: 2px solid #4CAF50;
-                border-radius: 8px;
-            }
-        """)
-        ds_label = QLabel("📊 Dataset Stats")
-        ds_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #4CAF50; border: none; background: transparent;")
-        dataset_stats_layout.addWidget(ds_label)
-        self.dataset_images_counts_label = QLabel("Images: —")
-        self.dataset_images_counts_label.setStyleSheet("font-size: 13px; color: #fff; border: none; background: transparent;")
-        dataset_stats_layout.addWidget(self.dataset_images_counts_label)
-        self.dataset_classes_label = QLabel("Classes: —")
-        self.dataset_classes_label.setStyleSheet("font-size: 13px; color: #fff; border: none; background: transparent;")
-        dataset_stats_layout.addWidget(self.dataset_classes_label)
-        left_panel.addWidget(dataset_stats_group)
-
-        left_panel.addStretch(1)
-        
-        # QC Review, Move to Training and Delete buttons
-        action_btn_layout = QHBoxLayout()
-        
-        qc_review_btn = QPushButton("🔍 QC Review")
-        qc_review_btn.setToolTip("Review and edit annotations before moving to training")
-        qc_review_btn.clicked.connect(self.open_qc_review)
-        action_btn_layout.addWidget(qc_review_btn)
-        
-        move_btn = QPushButton("→ Move to Training")
-        move_btn.clicked.connect(self.move_to_training)
-        action_btn_layout.addWidget(move_btn)
-        
-        delete_btn = QPushButton("🗑 Delete")
-        delete_btn.clicked.connect(self.delete_training_data)
-        action_btn_layout.addWidget(delete_btn)
-
-        review_btn = QPushButton("🔎 Review Unclassified")
-        review_btn.setToolTip("List dataset items remapped to unclassified_* for re-annotation")
-        review_btn.clicked.connect(self.review_unclassified_items)
-        action_btn_layout.addWidget(review_btn)
-        action_btn_layout.addStretch(1)
-        left_panel.addLayout(action_btn_layout)
-        
-        training_layout.addLayout(left_panel, 1)
-        
-        # Right panel: Training configuration
-        right_panel = QVBoxLayout()
-        right_panel.addWidget(QLabel("Training Configuration"))
-        
-        config_form = QFormLayout()
-        
-        self.epochs_spin = QSpinBox()
-        self.epochs_spin.setRange(1, 1000)
-        self.epochs_spin.setValue(50)
-        config_form.addRow("Epochs:", self.epochs_spin)
-        
-        self.batch_size_spin = QSpinBox()
-        self.batch_size_spin.setRange(1, 128)
-        self.batch_size_spin.setValue(16)
-        config_form.addRow("Batch Size:", self.batch_size_spin)
-        
-        right_panel.addLayout(config_form)
-        
-        # Training Status
-        right_panel.addWidget(QLabel("Training Status"))
-        self.training_progress = QProgressBar()
-        self.training_progress.setValue(0)
-        right_panel.addWidget(self.training_progress)
-        
-        self.training_status_label = QLabel("Ready")
-        right_panel.addWidget(self.training_status_label)
-        
-        self.training_epoch_label = QLabel("Epoch: 0/0")
-        right_panel.addWidget(self.training_epoch_label)
-        
-        # Training control buttons
-        train_btn_layout = QHBoxLayout()
-        self.start_training_btn = QPushButton("▶ Start Training")
-        self.start_training_btn.clicked.connect(self.start_model_training)
-        train_btn_layout.addWidget(self.start_training_btn)
-        
-        self.quick_retrain_btn = QPushButton("⚡ Quick Retrain (Reviewed)")
-        self.quick_retrain_btn.setToolTip("Runs a shorter retrain using current dataset; ideal after fixing unclassified items")
-        self.quick_retrain_btn.clicked.connect(self.start_quick_retraining)
-        train_btn_layout.addWidget(self.quick_retrain_btn)
-        
-        self.cancel_training_btn = QPushButton("Cancel")
-        self.cancel_training_btn.setEnabled(False)
-        self.cancel_training_btn.clicked.connect(self.cancel_model_training)
-        train_btn_layout.addWidget(self.cancel_training_btn)
-        train_btn_layout.addStretch(1)
-        right_panel.addLayout(train_btn_layout)
-        
-        # Model Versions
-        right_panel.addWidget(QLabel("Model Versions"))
-        self.model_versions_list = QListWidget()
-        self.model_versions_list.setMaximumHeight(140)
-        right_panel.addWidget(self.model_versions_list)
-        
-        version_btn_layout = QHBoxLayout()
-        rollback_btn = QPushButton("↶ Rollback to Selected")
-        rollback_btn.clicked.connect(self.rollback_model_version)
-        version_btn_layout.addWidget(rollback_btn)
-        
-        delete_version_btn = QPushButton("🗑 Delete Version")
-        delete_version_btn.clicked.connect(self.delete_model_version)
-        version_btn_layout.addWidget(delete_version_btn)
-        version_btn_layout.addStretch(1)
-        right_panel.addLayout(version_btn_layout)
-        
-        right_panel.addStretch(1)
-        training_layout.addLayout(right_panel, 1)
-        # Initial refresh of dataset stats
-        try:
-            self._refresh_dataset_stats()
-        except Exception:
-            pass
-        
-        # Populate versions on load
-        self._refresh_model_versions()
-        
-        training_subtabs.addTab(training_widget, "Training")
-        
-        # --- Sandbox Sub-tab ---
-        sandbox_widget = self._create_sandbox_tab()
-        training_subtabs.addTab(sandbox_widget, "Sandbox")
-        
-        main_layout.addWidget(training_subtabs)
-        
-        # Determine tab label based on theme
-        from PyQt5.QtWidgets import QApplication
-        app = QApplication.instance()
-        is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
-        self.tabs.addTab(training_tab, "TRAINING" if is_modern else "Training")
-        
-        # Store reference
-        self.training_manager_tab = training_tab
-        self._training_video_path = None
-        self.training_selected_video_path = None
-        self.training_selected_image_paths = []
-        self.training_has_annotations = False
-        self.training_media_imported = False
-        self.imported_zip_bases = []  # Track imported ZIP media bases for QC workflow
-        
-        # Initial count update
-        self._refresh_training_ready_count()
+        Training functionality is reserved for EmberEye Studio.
+        Field Edition focuses on monitoring and detection only.
+        """
+        # This method is intentionally disabled - training is a Studio-only feature
+        pass
 
     def _export_classes_package(self):
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
@@ -3528,11 +3296,36 @@ class BEMainWindow(QMainWindow):
         except Exception:
             return None
 
-    @pyqtSlot(str, object, float, object)
-    def handle_incident_frame_from_widget(self, loc_id, qimage, score, detections=None):
+    @pyqtSlot(str, object, float, float, object)
+    def handle_incident_frame_from_widget(self, loc_id, qimage, score, yolo_score=0.0, detections=None):
         """Add a captured incident to the Incidents tab."""
         try:
             debug_print(f"[INCIDENT] Received incident: loc_id={loc_id}, score={score:.3f}, detections={len(detections or [])}")
+            # Hybrid alarm evaluation
+            key = str(loc_id) if loc_id is not None else "_broadcast"
+            fusion_result = self._fusion_by_loc_id.get(key) or self._fusion_by_loc_id.get("_broadcast")
+            fusion_alarm = bool(fusion_result.get('alarm')) if fusion_result else False
+            rule_result = self._evaluate_rule_alarm(detections or [], yolo_score, fusion_result)
+            rule_alarm = bool(rule_result.get('rule_alarm'))
+            final_alarm = fusion_alarm or rule_alarm
+            alarm_reason = []
+            if fusion_alarm:
+                alarm_reason.append(f"Fusion: {fusion_result.get('alarm_reason', 'alarm')}")
+            if rule_alarm:
+                reasons = rule_result.get('reasons', []) or []
+                if reasons:
+                    alarm_reason.append(f"Rules: {reasons[0]}")
+                else:
+                    alarm_reason.append("Rules: alarm")
+
+            # Update alarm indicator for this widget
+            for widget in self.get_video_widgets():
+                if getattr(widget, 'loc_id', None) == loc_id:
+                    try:
+                        widget.update_fire_alarm(final_alarm)
+                    except Exception:
+                        pass
+                    break
             # Check if capture is enabled
             if not getattr(self, 'incident_capture_enabled', True):
                 debug_print(f"[INCIDENT] Capture disabled, skipping")
@@ -3555,8 +3348,14 @@ class BEMainWindow(QMainWindow):
                 'pixmap': pixmap,
                 'loc_id': str(loc_id),
                 'score': float(score),
+                'yolo_score': float(yolo_score),
                 'ts': ts,
-                'detections': detections or []
+                'detections': detections or [],
+                'rule_severity': rule_result.get('severity'),
+                'rule_alarm': rule_alarm,
+                'fusion_alarm': fusion_alarm,
+                'alarm': final_alarm,
+                'alarm_reason': " | ".join(alarm_reason).strip()
             }
             self._incidents_store.append(entry)
 
@@ -3888,12 +3687,8 @@ class BEMainWindow(QMainWindow):
         settings_menu.addAction("📚 Class & Subclass Manager", self.show_master_class_config)
         settings_menu.addAction("📋 Log Viewer", self.show_log_viewer_dialog)
         settings_menu.addSeparator()
-        # Model Export submenu
-        export_menu = settings_menu.addMenu("📦 Export Model")
-        export_menu.addAction("🔹 Export to ONNX", lambda: self.export_model('onnx'))
-        export_menu.addAction("🔹 Export to TorchScript", lambda: self.export_model('torchscript'))
-        export_menu.addAction("🔹 Export to CoreML", lambda: self.export_model('coreml'))
-        export_menu.addAction("🔹 Export to TensorFlow Lite", lambda: self.export_model('tflite'))
+        # Model Import for deployment
+        settings_menu.addAction("📥 Import Model", self.import_deployment_model)
         settings_menu.addSeparator()
         pfds_menu = settings_menu.addMenu("🔥 PFDS Devices")
         pfds_menu.addAction("➕ Add Device", self.show_pfds_add_dialog)
@@ -4682,6 +4477,230 @@ class BEMainWindow(QMainWindow):
         dlg.resize(900, 600)
         dlg.exec_()
 
+    def import_deployment_model(self):
+        """Import a trained model from Studio for deployment in Field app."""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, QFileDialog, QProgressDialog
+        from PyQt5.QtCore import Qt
+        from pathlib import Path
+        import shutil
+        
+        # Create import dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Import Deployment Model")
+        dlg.setModal(True)
+        dlg.resize(600, 250)
+        
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(15)
+        
+        # Title
+        title = QLabel("Import Model from EmberEye Studio")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #00bcd4;")
+        layout.addWidget(title)
+        
+        # Description
+        desc = QLabel(
+            "Select a trained model exported from Studio to use for real-time detection.\n"
+            "The model will be activated immediately for all video streams."
+        )
+        desc.setStyleSheet("color: #aaa; margin-bottom: 10px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+        
+        # Model file selection
+        file_layout = QHBoxLayout()
+        file_layout.addWidget(QLabel("Model File:"))
+        self._import_model_path_label = QLabel("No file selected")
+        self._import_model_path_label.setStyleSheet("color: #888; font-style: italic;")
+        file_layout.addWidget(self._import_model_path_label, 1)
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(lambda: self._browse_model_file(dlg))
+        file_layout.addWidget(browse_btn)
+        layout.addLayout(file_layout)
+        
+        # Model type selector
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Model Type:"))
+        self._import_model_type_combo = QComboBox()
+        self._import_model_type_combo.addItems([
+            "PyTorch (.pt) - Default",
+            "ONNX (.onnx)",
+            "TensorFlow Lite (.tflite)",
+            "CoreML (.mlmodel)"
+        ])
+        self._import_model_type_combo.setCurrentIndex(0)
+        type_layout.addWidget(self._import_model_type_combo, 1)
+        layout.addLayout(type_layout)
+        
+        # Info box
+        info = QLabel(
+            "ℹ️ After import, the model will be set as the active detection model.\n"
+            "All video streams will use this model for fire and anomaly detection."
+        )
+        info.setStyleSheet(
+            "background-color: rgba(0, 188, 212, 0.1); "
+            "border: 1px solid rgba(0, 188, 212, 0.3); "
+            "border-radius: 4px; "
+            "padding: 10px; "
+            "color: #bbb; "
+            "font-size: 12px;"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        layout.addStretch()
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        import_btn = QPushButton("Import & Activate")
+        import_btn.setStyleSheet(
+            "background-color: #00bcd4; color: white; "
+            "padding: 8px 20px; font-weight: bold; border-radius: 4px;"
+        )
+        import_btn.clicked.connect(lambda: self._execute_model_import(dlg))
+        button_layout.addWidget(import_btn)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        dlg.exec_()
+    
+    def _browse_model_file(self, parent_dlg):
+        """Open file browser for model selection."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            parent_dlg,
+            "Select Model File",
+            "",
+            "Model Files (*.pt *.onnx *.tflite *.mlmodel);;PyTorch (*.pt);;ONNX (*.onnx);;TFLite (*.tflite);;CoreML (*.mlmodel);;All Files (*)"
+        )
+        
+        if file_path:
+            self._selected_model_path = file_path
+            from pathlib import Path
+            self._import_model_path_label.setText(Path(file_path).name)
+            self._import_model_path_label.setStyleSheet("color: #00bcd4; font-weight: bold;")
+            
+            # Auto-detect model type from extension
+            ext = Path(file_path).suffix.lower()
+            type_map = {
+                '.pt': 0,
+                '.onnx': 1,
+                '.tflite': 2,
+                '.mlmodel': 3
+            }
+            if ext in type_map:
+                self._import_model_type_combo.setCurrentIndex(type_map[ext])
+    
+    def _execute_model_import(self, dialog):
+        """Execute model import and activation."""
+        from PyQt5.QtWidgets import QProgressDialog, QMessageBox
+        from PyQt5.QtCore import Qt
+        from pathlib import Path
+        import shutil
+        
+        if not hasattr(self, '_selected_model_path') or not self._selected_model_path:
+            QMessageBox.warning(dialog, "No File Selected", "Please select a model file to import.")
+            return
+        
+        model_path = Path(self._selected_model_path)
+        if not model_path.exists():
+            QMessageBox.critical(dialog, "File Not Found", f"Model file not found:\n{model_path}")
+            return
+        
+        # Get model type
+        type_index = self._import_model_type_combo.currentIndex()
+        type_names = ['pytorch', 'onnx', 'tflite', 'coreml']
+        model_type = type_names[type_index]
+        
+        # Show progress
+        progress = QProgressDialog("Importing and activating model...", None, 0, 0, dialog)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowTitle("Importing Model")
+        progress.show()
+        QApplication.processEvents()
+        
+        try:
+            from embereye.core.model_versioning import ModelVersionManager, ModelMetadata
+            import datetime
+            
+            manager = ModelVersionManager()
+            
+            # Create deployment version directory
+            version_name = f"deployment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            version_dir = manager.models_dir / version_name
+            version_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create weights subdirectory
+            weights_dir = version_dir / "weights"
+            weights_dir.mkdir(exist_ok=True)
+            
+            # Copy model file
+            dest_path = weights_dir / f"best.{model_path.suffix.lstrip('.')}"
+            shutil.copy2(model_path, dest_path)
+            
+            # Create metadata
+            metadata = ModelMetadata(
+                version=version_name,
+                created_at=datetime.datetime.now().isoformat(),
+                model_type=model_type,
+                source="imported_from_studio",
+                metrics={
+                    "imported_file": model_path.name,
+                    "format": model_type
+                },
+                config={
+                    "imgsz": 640,
+                    "device": "auto"
+                }
+            )
+            metadata.save(version_dir / "metadata.json")
+            
+            # Set as current best for active detection
+            manager.set_current_best(version_name)
+            
+            progress.close()
+            dialog.accept()
+            
+            QMessageBox.information(
+                self,
+                "Import Successful",
+                f"✓ Model imported and activated!\n\n"
+                f"Model: {model_path.name}\n"
+                f"Type: {model_type.upper()}\n"
+                f"Version: {version_name}\n\n"
+                f"The model is now active for all video streams.\n"
+                f"Detections will trigger alarms based on Class & Subclass rules."
+            )
+            
+            # Reload detection models in video workers if possible
+            self._reload_detection_models()
+            
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(
+                dialog,
+                "Import Failed",
+                f"Failed to import model:\n\n{str(e)}\n\n"
+                f"Please check the model file and try again."
+            )
+    
+    def _reload_detection_models(self):
+        """Reload detection models in all active video workers."""
+        try:
+            # Notify all video workers to reload their detection models
+            for stream_id, worker in self.video_workers.items():
+                if hasattr(worker, 'reload_model'):
+                    worker.reload_model()
+            
+            print(f"[MODEL_IMPORT] Detection models reloaded for {len(self.video_workers)} streams")
+        except Exception as e:
+            print(f"[MODEL_IMPORT] Warning: Could not reload models in workers: {e}")
+
     def export_model(self, format: str):
         """Export current best model to deployment format (ONNX, TorchScript, CoreML, TFLite)."""
         try:
@@ -4798,13 +4817,8 @@ class BEMainWindow(QMainWindow):
         """Enable or disable numbers-only thermal grid view on all video streams."""
         for widget in self.get_video_widgets():
             try:
-                if hasattr(widget, 'thermal_view_btn'):
-                    widget.thermal_view_btn.blockSignals(True)
-                    widget.thermal_view_btn.setChecked(enabled)
-                    widget.thermal_view_btn.blockSignals(False)
-                    # Manually invoke handler to ensure redraw/persist
-                    if hasattr(widget, 'toggle_thermal_grid_view'):
-                        widget.toggle_thermal_grid_view(enabled)
+                if hasattr(widget, 'set_display_mode'):
+                    widget.set_display_mode("grid" if enabled else "default")
             except Exception as e:
                 print(f"Global grid toggle error: {e}")
 
@@ -5533,10 +5547,10 @@ class BEMainWindow(QMainWindow):
                         video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                     except Exception:
                         pass
-                    # Default to normal camera view with fusion overlay (numeric grid OFF)
+                    # Default to camera view with fusion overlay
                     try:
-                        if hasattr(video_widget, "_activate_fusion_overlay"):
-                            video_widget._activate_fusion_overlay()
+                        if hasattr(video_widget, "set_display_mode"):
+                            video_widget.set_display_mode("default")
                         elif hasattr(video_widget, "toggle_thermal_grid_view"):
                             video_widget.toggle_thermal_grid_view(False)
                     except Exception:

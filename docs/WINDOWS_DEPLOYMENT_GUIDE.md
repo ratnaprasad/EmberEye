@@ -69,7 +69,7 @@ python main.py
 REM Open a second terminal window
 cd C:\EmberEye
 venv\Scripts\activate
-python tcp_sensor_simulator.py --port 9001 --loc_id demo_room
+python tcp_sensor_simulator_v3.py --port 9001 --loc_id demo_room
 ```
 
 ### Step 5: Enable Thermal Grid View
@@ -94,7 +94,7 @@ python tcp_sensor_simulator.py --port 9001 --loc_id demo_room
 
 **Quick Test:**
 ```cmd
-python tcp_sensor_simulator.py --port 9001 --loc_id demo_room
+python tcp_sensor_simulator_v3.py --port 9001 --loc_id demo_room
 REM Then in another terminal:
 python main.py
 ```
@@ -177,7 +177,7 @@ python main.py
 
 ### 3. Simulator Connection Test
 ```cmd
-python tcp_sensor_simulator.py --port 9001 --loc_id demo_room
+python tcp_sensor_simulator_v3.py --port 9001 --loc_id demo_room
 ```
 **Expected:**
 - "Connected to 127.0.0.1:9001"
@@ -321,7 +321,7 @@ Before deploying to production Windows systems:
 | Action | Command/Location |
 |--------|------------------|
 | **Start App** | `python main.py` |
-| **Start Simulator** | `python tcp_sensor_simulator.py --port 9001` |
+| **Start Simulator** | `python tcp_sensor_simulator_v3.py --port 9001` |
 | **Toggle Grid** | Click ⌗ button (top-left of video) |
 | **Login** | admin / admin123 |
 | **Config File** | `stream_config.json` |

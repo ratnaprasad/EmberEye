@@ -109,7 +109,7 @@ if not self._client_period_on_sent.get(client_ip, False):
     # DO NOT send EEPROM1 - wait for parser validation
 ```
 
-### tcp_sensor_simulator.py → tcp_sensor_simulator_v3.py
+### tcp_sensor_simulator.py (removed) → tcp_sensor_simulator_v3.py
 
 **V2 (Old Simulator):**
 - Continuously sends frames without waiting for commands
@@ -147,11 +147,8 @@ if not self._client_period_on_sent.get(client_ip, False):
 
 ## Simulator V3 Usage
 
-**Old (V2):**
-```bash
-python3 tcp_sensor_simulator.py --host 127.0.0.1 --port 9001 --loc-id "room1"
-# Immediately starts streaming frames (no command wait)
-```
+**Old (V2, removed):**
+The v2 simulator has been removed from `simulators/`. Use v3 instead.
 
 **New (V3):**
 ```bash

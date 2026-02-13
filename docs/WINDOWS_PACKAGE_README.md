@@ -30,7 +30,7 @@ This package contains the complete EmberEye application with all latest features
 - License and activation system
 
 #### Testing Infrastructure (6 files)
-- TCP sensor simulator (`tcp_sensor_simulator.py`)
+- TCP sensor simulator (`tcp_sensor_simulator_v3.py`)
 - Load testing scripts (`tcp_sensor_load_test.py`, `camera_stream_load_test.py`)
 - Comprehensive test suites (120+ tests across 4 suites)
 
@@ -122,7 +122,7 @@ For detailed build instructions, see **BUILD_WINDOWS.md**
 python main.py
 
 # Terminal 2: Start thermal sensor simulator
-python tcp_sensor_simulator.py --port 9001 --loc-id "Test Room"
+python tcp_sensor_simulator_v3.py --port 9001 --loc-id "Test Room"
 ```
 
 ### Run Test Suites
@@ -177,7 +177,7 @@ For detailed testing instructions, see **TESTING_QUICK_START.md**
 
 ```powershell
 # 1. Run simulator with thermal frames
-python tcp_sensor_simulator.py --port 9001 --interval 1.0
+python tcp_sensor_simulator_v3.py --port 9001 --interval 1.0
 
 # 2. In EmberEye UI:
 #    - Look for stream labeled "default room"
@@ -441,12 +441,12 @@ This package is **production-ready** and includes:
 - **main.py** - Application entry point
 - **video_widget.py** - Video stream widget with thermal grid view
 - **tcp_sensor_server.py** - TCP server for thermal camera data
-- **tcp_sensor_simulator.py** - Hardware simulator for testing
+- **tcp_sensor_simulator_v3.py** - Hardware simulator for testing
 
 ### Run Commands
 ```powershell
 python main.py                                    # Start application
-python tcp_sensor_simulator.py --port 9001        # Start simulator
+python tcp_sensor_simulator_v3.py --port 9001        # Start simulator
 python test_embereye_suite_fixed.py               # Run tests
 pyinstaller EmberEye.spec                         # Build executable
 ```

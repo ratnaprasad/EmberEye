@@ -17,7 +17,7 @@ The EmberEye testing infrastructure includes:
 ### 1. Simulators
 | Component | File | Status | Description |
 |-----------|------|--------|-------------|
-| TCP Sensor Simulator | `tcp_sensor_simulator.py` | ✅ Ready | Generates 32×24 thermal frames + ADC sensor data |
+| TCP Sensor Simulator | `tcp_sensor_simulator_v3.py` | ✅ Ready | Generates 32×24 thermal frames + ADC sensor data |
 | TCP Load Tester | `tcp_sensor_load_test.py` | ✅ Ready | Multi-client stress testing with metrics |
 | Camera Load Tester | `camera_stream_load_test.py` | ✅ Ready | RTSP stream performance testing |
 
@@ -42,7 +42,7 @@ The EmberEye testing infrastructure includes:
 
 ### Run Simulator (Test Thermal Grid View)
 ```bash
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "Test Room" --interval 2.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "Test Room" --interval 2.0
 ```
 
 ### Run Load Test (Stress Test Server)
@@ -291,7 +291,7 @@ python3 test_auth_user_management.py
 python3 tcp_sensor_load_test.py --clients 10 --packets 100 --rate 20
 
 # 3. Manual testing with simulator
-python3 tcp_sensor_simulator.py --port 9001 --interval 1.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --interval 1.0
 
 # 4. Verify thermal grid view feature
 # - Start EmberEye
@@ -304,7 +304,7 @@ python3 tcp_sensor_simulator.py --port 9001 --interval 1.0
 ### For Bug Reports
 ```bash
 # 1. Try to reproduce with simulator
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "Bug Test"
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "Bug Test"
 
 # 2. Check logs
 tail -f logs/tcp_debug.log
@@ -348,7 +348,7 @@ python3 test_embereye_suite_fixed.py
 ## 📞 Support & Resources
 
 ### Quick Reference
-- **Start Simulator**: `python3 tcp_sensor_simulator.py --port 9001`
+- **Start Simulator**: `python3 tcp_sensor_simulator_v3.py --port 9001`
 - **Run Load Test**: `python3 tcp_sensor_load_test.py --clients 5 --packets 20`
 - **Run All Tests**: `python3 test_embereye_suite_fixed.py`
 - **Check Logs**: `tail -f logs/tcp_debug.log`

@@ -57,6 +57,8 @@ class AnnotationCanvas(QLabel):
         self.setMinimumSize(QSize(640, 480))
         # No maximum size - let it fill the available space
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Enable keyboard focus to receive ESC key events
+        self.setFocusPolicy(Qt.StrongFocus)
         self._source_pixmap = None  # original pixmap
         self._display_pixmap = None  # scaled to fit
         self._drawing = False
@@ -75,24 +77,41 @@ class AnnotationCanvas(QLabel):
         self._polygon_points = []  # List of QPoint for current polygon
         self._drawing_polygon = False
 
-    def set_frame(self, frame_bgr):
-        """Set frame and update display"""
+    def set_frame(self, frame_bgr, fast_mode=False):
+        """Set frame and update display
+        
+        Args:
+            frame_bgr: BGR frame from OpenCV
+            fast_mode: If True, use faster (lower quality) scaling for playback
+        """
         h, w, _ = frame_bgr.shape
-        self.current_frame_bgr = frame_bgr.copy()
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        self.current_frame_bgr = frame_bgr  # Don't copy during playback
+        
+        # During fast playback, downscale frame before converting to QImage
+        if fast_mode and max(h, w) > 1280:
+            # Downscale to max 1280px for faster processing
+            scale = 1280.0 / max(h, w)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            frame_bgr = cv2.resize(frame_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            h, w = new_h, new_w
+        
+        # Convert BGR to RGB using numpy (faster than cv2.cvtColor)
+        rgb = frame_bgr[:, :, ::-1].copy()
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
         self._source_pixmap = QPixmap.fromImage(qimg)
         self.shapes = []
-        self._update_display_pixmap()
+        self._update_display_pixmap(fast_mode=fast_mode)
         self.update()
 
-    def _update_display_pixmap(self):
+    def _update_display_pixmap(self, fast_mode=False):
         if self._source_pixmap is None:
             return
         target_size = self.size()
-        # Use KeepAspectRatioByExpanding to fill the entire canvas
+        # Use fast transformation during playback, smooth for still frames
+        transform_mode = Qt.FastTransformation if fast_mode else Qt.SmoothTransformation
         self._display_pixmap = self._source_pixmap.scaled(
-            target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+            target_size, Qt.KeepAspectRatioByExpanding, transform_mode
         )
         self.update()
 
@@ -223,6 +242,8 @@ class AnnotationCanvas(QLabel):
                         rel_pos = event.pos() - geom.topLeft()
                         self._polygon_points.append(rel_pos)
                         self._drawing_polygon = True
+                        # Grab keyboard focus so ESC key works
+                        self.setFocus()
                         self.update()
                         return  # Exit early to prevent triggering other modes
                     elif self.annotation_mode == 'polygon':
@@ -244,6 +265,18 @@ class AnnotationCanvas(QLabel):
                     self._drawing_polygon = False
                     self.update()
         super().mousePressEvent(event)
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard events"""
+        if event.key() == Qt.Key_Escape:
+            # ESC key clears current polygon drawing
+            if self._drawing_polygon and len(self._polygon_points) > 0:
+                self._polygon_points = []
+                self._drawing_polygon = False
+                self.update()
+                event.accept()
+                return
+        super().keyPressEvent(event)
     
     def _finish_manual_polygon(self):
         """Convert manual polygon points to normalized coordinates and add to shapes."""
@@ -497,7 +530,9 @@ class AnnotationTab(QWidget):
         
         self._play_timer = QTimer()
         self._play_timer.timeout.connect(self._play_next_frame)
+        self._play_timer.setTimerType(Qt.PreciseTimer)  # More accurate timing
         self._updating_slider = False
+        self._last_frame_time = 0  # Track time for frame skipping
         
         self.init_ui()
 
@@ -835,7 +870,10 @@ class AnnotationTab(QWidget):
             self.frame_slider.setMaximum(max(0, self.total_frames - 1))
             self.frame_slider.setValue(0)
             
-            self._play_timer.setInterval(int(1000.0 / self.fps))
+            # Set timer to slightly faster than target FPS to allow for processing time
+            # The frame skip logic will handle maintaining proper timing
+            timer_fps = min(self.fps * 1.2, 60)  # Max 60 FPS timer
+            self._play_timer.setInterval(int(1000.0 / timer_fps))
             
             self.read_frame()
             self.media_status_label.setText(f"Video: {Path(path).name} ({self.total_frames} frames)")
@@ -866,21 +904,29 @@ class AnnotationTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load images: {e}")
 
-    def read_frame(self):
-        """Read and display current frame"""
+    def read_frame(self, seek=True, fast_mode=False):
+        """Read and display current frame
+        
+        Args:
+            seek: If True, seek to frame_index. If False, read next frame sequentially (faster for playback)
+            fast_mode: If True, use faster rendering (for playback)
+        """
         try:
             if self.media_mode == 'video' and self.cap:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_index)
+                if seek:
+                    # Seeking is slow but necessary for random access (slider, prev/next buttons)
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_index)
+                # Read the frame (either after seek or sequentially)
                 ret, frame = self.cap.read()
                 if ret:
                     self.current_frame = frame
-                    self.canvas.set_frame(frame)
+                    self.canvas.set_frame(frame, fast_mode=fast_mode)
             elif self.media_mode == 'images' and self.image_paths:
                 if 0 <= self.frame_index < len(self.image_paths):
                     frame = cv2.imread(self.image_paths[self.frame_index])
                     if frame is not None:
                         self.current_frame = frame
-                        self.canvas.set_frame(frame)
+                        self.canvas.set_frame(frame, fast_mode=fast_mode)
         except Exception as e:
             print(f"Error reading frame: {e}")
 
@@ -890,18 +936,40 @@ class AnnotationTab(QWidget):
             self._play_timer.stop()
             self.play_btn.setText("▶")
             self.playing = False
+            # Update slider to exact position when stopping
+            self.frame_slider.setValue(self.frame_index)
         else:
+            # Ensure video is at correct position before starting playback
+            if self.media_mode == 'video' and self.cap:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_index)
+            import time
+            self._last_frame_time = time.time()
             self._play_timer.start()
             self.play_btn.setText("⏸")
             self.playing = True
         self._set_overlay_visible(False)
 
     def _play_next_frame(self):
-        """Play next frame"""
+        """Play next frame (optimized for sequential playback with frame skip)"""
         if self.frame_index < self.total_frames - 1:
-            self.frame_index += 1
-            self.frame_slider.setValue(self.frame_index)
-            self.read_frame()
+            # Calculate how many frames to advance based on elapsed time
+            import time
+            current_time = time.time()
+            elapsed = current_time - self._last_frame_time
+            target_frame_time = 1.0 / self.fps if self.fps > 0 else 0.033
+            
+            # If we're falling behind, skip frames to maintain timing
+            frames_to_advance = max(1, int(elapsed / target_frame_time))
+            frames_to_advance = min(frames_to_advance, 3)  # Don't skip more than 3 frames
+            
+            self.frame_index = min(self.frame_index + frames_to_advance, self.total_frames - 1)
+            self._last_frame_time = current_time
+            
+            # Update slider only every 5 frames to reduce UI overhead
+            if self.frame_index % 5 == 0:
+                self.frame_slider.setValue(self.frame_index)
+            # Don't seek during playback - read sequentially with fast rendering
+            self.read_frame(seek=False, fast_mode=True)
         else:
             self.toggle_play()
 

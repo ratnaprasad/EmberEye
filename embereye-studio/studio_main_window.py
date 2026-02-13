@@ -12,6 +12,7 @@ Complete version with all features from field edition including:
 
 import sys
 import os
+import shutil
 from pathlib import Path
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -30,8 +31,10 @@ from forgelab import (
 )
 from studio_db_manager import StudioDatabaseManager
 
-# Import centralized get_data_path from embereye
-sys.path.insert(0, str(Path(__file__).parent.parent / "embereye"))
+# Import centralized get_data_path from embereye (keep Studio path first)
+embereye_path = str(Path(__file__).parent.parent / "embereye")
+if embereye_path not in sys.path:
+    sys.path.append(embereye_path)
 from utils.resource_helper import get_data_path
 
 
@@ -336,6 +339,8 @@ class TrainingTab(QWidget):
             # Find all media bases with annotations
             media_bases = []
             for item in os.listdir(workspace_annotations):
+                if item == "qcapproved":
+                    continue
                 item_path = os.path.join(workspace_annotations, item)
                 if os.path.isdir(item_path) and self._has_annotations(item_path):
                     media_bases.append(item)
@@ -374,12 +379,14 @@ class TrainingTab(QWidget):
         result = dialog.exec_()
         
         if result == QCReviewDialog.Accepted:
-            ann_count = self._count_annotation_files(annotations_dir)
+            moved = self._move_to_qc_approved(annotations_dir)
+            ann_count = self._count_annotation_files(self._qc_approved_root())
             QMessageBox.information(
                 self,
                 "QC Review Complete",
                 f"Review complete!\n\n"
-                f"Annotations: {ann_count} files\n\n"
+                f"QC-approved: {moved} base(s)\n"
+                f"Annotations in qcapproved: {ann_count} files\n\n"
                 f"Click 'Move to Training' to proceed."
             )
 
@@ -389,8 +396,8 @@ class TrainingTab(QWidget):
         has_images = bool(getattr(self, 'training_selected_image_paths', []))
         has_imported_zip = bool(getattr(self, 'imported_zip_bases', []))
         
-        # Check workspace annotations if no media selected
-        workspace_annotations = get_data_path("annotations")
+        # Check QC-approved annotations if no media selected
+        workspace_annotations = self._qc_approved_root()
         workspace_bases = []
         if not (has_video or has_images or has_imported_zip):
             if os.path.exists(workspace_annotations):
@@ -404,9 +411,17 @@ class TrainingTab(QWidget):
                 return
         
         if has_video:
-            annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
+            raw_dir = self._annotations_dir_for_video(self.training_selected_video_path)
+            annotations_dir = os.path.join(self._qc_approved_root(), os.path.basename(raw_dir))
+            if not self._has_annotations(annotations_dir):
+                QMessageBox.warning(self, "Training", "QC Review not completed for this media. Please run QC Review first.")
+                return
         elif has_images:
-            annotations_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
+            raw_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
+            annotations_dir = os.path.join(self._qc_approved_root(), os.path.basename(raw_dir))
+            if not self._has_annotations(annotations_dir):
+                QMessageBox.warning(self, "Training", "QC Review not completed for this media. Please run QC Review first.")
+                return
         else:
             from PyQt5.QtWidgets import QInputDialog
             # Use workspace bases if no media selected, otherwise use imported ZIP bases
@@ -415,7 +430,7 @@ class TrainingTab(QWidget):
             selected, ok = QInputDialog.getItem(
                 self,
                 "Move to Training",
-                "Select which media to move:",
+                "Select which QC-approved media to move:",
                 items,
                 0,
                 False
@@ -426,10 +441,11 @@ class TrainingTab(QWidget):
             if selected == "All media bases":
                 total_moved = 0
                 for base in bases:
-                    annotations_dir = get_data_path(os.path.join("annotations", base))
+                    annotations_dir = os.path.join(workspace_annotations, base)
                     target_dir = self._copy_annotations_to_training(annotations_dir)
                     if target_dir:
                         total_moved += self._count_annotation_files(annotations_dir)
+                        self._clear_qc_approved_base(annotations_dir)
                 
                 if total_moved > 0:
                     self._refresh_training_ready_count()
@@ -445,7 +461,7 @@ class TrainingTab(QWidget):
                     QMessageBox.warning(self, "Training", "No annotations were moved.")
                 return
             else:
-                annotations_dir = get_data_path(os.path.join("annotations", selected))
+                annotations_dir = os.path.join(workspace_annotations, selected)
         
         ann_count = self._count_annotation_files(annotations_dir)
         if ann_count == 0:
@@ -454,6 +470,7 @@ class TrainingTab(QWidget):
         
         target_dir = self._copy_annotations_to_training(annotations_dir)
         if target_dir:
+            self._clear_qc_approved_base(annotations_dir)
             self._refresh_training_ready_count()
             try:
                 self._refresh_dataset_stats()
@@ -468,10 +485,10 @@ class TrainingTab(QWidget):
             QMessageBox.information(
                 self,
                 "Training",
-                f"Registered annotated frames for training.\n"
+                f"Registered QC-approved frames for training.\n"
                 f"Annotations: {ann_count} files\n"
                 f"Copied to: {target_dir}\n\n"
-                "Ready for next batch. Click 'Import Media' to add more."
+                "QC-approved source cleared. Ready for next batch."
             )
         else:
             QMessageBox.warning(self, "Training", "Failed to copy annotations to training_data.")
@@ -669,6 +686,71 @@ class TrainingTab(QWidget):
             return target_root
         except Exception:
             return ""
+
+    def _clear_qc_approved_base(self, qc_base_dir: str) -> None:
+        """Remove a qcapproved base after it is moved to training."""
+        try:
+            if not qc_base_dir or not os.path.exists(qc_base_dir):
+                return
+            qc_root = os.path.realpath(self._qc_approved_root())
+            qc_base_real = os.path.realpath(qc_base_dir)
+            if not qc_base_real.startswith(qc_root):
+                return
+            shutil.rmtree(qc_base_dir)
+        except Exception:
+            return
+
+    def _qc_approved_root(self) -> str:
+        return get_data_path(os.path.join("annotations", "qcapproved"))
+
+    def _move_to_qc_approved(self, annotations_dir: str) -> int:
+        """Move reviewed annotations into annotations/qcapproved."""
+        try:
+            if not annotations_dir or not os.path.exists(annotations_dir):
+                return 0
+            qc_root = self._qc_approved_root()
+            os.makedirs(qc_root, exist_ok=True)
+
+            ann_root = get_data_path("annotations")
+            ann_root_real = os.path.realpath(ann_root)
+            qc_root_real = os.path.realpath(qc_root)
+            source_real = os.path.realpath(annotations_dir)
+
+            moved = 0
+            if source_real == qc_root_real:
+                return 0
+
+            # If reviewing all bases, move each base under annotations/
+            if source_real == ann_root_real:
+                for base in os.listdir(ann_root):
+                    if base == "qcapproved":
+                        continue
+                    base_path = os.path.join(ann_root, base)
+                    if os.path.isdir(base_path) and self._has_annotations(base_path):
+                        if self._move_base_to_qc_approved(base_path, base):
+                            moved += 1
+                return moved
+
+            # Otherwise, move the selected base
+            base_name = os.path.basename(annotations_dir)
+            if self._move_base_to_qc_approved(annotations_dir, base_name):
+                moved += 1
+            return moved
+        except Exception:
+            return 0
+
+    def _move_base_to_qc_approved(self, base_path: str, base_name: str) -> bool:
+        try:
+            if not base_path or not os.path.exists(base_path):
+                return False
+            qc_root = self._qc_approved_root()
+            target_base = os.path.join(qc_root, base_name)
+            os.makedirs(target_base, exist_ok=True)
+            shutil.copytree(base_path, target_base, dirs_exist_ok=True)
+            shutil.rmtree(base_path)
+            return True
+        except Exception:
+            return False
 
     def _get_files_grouped_by_class(self, annotations_dir: str) -> dict:
         """Group annotation files by detected classes."""

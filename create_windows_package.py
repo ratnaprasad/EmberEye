@@ -24,7 +24,7 @@ CORE_FILES = [
 ]
 
 TEST_FILES = [
-    "tcp_sensor_simulator.py", "tcp_sensor_load_test.py",
+    "tcp_sensor_simulator_v3.py", "tcp_sensor_load_test.py",
     "test_embereye_suite_fixed.py", "test_ai_sensor_components.py",
     "test_ui_workflows.py", "test_auth_user_management.py"
 ]

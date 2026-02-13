@@ -56,6 +56,41 @@ docker build -t embereye:latest .
 docker run -it --gpus all -e DISPLAY=$DISPLAY embereye:latest
 ```
 
+### Quick Start - Field App with RTSP Simulator
+
+For testing the Field application with simulated camera streams:
+
+#### Automated (One Command)
+```batch
+# Windows - Starts RTSP simulator + Field app together
+start_field.bat
+```
+
+This will automatically:
+1. Start MediaMTX RTSP server
+2. Begin streaming test video (IMG_1318.MOV)
+3. Launch EmberEye Field monitoring application
+
+**Stream URL:** `rtsp://localhost:8554/camera1`
+
+#### Manual Steps
+```batch
+# 1. Start RTSP camera simulator
+cd simulators\rtsp
+start_camera.bat
+
+# 2. Start Field application (new terminal)
+cd ..\..
+python embereye-field\main.py
+```
+
+#### Stop All Services
+```batch
+stop_field.bat
+```
+
+See [RTSP Simulator Documentation](./simulators/rtsp/README.md) for advanced configuration.
+
 ## 📖 Documentation
 
 - [Installation Guide](./docs/INSTALLATION.md)
@@ -63,6 +98,83 @@ docker run -it --gpus all -e DISPLAY=$DISPLAY embereye:latest
 - [API Reference](./docs/API.md)
 - [Architecture](./docs/ARCHITECTURE.md)
 - [Thermal Camera Integration](./docs/CAMERA_INTEGRATION.md)
+
+## 🔥 Field Alarm Hybrid Flow (Proposed)
+
+This proposal keeps **sensor fusion** and adds **class/subclass rules** on top to maximize accuracy and reduce false alarms. It explicitly includes thermal camera frames, smoke sensor, and flame sensor data.
+
+### Inputs
+
+- **YOLO detections**: class + subclass labels with confidence scores.
+- **Thermal camera frames**: 2D temperature grid + thermal max + hot cells.
+- **Smoke sensor**: analog percentage threshold.
+- **Flame sensor**: analog percentage + digital state.
+
+### Hybrid Decision Flow
+
+```
+Camera Frames + YOLO Detections ─┐
+										  ├─> Rules Engine ─┐
+Thermal Frame Grid ──────────────┘                 │
+Smoke + Flame Sensors ─────────────> Sensor Fusion ├─> Final Alarm + Severity
+																	│
+																	└─> Incident Log (metadata + snapshot)
+```
+
+### Sensor Fusion (Physical Threat Signal)
+
+- Uses thermal max, smoke, flame, gas, and optional vision score.
+- Alarm when multi-sensor correlation confirms fire risk.
+- Immediate alarm on critical smoke or gas thresholds.
+- Captures hot cells for thermal overlay.
+
+### Rules Engine (Semantic Threat Signal)
+
+- Uses detected classes/subclasses and context flags.
+- Applies Class & Subclass Manager rules for severity.
+- Examples:
+  - `flame + indoor` → CRITICAL
+  - `smoke_heavy + confined_space` → CRITICAL
+  - `steam` alone → LOW (no alarm)
+
+### Final Alarm Logic
+
+- **CRITICAL rules** → immediate alarm.
+- **HIGH rules** → alarm if fusion confidence is above a minimum (reduces false positives).
+- **MEDIUM/LOW rules** → log incident, no alarm.
+- **Fusion alarm** always triggers alarm even if YOLO is uncertain.
+
+### Resulting Benefits
+
+- **Highest accuracy** (vision + thermal + sensors).
+- **Lower false alarms** (rule filtering + fusion confirmation).
+- **Fewer missed fires** (thermal rise before visible flames).
+- **Redundancy** if camera or sensors are unavailable.
+
+## 🧭 Camera Tile Display Modes (Proposed)
+
+Each camera tile should have display toggles with consistent behavior in **minimized** and **maximized** layouts.
+
+### Modes
+
+1. **Default** (renamed from "Camera + Fusion Overlay")
+	- RGB/visual camera feed.
+	- Fusion overlay enabled (alarm state, temp, confidence, hot cells summary).
+	- **Default enabled** on app start for all tiles.
+
+2. **Thermal + Fusion Overlay**
+	- Thermal camera feed view.
+	- Fusion overlay enabled.
+
+3. **Thermal Numeric Grid + Fusion Overlay**
+	- Numeric thermal grid values view.
+	- Fusion overlay enabled.
+
+### Default Behavior
+
+- **Default mode ON** for all cameras on initial load.
+- Mode selection persists while the app is running.
+- Toggle behavior is identical in minimized and maximized views.
 
 ## 🏗️ Project Structure
 

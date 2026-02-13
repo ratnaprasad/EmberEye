@@ -22,7 +22,7 @@ python3 main.py
 ### Step 2: Start Thermal Sensor Simulator (New Terminal)
 ```bash
 # Terminal 2
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "Test Room" --interval 2.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "Test Room" --interval 2.0
 ```
 
 **Expected Output**:
@@ -163,13 +163,13 @@ python3 test_auth_user_management.py
 ### Start Multiple Simulators
 ```bash
 # Terminal 1: Room 1 (fast updates - 1 FPS)
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_1" --interval 1.0 &
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_1" --interval 1.0 &
 
 # Terminal 2: Room 2 (normal updates - 2 FPS)
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_2" --interval 2.0 &
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_2" --interval 2.0 &
 
 # Terminal 3: Room 3 (slow updates - 5 FPS)
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_3" --interval 5.0 &
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_3" --interval 5.0 &
 
 # Wait 30 seconds then kill all
 sleep 30
@@ -189,16 +189,16 @@ killall python3
 ### Test All Formats
 ```bash
 # Test 1: Separate format (default)
-timeout 10 python3 tcp_sensor_simulator.py --port 9001 --format separate --loc-id "test_sep" || true
+timeout 10 python3 tcp_sensor_simulator_v3.py --port 9001 --format separate --loc-id "test_sep" || true
 
 # Test 2: Embedded format (loc_id in prefix)
-timeout 10 python3 tcp_sensor_simulator.py --port 9001 --format embedded --loc-id "test_emb" || true
+timeout 10 python3 tcp_sensor_simulator_v3.py --port 9001 --format embedded --loc-id "test_emb" || true
 
 # Test 3: Continuous hex (no spaces)
-timeout 10 python3 tcp_sensor_simulator.py --port 9001 --format continuous --loc-id "test_cont" || true
+timeout 10 python3 tcp_sensor_simulator_v3.py --port 9001 --format continuous --loc-id "test_cont" || true
 
 # Test 4: No loc_id (IP fallback)
-timeout 10 python3 tcp_sensor_simulator.py --port 9001 --format no_loc || true
+timeout 10 python3 tcp_sensor_simulator_v3.py --port 9001 --format no_loc || true
 ```
 
 **All formats should work without errors!**
@@ -214,7 +214,7 @@ python3 main.py &
 APP_PID=$!
 
 # Terminal 2: Start simulator
-python3 tcp_sensor_simulator.py --port 9001 --interval 0.5 &
+python3 tcp_sensor_simulator_v3.py --port 9001 --interval 0.5 &
 
 # Terminal 3: Monitor resources
 python3 -c "

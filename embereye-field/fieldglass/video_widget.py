@@ -19,7 +19,7 @@ class VideoWidget(QWidget):
     minimize_requested = pyqtSignal()
     thermal_data_received = pyqtSignal(list)  # Signal for thermal matrix from background thread
 
-    def __init__(self, rtsp_url, name, loc_id, parent=None):
+    def __init__(self, rtsp_url, name, loc_id, parent=None, start_worker=True):
         super().__init__(parent)
         self.rtsp_url = rtsp_url
         self.name = name
@@ -59,6 +59,8 @@ class VideoWidget(QWidget):
         # Fusion data display
         self.fusion_data = None
         self.show_fusion_overlay = True
+        # Display mode: default (camera), thermal (heatmap), grid (numeric)
+        self.display_mode = "default"
 
         # Expand to fill grid cell
         self.setMinimumSize(160, 120)
@@ -77,15 +79,16 @@ class VideoWidget(QWidget):
         self.sensor_handler.data_received.connect(self.update_sensor_display)
 
         self.create_controls()
-        # Load persisted preference before wiring signals
-        try:
-            self.thermal_grid_view_enabled = self._load_grid_pref()
-        except Exception:
-            self.thermal_grid_view_enabled = False
+        # Default to camera view with fusion overlay
+        self.thermal_grid_view_enabled = False
         self.maximize_requested.connect(self.handle_maximize_state)
         self.minimize_requested.connect(self.handle_minimize_state)
         self.thermal_data_received.connect(self._handle_thermal_data)
-        self.init_worker()
+        if start_worker:
+            self.init_worker()
+        else:
+            self.worker = None
+            self.worker_thread = None
         self.top_left_controls.raise_()
         self.right_overlay_controls.raise_()
         self.bottom_right_status.raise_()
@@ -456,8 +459,8 @@ class VideoWidget(QWidget):
         except Exception as e:
             print(f"Thermal grid overlay error: {e}")
 
-    def _render_temperature_grid(self, matrix):
-        """Render a 32x24 grid with temperature text in each cell (numbers only) with adaptive scaling."""
+    def _build_temperature_grid_pixmap(self, matrix):
+        """Build a 32x24 grid pixmap with temperature values."""
         try:
             import numpy as np
             from PyQt5.QtGui import QPainter, QPixmap, QColor, QPen, QFont
@@ -469,17 +472,17 @@ class VideoWidget(QWidget):
                 if arr.size == self.thermal_grid_rows * self.thermal_grid_cols:
                     arr = arr.reshape((self.thermal_grid_rows, self.thermal_grid_cols))
                 else:
-                    return
+                    return None
 
             # Use CURRENT label size - ensure we get real-time dimensions
             w = max(1, self.video_label.width())
             h = max(1, self.video_label.height())
-            
+
             # If dimensions are invalid, use fallback
             if w < 50 or h < 50:
                 w = 640
                 h = 480
-            
+
             pix = QPixmap(w, h)
             pix.fill(QColor(0, 0, 0))
 
@@ -517,8 +520,6 @@ class VideoWidget(QWidget):
             grid_pen.setWidth(pen_width)
             painter.setPen(grid_pen)
 
-            vmax = float(arr.max()) if arr.size else 1.0
-
             # Font size based on cell dimensions
             if cell_min < 15:
                 base_font_size = max(6, int(cell_min * 0.35))
@@ -532,7 +533,6 @@ class VideoWidget(QWidget):
 
             # Decide text format based on cell size
             show_text = cell_min >= 8  # Hide if extremely small
-            precise = cell_min >= 26  # Show one decimal if large enough
 
             for r, c, x, y, rw, rh in _iter_cell_rects(self.thermal_grid_cols, self.thermal_grid_rows, w, h):
                 rect = QRect(x, y, rw, rh)
@@ -559,14 +559,52 @@ class VideoWidget(QWidget):
                 painter.drawText(rect, Qt.AlignCenter, txt)
 
             painter.end()
-            self.video_label.setPixmap(pix)
             # Cache pixmap for fast resize reuse
             try:
                 self._cached_grid_pixmap = pix
             except Exception:
                 pass
+            return pix
         except Exception as e:
             print(f"Thermal grid render error: {e}")
+        return None
+
+    def _render_temperature_grid(self, matrix):
+        """Render numeric thermal grid into the label."""
+        pix = self._build_temperature_grid_pixmap(matrix)
+        if pix is not None:
+            self.video_label.setPixmap(pix)
+
+    def _build_thermal_heatmap_pixmap(self, matrix):
+        """Build a thermal heatmap pixmap from the matrix."""
+        try:
+            import numpy as np
+            import cv2
+            from PyQt5.QtGui import QImage, QPixmap
+
+            arr = np.array(matrix, dtype=np.float32)
+            if arr.ndim != 2:
+                return None
+
+            min_val = float(np.min(arr))
+            max_val = float(np.max(arr))
+            if max_val <= min_val:
+                max_val = min_val + 1.0
+            norm = ((arr - min_val) / (max_val - min_val) * 255.0).astype(np.uint8)
+
+            color_bgr = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
+            color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
+
+            h, w = color_rgb.shape[:2]
+            q_img = QImage(color_rgb.data, w, h, w * 3, QImage.Format_RGB888).copy()
+            pix = QPixmap.fromImage(q_img)
+
+            label_w = max(1, self.video_label.width())
+            label_h = max(1, self.video_label.height())
+            return pix.scaled(label_w, label_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        except Exception as e:
+            print(f"Thermal heatmap render error: {e}")
+        return None
 
     def create_controls(self):
         """Create and position control widgets with theme-aware styling"""
@@ -609,13 +647,16 @@ class VideoWidget(QWidget):
         overlay_layout.setContentsMargins(2, 2, 2, 2)
         overlay_layout.setSpacing(2)
 
-        self.fusion_overlay_btn = self.create_control_button("◎", "Camera + fusion overlay")
-        self.fusion_overlay_btn.setCheckable(True)
-        self.grid_overlay_btn = self.create_control_button("⌗", "Thermal numeric grid view")
-        self.grid_overlay_btn.setCheckable(True)
+        self.default_view_btn = self.create_control_button("D", "Default (camera + fusion)")
+        self.default_view_btn.setCheckable(True)
+        self.thermal_view_btn = self.create_control_button("T", "Thermal + fusion")
+        self.thermal_view_btn.setCheckable(True)
+        self.grid_view_btn = self.create_control_button("#", "Thermal grid + fusion")
+        self.grid_view_btn.setCheckable(True)
 
-        overlay_layout.addWidget(self.fusion_overlay_btn)
-        overlay_layout.addWidget(self.grid_overlay_btn)
+        overlay_layout.addWidget(self.default_view_btn)
+        overlay_layout.addWidget(self.thermal_view_btn)
+        overlay_layout.addWidget(self.grid_view_btn)
 
         # Bottom-right status (fire alarm, temperature) - always visible but transparent
         self.bottom_right_status = QWidget(self)
@@ -761,12 +802,20 @@ class VideoWidget(QWidget):
         self._cached_grid_matrix_sig = None
         
         # Regenerate overlays with new dimensions
-        if getattr(self, 'thermal_grid_view_enabled', False) and self._last_thermal_matrix is not None:
+        if self.display_mode == "grid" and self._last_thermal_matrix is not None:
             try:
                 self._render_temperature_grid(self._last_thermal_matrix)
             except Exception:
                 pass
-        elif not getattr(self, 'thermal_grid_view_enabled', False):
+        elif self.display_mode == "thermal" and self._last_thermal_matrix is not None:
+            try:
+                pix = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
+                if pix:
+                    self.video_label.setPixmap(pix)
+                self._redraw_with_grid()
+            except Exception:
+                pass
+        else:
             # Redraw fusion overlay or hot cells with new size
             try:
                 self._redraw_with_grid()
@@ -789,7 +838,8 @@ class VideoWidget(QWidget):
 
     def _set_worker_timer_interval(self, interval_ms):
         """Slot to safely set the worker's timer interval from main thread"""
-        self.worker.timer.setInterval(interval_ms)
+        if self.worker and hasattr(self.worker, 'timer') and self.worker.timer:
+            self.worker.timer.setInterval(interval_ms)
 
     def init_worker(self):
         """Initialize video streaming components"""
@@ -819,8 +869,9 @@ class VideoWidget(QWidget):
         self.reload_btn.clicked.connect(self.reload_stream)
         self.maximize_btn.clicked.connect(self.toggle_maximize)
         self.minimize_btn.clicked.connect(self.toggle_minimize)
-        self.fusion_overlay_btn.clicked.connect(self._activate_fusion_overlay)
-        self.grid_overlay_btn.clicked.connect(self._activate_grid_overlay)
+        self.default_view_btn.clicked.connect(self._activate_default_view)
+        self.thermal_view_btn.clicked.connect(self._activate_thermal_view)
+        self.grid_view_btn.clicked.connect(self._activate_grid_view)
 
         # Start thread
         self.worker_thread.started.connect(self.worker.start_stream)
@@ -845,7 +896,7 @@ class VideoWidget(QWidget):
             mw = self.window()
             if hasattr(mw, 'handle_incident_frame_from_widget'):
                 debug_print(f"[VIDEO_WIDGET] Calling handle_incident_frame_from_widget")
-                mw.handle_incident_frame_from_widget(self.loc_id, qimage, float(score), detections or [])
+                mw.handle_incident_frame_from_widget(self.loc_id, qimage, float(score), float(yolo_score), detections or [])
             elif hasattr(mw, 'handle_anomaly_frame_from_widget'):
                 print(f"[VIDEO_WIDGET] Fallback to handle_anomaly_frame_from_widget", flush=True)
                 mw.handle_anomaly_frame_from_widget(self.loc_id, qimage, float(score))
@@ -881,16 +932,26 @@ class VideoWidget(QWidget):
                 Qt.SmoothTransformation
             )
             
-            # Apply thermal grid view overlay (full grid with temperature values)
-            if self.thermal_grid_view_enabled and self._last_thermal_matrix is not None:
-                self._overlay_thermal_grid_on_frame(scaled_video)
-            # Apply hot cells and fusion overlay ONLY when grid view is OFF
-            elif not self.thermal_grid_view_enabled and ((self.thermal_grid_enabled and self.hot_cells_history) or (self.show_fusion_overlay and self.fusion_data)):
-                # Set base video frame first
+            # Render based on selected display mode
+            if self.display_mode == "grid" and self._last_thermal_matrix is not None:
+                grid_pixmap = self._build_temperature_grid_pixmap(self._last_thermal_matrix)
+                if grid_pixmap:
+                    self.video_label.setPixmap(grid_pixmap)
+                    self._redraw_with_grid()
+                else:
+                    self.video_label.setPixmap(scaled_video)
+            elif self.display_mode == "thermal" and self._last_thermal_matrix is not None:
+                thermal_pixmap = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
+                if thermal_pixmap:
+                    self.video_label.setPixmap(thermal_pixmap)
+                    self._redraw_with_grid()
+                else:
+                    self.video_label.setPixmap(scaled_video)
+            elif (self.thermal_grid_enabled and self.hot_cells_history) or (self.show_fusion_overlay and self.fusion_data):
+                # Default camera view with fusion overlay
                 self.video_label.setPixmap(scaled_video)
                 self._redraw_with_grid()
             else:
-                # Just set the video frame
                 self.video_label.setPixmap(scaled_video)
             
             # Analyze frame luminance to adjust control colors for contrast
@@ -1192,7 +1253,7 @@ class VideoWidget(QWidget):
     def toggle_minimize(self):
         """Safe minimize implementation"""
         try:
-            if self.isMinimized() or not self.worker_thread.isRunning():
+            if self.isMinimized() or not self.worker_thread or not self.worker_thread.isRunning():
                 return
 
             # Use queued connection
@@ -1221,53 +1282,58 @@ class VideoWidget(QWidget):
         self.init_worker()
 
     def toggle_thermal_grid_view(self, enabled):
-        """Toggle thermal grid view overlay for this stream."""
-        self.thermal_grid_view_enabled = bool(enabled)
-        try:
-            self._save_grid_pref(self.thermal_grid_view_enabled)
-        except Exception:
-            pass
-        # Clear cache when toggling off
-        if not enabled:
-            self._cached_thermal_overlay = None
-            self._last_overlay_matrix_hash = None
-        # Force frame redraw to apply or remove grid overlay
-        # The next frame update will handle the overlay automatically
+        """Backward-compatible toggle for numeric grid mode."""
+        if enabled:
+            self.set_display_mode("grid")
+        else:
+            self.set_display_mode("default")
+
+    def set_display_mode(self, mode):
+        """Set display mode: default, thermal, or grid."""
+        mode = (mode or "default").strip().lower()
+        if mode not in ("default", "thermal", "grid"):
+            mode = "default"
+        self.display_mode = mode
+        self.thermal_grid_view_enabled = (mode == "grid")
+        self.show_fusion_overlay = True
+        self._cached_thermal_overlay = None
+        self._last_overlay_matrix_hash = None
         try:
             self._sync_overlay_buttons_from_state()
         except Exception:
             pass
 
     def _sync_overlay_buttons_from_state(self, initial=False):
-        """Keep overlay buttons in sync with current grid/overlay mode."""
-        if not hasattr(self, 'fusion_overlay_btn') or not hasattr(self, 'grid_overlay_btn'):
+        """Keep overlay buttons in sync with current display mode."""
+        if not hasattr(self, 'default_view_btn') or not hasattr(self, 'thermal_view_btn') or not hasattr(self, 'grid_view_btn'):
             return
-        fusion_checked = not self.thermal_grid_view_enabled
-        grid_checked = self.thermal_grid_view_enabled
-        for btn, state in ((self.fusion_overlay_btn, fusion_checked), (self.grid_overlay_btn, grid_checked)):
+        for mode, btn in (
+            ("default", self.default_view_btn),
+            ("thermal", self.thermal_view_btn),
+            ("grid", self.grid_view_btn),
+        ):
             btn.blockSignals(True)
-            btn.setChecked(state)
+            btn.setChecked(mode == self.display_mode)
             btn.blockSignals(False)
-        if initial and fusion_checked:
-            # Ensure fusion overlay remains visible when grid is off
+        if initial:
             self.show_fusion_overlay = True
 
-    def _activate_fusion_overlay(self):
-        """Select camera + fusion overlay (turn off numeric grid)."""
-        self.thermal_grid_view_enabled = False
-        self._sync_overlay_buttons_from_state()
-        self.toggle_thermal_grid_view(False)
+    def _activate_default_view(self):
+        """Select default camera view with fusion overlay."""
+        self.set_display_mode("default")
 
-    def _activate_grid_overlay(self):
-        """Select thermal numeric grid view (turn off fusion overlay)."""
-        self.thermal_grid_view_enabled = True
-        self._sync_overlay_buttons_from_state()
-        self.toggle_thermal_grid_view(True)
+    def _activate_thermal_view(self):
+        """Select thermal heatmap view with fusion overlay."""
+        self.set_display_mode("thermal")
+
+    def _activate_grid_view(self):
+        """Select thermal numeric grid view with fusion overlay."""
+        self.set_display_mode("grid")
 
     def stop(self):
         """Safe thread cleanup"""
         try:
-            if self.worker_thread.isRunning():
+            if self.worker_thread and self.worker_thread.isRunning():
                 # Request the worker to stop safely using signal
                 try:
                     self.worker.stop_timer_requested.emit()
@@ -1301,7 +1367,7 @@ class VideoWidget(QWidget):
         """Safe cleanup with thread management"""
         try:
             # Stop worker first
-            if self.worker_thread.isRunning():
+            if self.worker_thread and self.worker_thread.isRunning():
                 # Use signal-based stop for thread safety
                 try:
                     self.worker.stop_timer_requested.emit()
@@ -1404,7 +1470,7 @@ class VideoWidget(QWidget):
                 hover_color = "rgba(100, 220, 255, 0.9)"  # Brighter cyan
             
             # Update all control button styles
-            for btn in [self.minimize_btn, self.maximize_btn, self.thermal_view_btn, self.reload_btn]:
+            for btn in [self.minimize_btn, self.maximize_btn, self.default_view_btn, self.thermal_view_btn, self.grid_view_btn, self.reload_btn]:
                 if btn:
                     btn.setStyleSheet(f"""
                         QPushButton {{

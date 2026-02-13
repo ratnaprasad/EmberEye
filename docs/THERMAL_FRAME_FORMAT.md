@@ -48,12 +48,12 @@ temp_grid = result['grid']  # Values in Celsius
 eeprom = result['eeprom']  # 264 char hex string
 ```
 
-### 2. `tcp_sensor_simulator.py`
+### 2. `tcp_sensor_simulator_v3.py`
 Updated simulator generates frames in correct format with realistic thermal data.
 
 **Start Simulator:**
 ```bash
-python tcp_sensor_simulator.py --port 4888 --loc-id cam01 --interval 0.5
+python tcp_sensor_simulator_v3.py --port 4888 --loc-id cam01 --interval 0.5
 ```
 
 **Output:**
@@ -155,7 +155,7 @@ This parses a real thermal frame and shows:
 python main.py
 
 # Terminal 2: Start simulator (generates realistic temps 24-28°C + fire hotspots 45-85°C)
-python tcp_sensor_simulator.py --port 4888 --loc-id cam01 --interval 0.5
+python tcp_sensor_simulator_v3.py --port 4888 --loc-id cam01 --interval 0.5
 ```
 
 ### Verify Output:
@@ -251,7 +251,7 @@ Beyond the stub, future versions may parse:
 
 ## Files Modified
 - ✅ `thermal_frame_parser.py` - Frame parsing + EEPROM stub auto-calibration
-- ✅ `tcp_sensor_simulator.py` - Updated: 834-word frame generation
+- ✅ `tcp_sensor_simulator_v3.py` - Updated: 834-word frame generation
 - ✅ `tcp_sensor_server.py` - Updated: Parse 3336-char frames
 - ✅ `stream_config.json` - `enable_grafana: false`
 - ✅ `EmberEye.spec` - Exclude WebEngine modules

@@ -126,14 +126,14 @@ Device status persisted in: `device_status.db`
 ## Testing the System
 
 ### Simulate Device Failure
-1. Stop the simulator: `pkill -f tcp_sensor_simulator_v2.py`
+1. Stop the simulator: `pkill -f tcp_sensor_simulator_v3.py`
 2. Watch Failed Devices tab - device appears after 30 seconds
 3. Auto-reconnect attempts start automatically
 
 ### Test Auto-Recovery
 1. Stop simulator (as above)
 2. Wait for device to appear in Failed Devices tab
-3. Restart simulator: `python tcp_sensor_simulator_v2.py --ip 127.0.0.1 --port 9001 --loc_id cam01`
+3. Restart simulator: `python tcp_sensor_simulator_v3.py --host 127.0.0.1 --port 9001 --loc-id cam01`
 4. Device should automatically reconnect within 10 seconds
 5. Device disappears from Failed Devices tab (back online)
 

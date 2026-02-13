@@ -92,7 +92,7 @@ TCP Sensor Data → Sensor Fusion → Hot Cells Detection → Video Widget Overl
 ### 4. Testing with Simulator
 ```bash
 # Start TCP sensor simulator with hot spots
-python tcp_sensor_simulator.py --host 127.0.0.1 --port 9000 --loc-id "default room"
+python tcp_sensor_simulator_v3.py --host 127.0.0.1 --port 9000 --loc-id "default room"
 ```
 - Simulator generates 2-4 random hot spots per frame (200-255 units = 50-70°C)
 - Hot cells highlighted in red with yellow borders on video feed

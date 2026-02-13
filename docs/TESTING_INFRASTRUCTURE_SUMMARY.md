@@ -12,7 +12,7 @@ All testing components are **production-ready** and support the latest features 
 
 ## 📦 Available Components
 
-### 1. **TCP Sensor Simulator** (`tcp_sensor_simulator.py`)
+### 1. **TCP Sensor Simulator** (`tcp_sensor_simulator_v3.py`)
 **Purpose**: Simulates thermal camera and gas sensor hardware sending data over TCP
 
 **Features**:
@@ -30,17 +30,17 @@ All testing components are **production-ready** and support the latest features 
 **Usage**:
 ```bash
 # Basic usage (default room, 2-second interval)
-python3 tcp_sensor_simulator.py --port 9001
+python3 tcp_sensor_simulator_v3.py --port 9001
 
 # Multiple simulators with different locations
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_1" --interval 1.0
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_2" --interval 1.5
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_1" --interval 1.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_2" --interval 1.5
 
 # Test embedded format
-python3 tcp_sensor_simulator.py --port 9001 --format embedded
+python3 tcp_sensor_simulator_v3.py --port 9001 --format embedded
 
 # Test continuous hex format
-python3 tcp_sensor_simulator.py --port 9001 --format continuous
+python3 tcp_sensor_simulator_v3.py --port 9001 --format continuous
 ```
 
 **Thermal Frame Generation**:
@@ -309,7 +309,7 @@ python3 test_auth_user_management.py
 All simulators and tests have been **updated** to support the latest thermal grid view enhancements:
 
 ### ✅ Simulator Support
-- `tcp_sensor_simulator.py` generates 32×24 thermal frames compatible with:
+- `tcp_sensor_simulator_v3.py` generates 32×24 thermal frames compatible with:
   - Numeric grid rendering (temperatures displayed as text)
   - Adaptive font scaling (6-32px range)
   - QSettings persistence
@@ -343,7 +343,7 @@ python3 main.py
 ### Step 2: Run Simulator
 ```bash
 # Terminal 2: Start thermal sensor simulator
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "Test Room" --interval 1.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "Test Room" --interval 1.0
 ```
 
 ### Step 3: Verify in UI
@@ -397,13 +397,13 @@ python3 test_auth_user_management.py
 ### Scenario 1: Multi-Room Deployment Simulation
 ```bash
 # Terminal 1: Room 1 (fast updates)
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_1" --interval 0.5
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_1" --interval 0.5
 
 # Terminal 2: Room 2 (normal updates)
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_2" --interval 2.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_2" --interval 2.0
 
 # Terminal 3: Room 3 (slow updates)
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_3" --interval 5.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "room_3" --interval 5.0
 ```
 
 ### Scenario 2: Packet Format Compatibility Test
@@ -411,7 +411,7 @@ python3 tcp_sensor_simulator.py --port 9001 --loc-id "room_3" --interval 5.0
 # Test all packet formats sequentially
 for format in separate embedded continuous no_loc; do
     echo "Testing format: $format"
-    timeout 10 python3 tcp_sensor_simulator.py --port 9001 --format $format --loc-id "test_$format"
+   timeout 10 python3 tcp_sensor_simulator_v3.py --port 9001 --format $format --loc-id "test_$format"
     sleep 2
 done
 ```
@@ -419,7 +419,7 @@ done
 ### Scenario 3: High-Frequency Thermal Updates
 ```bash
 # Simulate 15 FPS thermal camera (realistic for MLX90640)
-python3 tcp_sensor_simulator.py --port 9001 --interval 0.067 --loc-id "high_fps_cam"
+python3 tcp_sensor_simulator_v3.py --port 9001 --interval 0.067 --loc-id "high_fps_cam"
 
 # Monitor performance
 python3 -c "
@@ -435,12 +435,12 @@ while True:
 ### Scenario 4: Failure Recovery Test
 ```bash
 # Start simulator, kill it, restart (tests reconnection logic)
-python3 tcp_sensor_simulator.py --port 9001 &
+python3 tcp_sensor_simulator_v3.py --port 9001 &
 PID=$!
 sleep 10
 kill $PID
 sleep 5
-python3 tcp_sensor_simulator.py --port 9001
+python3 tcp_sensor_simulator_v3.py --port 9001
 ```
 
 ---
@@ -515,7 +515,7 @@ jobs:
 
 2. **Integration**: Test with simulator before hardware
    ```bash
-   python3 tcp_sensor_simulator.py --port 9001
+   python3 tcp_sensor_simulator_v3.py --port 9001
    ```
 
 3. **Performance**: Run load tests before deployment

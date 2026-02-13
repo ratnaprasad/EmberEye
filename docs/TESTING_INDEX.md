@@ -72,13 +72,13 @@ This directory contains comprehensive testing infrastructure for EmberEye. All c
 ## 🛠️ Testing Tools Available
 
 ### Simulators
-- **`tcp_sensor_simulator.py`** - Thermal camera & gas sensor simulator
+- **`tcp_sensor_simulator_v3.py`** - Thermal camera & gas sensor simulator
   - Generates 32×24 thermal frames with hot spots
   - Emulates ADC sensor readings
   - Supports multiple packet formats
   - Auto-reconnect on disconnect
 
-- **`tcp_simulator.py`** - Legacy TCP simulator (deprecated, use tcp_sensor_simulator.py)
+- **`tcp_simulator.py`** - Deprecated shim (forwards to tcp_sensor_simulator_v3.py)
 
 ### Load Testing
 - **`tcp_sensor_load_test.py`** - TCP server stress testing
@@ -126,7 +126,7 @@ This directory contains comprehensive testing infrastructure for EmberEye. All c
 
 ### Run Simulator
 ```bash
-python3 tcp_sensor_simulator.py --port 9001 --loc-id "Test Room" --interval 2.0
+python3 tcp_sensor_simulator_v3.py --port 9001 --loc-id "Test Room" --interval 2.0
 ```
 
 ### Run Load Test
@@ -190,7 +190,7 @@ for t in tests:
 
 ### New to Testing?
 1. Read **TESTING_QUICK_START.md** (5 minutes)
-2. Run the simulator: `python3 tcp_sensor_simulator.py --port 9001`
+2. Run the simulator: `python3 tcp_sensor_simulator_v3.py --port 9001`
 3. Run a simple test: `python3 test_embereye_suite_fixed.py`
 4. Check the results and logs
 
@@ -266,7 +266,7 @@ test_auth_user_management.py        - Auth/security tests (33+)
 
 ### Testing Tools
 ```
-tcp_sensor_simulator.py             - Thermal sensor simulator
+tcp_sensor_simulator_v3.py          - Thermal sensor simulator
 tcp_sensor_load_test.py             - TCP load tester
 camera_stream_load_test.py          - Camera load tester
 ```

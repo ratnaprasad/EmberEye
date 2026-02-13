@@ -110,7 +110,7 @@ python build_installer.py
 
 4. **Run Simulator** (For testing)
    ```bash
-   python tcp_sensor_simulator.py --host 127.0.0.1 --port 9001 --loc-id "default room"
+   python tcp_sensor_simulator_v3.py --host 127.0.0.1 --port 9001 --loc-id "default room"
    ```
 
 5. **Observe**

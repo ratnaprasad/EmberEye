@@ -5,7 +5,7 @@
 ## Test Coverage
 
 ### 1. TCP Simulator Updates ✅
-**Updated:** `tcp_sensor_simulator.py`
+**Updated:** `tcp_sensor_simulator_v3.py`
 
 Added support for 4 packet format variations:
 - **Separate format** (default): `#frame:loc_id:data!`
@@ -15,10 +15,10 @@ Added support for 4 packet format variations:
 
 **Usage:**
 ```bash
-python tcp_sensor_simulator.py --format separate --loc-id "room1"
-python tcp_sensor_simulator.py --format embedded --loc-id "123"
-python tcp_sensor_simulator.py --format continuous --loc-id "lab"
-python tcp_sensor_simulator.py --format no_loc
+python tcp_sensor_simulator_v3.py --format separate --loc-id "room1"
+python tcp_sensor_simulator_v3.py --format embedded --loc-id "123"
+python tcp_sensor_simulator_v3.py --format continuous --loc-id "lab"
+python tcp_sensor_simulator_v3.py --format no_loc
 ```
 
 ### 2. Smoke Tests ✅
@@ -105,7 +105,7 @@ Failed: 5/24 (API signature mismatches - non-critical)
 2. IP fallback requires resolver context from previous #locid packet
 
 ## Files Modified
-- `tcp_sensor_simulator.py` - Added 4 format support
+- `tcp_sensor_simulator_v3.py` - Added 4 format support
 - `requirements.txt` - Fixed pip format
 - `test_embereye_suite_fixed.py` - Comprehensive test suite
 - `EmberEye-windows-bundle.zip` - Ready for Windows deployment
