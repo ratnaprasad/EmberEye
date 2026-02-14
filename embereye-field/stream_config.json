@@ -20,5 +20,5 @@
         "description": "signed=true: interpret as two's complement. Raw values in centi-degrees. Offset is 0 because 27\u00b0C is built into the formula."
     },
     "thermal_use_eeprom": true,
-    "tcp_mode": "async"
+    "tcp_mode": "threaded"
 }

@@ -558,6 +558,7 @@ class BEMainWindow(QMainWindow):
                 else:
                     from tcp_sensor_server import TCPSensorServer
                     self.tcp_server = TCPSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
+                    self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
                     if self.tcp_server:
                         self.tcp_server.start()
                 self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} ({tcp_mode})")
@@ -582,6 +583,8 @@ class BEMainWindow(QMainWindow):
     def _emit_tcp_packet(self, packet):
         """Thread-safe wrapper to emit TCP packet signal."""
         try:
+            pkt_type = packet.get('type') if isinstance(packet, dict) else 'unknown'
+            print(f"📡 TCP PACKET RECEIVED: type={pkt_type}, keys={list(packet.keys()) if isinstance(packet, dict) else 'N/A'}")
             self.tcp_packet_signal.emit(packet)
         except Exception as e:
             print(f"TCP packet signal emit error: {e}")
@@ -629,10 +632,12 @@ class BEMainWindow(QMainWindow):
                 fusion_args['thermal_matrix'] = packet['matrix']
                 # Route to specific widget by loc_id, or broadcast to all
                 target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
+                print(f"🔥 THERMAL FRAME: loc_id={loc_id}, widgets_available={len(self.video_widgets)}, target_widgets={len(target_widgets)}, matrix_shape={np.array(packet['matrix']).shape if packet['matrix'] else None}")
                 for widget in target_widgets:
                     if widget and hasattr(widget, 'set_thermal_overlay'):
                         try:
                             widget.set_thermal_overlay(packet['matrix'])
+                            print(f"  ✅ Thermal overlay set on widget")
                         except Exception as e:
                             print(f"Overlay error: {e}")
             elif packet.get('type') == 'sensor':
@@ -695,10 +700,12 @@ class BEMainWindow(QMainWindow):
                             except Exception as e:
                                 print(f"Alarm update error: {e}")
                         
-                        # Update thermal grid overlay with hot cells
+                # Update thermal grid overlay with hot cells
                         if hasattr(widget, 'set_hot_cells') and 'hot_cells' in fusion_result:
                             try:
-                                widget.set_hot_cells(fusion_result['hot_cells'])
+                                hot_cells = fusion_result['hot_cells']
+                                widget.set_hot_cells(hot_cells)
+                                print(f"  🔥 Hot cells set: {len(hot_cells)} cells detected, alarm={fusion_result.get('alarm')}, reason={fusion_result.get('alarm_reason')}")
                             except Exception as e:
                                 print(f"Hot cells update error: {e}")
                         
@@ -3511,6 +3518,46 @@ class BEMainWindow(QMainWindow):
                 return False
         else:
             log_error_packet(loc, f"PFDS_CMD_FAIL {command} to {ip} ({name}) | TCP server not available")
+            return False
+
+    def dispatch_emberhawk_command(self, cmd: dict) -> bool:
+        """Dispatch EmberHawk device commands via PFDS command interface.
+        Called by EmberHawk manager to send PERIOD_ON, PERIOD_OFF, EEPROM1, REQUEST1, etc.
+        
+        Args:
+            cmd: Command dict with keys: command, ip, name, location_id, device_id, etc.
+        
+        Returns:
+            bool: True if command was sent successfully
+        """
+        try:
+            command = cmd.get('command')
+            ip = cmd.get('ip') or cmd.get('IP')  # Support both cases
+            
+            if not command or not ip:
+                print(f"❌ dispatch_emberhawk_command: missing command={command} or IP={ip}")
+                return False
+            
+            # Map EmberHawk commands to PFDS format
+            # PFDS expects raw command strings like "PERIOD_ON", "EEPROM1", "REQUEST1", "PERIOD_OFF"
+            if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
+                print(f"🔲 [dispatch_emberhawk_command] Sending '{command}' to IP={ip} via tcp_sensor_server")
+                success = self.tcp_sensor_server.send_command_to_client(ip, command)
+                
+                if success:
+                    print(f"✅ dispatch_emberhawk_command: '{command}' sent to {ip}")
+                    return True
+                else:
+                    print(f"⚠️  dispatch_emberhawk_command: '{command}' failed for {ip} (no active connection)")
+                    return False
+            else:
+                print(f"❌ dispatch_emberhawk_command: TCP server unavailable, cannot send '{command}'")
+                return False
+                
+        except Exception as e:
+            print(f"❌ dispatch_emberhawk_command exception: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def toggle_all_numeric_grids(self, enabled):

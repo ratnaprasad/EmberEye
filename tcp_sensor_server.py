@@ -289,7 +289,13 @@ class TCPSensorServer:
                         if len(frame_data_clean) == ThermalFrameParser.FRAME_TOTAL_SIZE:
                             # Parse using thermal frame parser
                             parsed = ThermalFrameParser.parse_frame(frame_data_clean)
+                        elif len(frame_data_clean) == ThermalFrameParser.GRID_DATA_SIZE:
+                            # Some devices/logs send grid-only frames (no EEPROM segment).
+                            # Pad with zero EEPROM data to satisfy parser expectations.
+                            padded = frame_data_clean + ("0" * ThermalFrameParser.FRAME_EEPROM_DATA_SIZE)
+                            parsed = ThermalFrameParser.parse_frame(padded)
                             
+                        if 'parsed' in locals():
                             # Convert numpy grid to list for JSON serialization
                             matrix = parsed['grid'].tolist()
                             
@@ -304,11 +310,11 @@ class TCPSensorServer:
                             if client_ip:
                                 result['client_ip'] = client_ip
                         else:
-                            print(f"Frame parse error: expected {ThermalFrameParser.FRAME_TOTAL_SIZE} chars, got {len(frame_data_clean)}")
+                            print(f"Frame parse error: expected {ThermalFrameParser.FRAME_TOTAL_SIZE} or {ThermalFrameParser.GRID_DATA_SIZE} chars, got {len(frame_data_clean)}")
                             try:
                                 from tcp_logger import log_error_packet
                                 log_error_packet(
-                                    reason=f"frame length {len(frame_data_clean)} (expected {ThermalFrameParser.FRAME_TOTAL_SIZE})",
+                                    reason=f"frame length {len(frame_data_clean)} (expected {ThermalFrameParser.FRAME_TOTAL_SIZE} or {ThermalFrameParser.GRID_DATA_SIZE})",
                                     loc_id=loc_id or client_ip,
                                     raw=line[:100]+"..."
                                 )
@@ -417,7 +423,14 @@ class TCPSensorServer:
         if result:
             # Do not print parsed packet to console in production; handled via debug logs
             if self.packet_callback:
-                self.packet_callback(result)
+                pkt_type = result.get('type', 'unknown')
+                print(f"📡 TCP CALLBACK: type={pkt_type}, loc_id={result.get('loc_id')}, keys={list(result.keys())}")
+                try:
+                    self.packet_callback(result)
+                    print(f"✅ Callback executed for {pkt_type} packet")
+                except Exception as e:
+                    print(f"❌ Callback error: {e}")
+
 
 
 if __name__ == "__main__":

@@ -91,7 +91,19 @@ class PFDSSimulator:
 
     def _normalize_packet(self, packet: str) -> str:
         if packet.startswith("#frame"):
-            return re.sub(r"^#frame[^:]*:", f"#frame{self.loc_id}:", packet)
+            # Normalize frame payload by keeping only hex chars and trimming to valid sizes.
+            match = re.search(r"^#frame[^:]*:(.*)", packet, re.DOTALL)
+            payload = match.group(1) if match else ""
+            payload = payload.strip().rstrip("!")
+            payload = re.sub(r"[^0-9A-Fa-f]", "", payload)
+            if len(payload) >= 3336:
+                payload = payload[:3336]
+            elif len(payload) >= 3072:
+                payload = payload[:3072]
+            else:
+                # Pad short payloads to grid-only size for parser compatibility.
+                payload = payload.ljust(3072, "0")
+            return f"#frame{self.loc_id}:{payload}!"
         if packet.startswith("#Sensor"):
             return re.sub(r"^#Sensor[^:]*:", f"#Sensor{self.loc_id}:", packet)
         if packet.startswith("#EEPROM"):
@@ -104,12 +116,13 @@ class PFDSSimulator:
             return False
 
         self._log(f"Loading data from {self.data_file}...")
-        pattern = re.compile(r"\[(\d{2}:\d{2}:\d{2}\.\d{3})\](OUT|IN).*?([#¡].*?)(?=\[|$)", re.DOTALL)
+        pattern = re.compile(r"\[(\d{2}:\d{2}:\d{2}\.\d{3})\](OUT|IN).*?(#.*?)(?=\[|$)", re.DOTALL)
         base_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         records: List[DataRecord] = []
         try:
-            content = self.data_file.read_text(encoding="utf-8", errors="ignore")
+            # Use latin-1 to preserve raw bytes; utf-8 with ignore can truncate frame payloads.
+            content = self.data_file.read_text(encoding="latin-1")
             for match in pattern.finditer(content):
                 time_str = match.group(1)
                 direction = match.group(2)
@@ -204,6 +217,9 @@ class PFDSSimulator:
         try:
             if not self.sock:
                 return
+            if packet.startswith("#frame"):
+                payload = re.sub(r"^#frame[^:]*:", "", packet).rstrip("!")
+                logger.info(f"Sent frame packet (payload_len={len(payload)})")
             self.sock.sendall((packet + "\n").encode("utf-8"))
             logger.debug(f"Sent: {packet[:60]}...")
         except Exception as e:
@@ -268,13 +284,13 @@ class PFDSSimulator:
 
                 if command == "EEPROM1":
                     self.send_eeprom()
-                elif command == "PERIOD_ON":
+                elif command in ("PERIOD_ON", "PERIODIC_ON"):
                     if not self.streaming:
                         self.streaming = True
                         self.stop_event.clear()
                         self.streaming_thread = threading.Thread(target=self._stream_loop, daemon=True)
                         self.streaming_thread.start()
-                elif command == "PERIOD_OFF":
+                elif command in ("PERIOD_OFF", "PERIODIC_OFF"):
                     self.streaming = False
                     self.stop_event.set()
                 elif command == "REQUEST1":

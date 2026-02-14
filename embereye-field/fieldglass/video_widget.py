@@ -472,6 +472,7 @@ class VideoWidget(QWidget):
                 if arr.size == self.thermal_grid_rows * self.thermal_grid_cols:
                     arr = arr.reshape((self.thermal_grid_rows, self.thermal_grid_cols))
                 else:
+                    print(f"[GRID] Matrix shape mismatch: got {arr.shape}, expected {self.thermal_grid_rows}x{self.thermal_grid_cols}")
                     return None
 
             # Use CURRENT label size - ensure we get real-time dimensions
@@ -480,6 +481,7 @@ class VideoWidget(QWidget):
 
             # If dimensions are invalid, use fallback
             if w < 50 or h < 50:
+                print(f"[GRID] Label size too small ({w}x{h}), using fallback 640x480")
                 w = 640
                 h = 480
 
@@ -1298,6 +1300,18 @@ class VideoWidget(QWidget):
         self.show_fusion_overlay = True
         self._cached_thermal_overlay = None
         self._last_overlay_matrix_hash = None
+        # Render immediately when switching modes to avoid waiting on next frame.
+        try:
+            if self._last_thermal_matrix is not None:
+                if mode == "grid":
+                    self._render_temperature_grid(self._last_thermal_matrix)
+                elif mode == "thermal":
+                    pix = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
+                    if pix:
+                        self.video_label.setPixmap(pix)
+                    self._redraw_with_grid()
+        except Exception as e:
+            print(f"Display mode render error: {e}")
         try:
             self._sync_overlay_buttons_from_state()
         except Exception:
