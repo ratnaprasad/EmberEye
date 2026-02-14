@@ -59,7 +59,7 @@ class VideoWidget(QWidget):
         # Fusion data display
         self.fusion_data = None
         self.show_fusion_overlay = True
-        # Display mode: default (camera), thermal (heatmap), grid (numeric)
+        # Display mode: default (camera), thermal (heatmap), thermal_screen (enhanced), grid (numeric)
         self.display_mode = "default"
 
         # Expand to fill grid cell
@@ -608,6 +608,39 @@ class VideoWidget(QWidget):
             print(f"Thermal heatmap render error: {e}")
         return None
 
+    def _build_thermal_screen_pixmap(self, matrix):
+        """Build an enhanced thermal screen pixmap from the matrix."""
+        try:
+            import numpy as np
+            import cv2
+            from PyQt5.QtGui import QImage, QPixmap
+
+            arr = np.array(matrix, dtype=np.float32)
+            if arr.ndim != 2:
+                return None
+
+            min_val = float(np.min(arr))
+            max_val = float(np.max(arr))
+            if max_val <= min_val:
+                max_val = min_val + 1.0
+
+            norm = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX)
+            norm = norm.astype(np.uint8)
+            norm = cv2.equalizeHist(norm)
+            color_bgr = cv2.applyColorMap(norm, cv2.COLORMAP_INFERNO)
+            color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
+
+            h, w = color_rgb.shape[:2]
+            q_img = QImage(color_rgb.data, w, h, w * 3, QImage.Format_RGB888).copy()
+            pix = QPixmap.fromImage(q_img)
+
+            label_w = max(1, self.video_label.width())
+            label_h = max(1, self.video_label.height())
+            return pix.scaled(label_w, label_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        except Exception as e:
+            print(f"Thermal screen render error: {e}")
+        return None
+
     def create_controls(self):
         """Create and position control widgets with theme-aware styling"""
         from PyQt5.QtWidgets import QApplication
@@ -651,12 +684,15 @@ class VideoWidget(QWidget):
 
         self.default_view_btn = self.create_control_button("D", "Default (camera + fusion)")
         self.default_view_btn.setCheckable(True)
+        self.thermal_screen_btn = self.create_control_button("S", "Thermal screen + fusion")
+        self.thermal_screen_btn.setCheckable(True)
         self.thermal_view_btn = self.create_control_button("T", "Thermal + fusion")
         self.thermal_view_btn.setCheckable(True)
         self.grid_view_btn = self.create_control_button("#", "Thermal grid + fusion")
         self.grid_view_btn.setCheckable(True)
 
         overlay_layout.addWidget(self.default_view_btn)
+        overlay_layout.addWidget(self.thermal_screen_btn)
         overlay_layout.addWidget(self.thermal_view_btn)
         overlay_layout.addWidget(self.grid_view_btn)
 
@@ -772,9 +808,29 @@ class VideoWidget(QWidget):
         self.top_left_controls.move(tl_x, margin)
 
         # Right overlay controls stacked below the top controls
-        self.right_overlay_controls.adjustSize()
-        ro_x = self.width() - self.right_overlay_controls.width() - margin
         ro_y = margin + self.top_left_controls.height() + 6
+        available_h = max(1, self.height() - ro_y - margin)
+
+        def _resize_overlay_buttons(size, spacing):
+            self.right_overlay_controls.layout().setSpacing(spacing)
+            for btn in [
+                self.default_view_btn,
+                self.thermal_screen_btn,
+                self.thermal_view_btn,
+                self.grid_view_btn,
+            ]:
+                if btn:
+                    btn.setFixedSize(size, size)
+
+        self.right_overlay_controls.adjustSize()
+        if self.right_overlay_controls.height() > available_h:
+            _resize_overlay_buttons(22, 1)
+            self.right_overlay_controls.adjustSize()
+        if self.right_overlay_controls.height() > available_h:
+            _resize_overlay_buttons(20, 0)
+            self.right_overlay_controls.adjustSize()
+
+        ro_x = self.width() - self.right_overlay_controls.width() - margin
         self.right_overlay_controls.move(ro_x, ro_y)
 
         # Bottom-right status
@@ -872,6 +928,7 @@ class VideoWidget(QWidget):
         self.maximize_btn.clicked.connect(self.toggle_maximize)
         self.minimize_btn.clicked.connect(self.toggle_minimize)
         self.default_view_btn.clicked.connect(self._activate_default_view)
+        self.thermal_screen_btn.clicked.connect(self._activate_thermal_screen_view)
         self.thermal_view_btn.clicked.connect(self._activate_thermal_view)
         self.grid_view_btn.clicked.connect(self._activate_grid_view)
 
@@ -939,6 +996,13 @@ class VideoWidget(QWidget):
                 grid_pixmap = self._build_temperature_grid_pixmap(self._last_thermal_matrix)
                 if grid_pixmap:
                     self.video_label.setPixmap(grid_pixmap)
+                    self._redraw_with_grid()
+                else:
+                    self.video_label.setPixmap(scaled_video)
+            elif self.display_mode == "thermal_screen" and self._last_thermal_matrix is not None:
+                screen_pixmap = self._build_thermal_screen_pixmap(self._last_thermal_matrix)
+                if screen_pixmap:
+                    self.video_label.setPixmap(screen_pixmap)
                     self._redraw_with_grid()
                 else:
                     self.video_label.setPixmap(scaled_video)
@@ -1291,9 +1355,9 @@ class VideoWidget(QWidget):
             self.set_display_mode("default")
 
     def set_display_mode(self, mode):
-        """Set display mode: default, thermal, or grid."""
+        """Set display mode: default, thermal, thermal_screen, or grid."""
         mode = (mode or "default").strip().lower()
-        if mode not in ("default", "thermal", "grid"):
+        if mode not in ("default", "thermal", "thermal_screen", "grid"):
             mode = "default"
         self.display_mode = mode
         self.thermal_grid_view_enabled = (mode == "grid")
@@ -1305,6 +1369,11 @@ class VideoWidget(QWidget):
             if self._last_thermal_matrix is not None:
                 if mode == "grid":
                     self._render_temperature_grid(self._last_thermal_matrix)
+                elif mode == "thermal_screen":
+                    pix = self._build_thermal_screen_pixmap(self._last_thermal_matrix)
+                    if pix:
+                        self.video_label.setPixmap(pix)
+                    self._redraw_with_grid()
                 elif mode == "thermal":
                     pix = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
                     if pix:
@@ -1319,10 +1388,11 @@ class VideoWidget(QWidget):
 
     def _sync_overlay_buttons_from_state(self, initial=False):
         """Keep overlay buttons in sync with current display mode."""
-        if not hasattr(self, 'default_view_btn') or not hasattr(self, 'thermal_view_btn') or not hasattr(self, 'grid_view_btn'):
+        if not hasattr(self, 'default_view_btn') or not hasattr(self, 'thermal_screen_btn') or not hasattr(self, 'thermal_view_btn') or not hasattr(self, 'grid_view_btn'):
             return
         for mode, btn in (
             ("default", self.default_view_btn),
+            ("thermal_screen", self.thermal_screen_btn),
             ("thermal", self.thermal_view_btn),
             ("grid", self.grid_view_btn),
         ):
@@ -1339,6 +1409,10 @@ class VideoWidget(QWidget):
     def _activate_thermal_view(self):
         """Select thermal heatmap view with fusion overlay."""
         self.set_display_mode("thermal")
+
+    def _activate_thermal_screen_view(self):
+        """Select enhanced thermal screen view with fusion overlay."""
+        self.set_display_mode("thermal_screen")
 
     def _activate_grid_view(self):
         """Select thermal numeric grid view with fusion overlay."""
@@ -1484,7 +1558,7 @@ class VideoWidget(QWidget):
                 hover_color = "rgba(100, 220, 255, 0.9)"  # Brighter cyan
             
             # Update all control button styles
-            for btn in [self.minimize_btn, self.maximize_btn, self.default_view_btn, self.thermal_view_btn, self.grid_view_btn, self.reload_btn]:
+            for btn in [self.minimize_btn, self.maximize_btn, self.default_view_btn, self.thermal_screen_btn, self.thermal_view_btn, self.grid_view_btn, self.reload_btn]:
                 if btn:
                     btn.setStyleSheet(f"""
                         QPushButton {{
