@@ -96,6 +96,24 @@ class StudioDatabaseManager:
             )
         ''')
 
+        # Sandbox Feedback table for Active Learning
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sandbox_feedback (
+                feedback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_path TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                detection_data TEXT,
+                confidence REAL,
+                user_label TEXT,
+                feedback TEXT,
+                flagged INTEGER DEFAULT 0,
+                reviewed_by TEXT,
+                reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT,
+                FOREIGN KEY (reviewed_by) REFERENCES users(username)
+            )
+        ''')
+
         self.conn.commit()
 
     def create_default_admin(self):
@@ -306,6 +324,42 @@ class StudioDatabaseManager:
             SELECT * FROM datasets
         ''')
         return cursor.fetchall()
+
+    # Sandbox Feedback methods for Active Learning
+    def add_sandbox_feedback(self, image_path, model_version, detection_data, confidence, user_label, feedback, flagged, reviewed_by, notes=''):
+        """Add sandbox feedback for active learning"""
+        import json
+        cursor = self.conn.cursor()
+        detection_json = json.dumps(detection_data) if detection_data else None
+        cursor.execute('''
+            INSERT INTO sandbox_feedback (image_path, model_version, detection_data, confidence, user_label, feedback, flagged, reviewed_by, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (image_path, model_version, detection_json, confidence, user_label, feedback, flagged, reviewed_by, notes))
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_sandbox_feedback(self, limit=100):
+        """Get sandbox feedback records"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT * FROM sandbox_feedback ORDER BY reviewed_at DESC LIMIT ?
+        ''', (limit,))
+        return cursor.fetchall()
+
+    def get_flagged_items(self):
+        """Get flagged items for review"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT * FROM sandbox_feedback WHERE flagged = 1 ORDER BY reviewed_at DESC
+        ''')
+        return cursor.fetchall()
+
+    def get_feedback_count(self):
+        """Get total count of feedback items"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM sandbox_feedback')
+        result = cursor.fetchone()
+        return result[0] if result else 0
 
     def close(self):
         """Close database connection"""

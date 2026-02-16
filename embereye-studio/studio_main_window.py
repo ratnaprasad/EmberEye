@@ -27,7 +27,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QUrl, QThread
 from PyQt5.QtGui import QFont, QPixmap, QImage, QIcon
 
 from forgelab import (
-    TrainingConfig, TrainingProgress, TrainingStatus, YOLOTrainingPipeline
+    TrainingConfig, TrainingProgress, TrainingStatus, YOLOTrainingPipeline, DeviceManager
 )
 from studio_db_manager import StudioDatabaseManager
 
@@ -38,6 +38,29 @@ if embereye_path not in sys.path:
 from embereye.utils.resource_helper import get_data_path
 
 
+class TrainingWorker(QThread):
+    progress = pyqtSignal(object)
+    finished = pyqtSignal(bool, str)
+    device_ready = pyqtSignal(str)
+
+    def __init__(self, config: TrainingConfig, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.pipeline = None
+
+    def run(self):
+        self.pipeline = YOLOTrainingPipeline(config=self.config)
+        self.device_ready.emit(self.pipeline.device)
+        # Ensure epoch callbacks are registered so progress updates include epoch info
+        self.pipeline.set_epoch_callback(lambda _cur, _total: None)
+        self.pipeline.set_progress_callback(self._emit_progress)
+        success, message = self.pipeline.run_full_pipeline()
+        self.finished.emit(success, message)
+
+    def _emit_progress(self, progress: TrainingProgress):
+        self.progress.emit(progress)
+
+
 class TrainingTab(QWidget):
     """Comprehensive Training and model management tab with Sandbox"""
     
@@ -45,6 +68,7 @@ class TrainingTab(QWidget):
         super().__init__()
         self.parent_window = parent_window
         self.pipeline = None
+        self.training_worker = None
         self.training_active = False
         self.training_has_annotations = False
         self.imported_zip_bases = []
@@ -253,9 +277,9 @@ class TrainingTab(QWidget):
         right_panel.addWidget(self.model_versions_list)
         
         version_btn_layout = QHBoxLayout()
-        rollback_btn = QPushButton("↶ Rollback")
-        rollback_btn.clicked.connect(self.rollback_model_version)
-        version_btn_layout.addWidget(rollback_btn)
+        export_btn = QPushButton("📦 Export Model")
+        export_btn.clicked.connect(self.export_model_version)
+        version_btn_layout.addWidget(export_btn)
         
         delete_version_btn = QPushButton("🗑 Delete Version")
         delete_version_btn.clicked.connect(self.delete_model_version)
@@ -268,6 +292,7 @@ class TrainingTab(QWidget):
         
         # Initial refresh
         try:
+            self._archive_existing_models()  # Archive any existing models first
             self._refresh_training_ready_count()
             self._refresh_dataset_stats()
             self._refresh_model_versions()
@@ -790,16 +815,161 @@ class TrainingTab(QWidget):
         except Exception:
             return {}
 
-    def _on_training_progress(self, percent: int, message: str):
+    def _on_training_progress(self, progress: TrainingProgress):
         """Update progress during training."""
+        percent = 0
+        if progress.total_epochs > 0:
+            percent = int((progress.current_epoch / progress.total_epochs) * 100)
+        if progress.status == TrainingStatus.PREPARING:
+            percent = max(percent, 5)
+        elif progress.status == TrainingStatus.VALIDATING:
+            percent = max(percent, 10)
+        elif progress.status == TrainingStatus.VALIDATING_FINAL:
+            percent = max(percent, 95)
+        elif progress.status == TrainingStatus.COMPLETE:
+            percent = 100
+
         if hasattr(self, 'training_progress'):
             self.training_progress.setValue(percent)
         if hasattr(self, 'training_status_label'):
+            message = progress.message or progress.status.value
             self.training_status_label.setText(message)
+        if hasattr(self, 'training_epoch_label'):
+            self.training_epoch_label.setText(
+                f"Epoch: {progress.current_epoch}/{progress.total_epochs}"
+            )
 
-    def _on_training_finished(self, ok: bool, msg: str, payload):
+    def _archive_trained_model(self):
+        """Archive the trained model to models/yolo_versions/v[timestamp]."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Search for best.pt in multiple possible locations
+        search_paths = [
+            Path(get_data_path("training_data")) / "runs" / "detect",
+            Path.cwd() / "runs" / "detect",  # Current working directory
+            Path.cwd() / "embereye-studio" / "runs" / "detect",
+            Path(get_data_path("")) / "runs" / "detect",
+        ]
+        
+        best_pts = []
+        for search_path in search_paths:
+            if search_path.exists():
+                found = list(search_path.rglob("best.pt"))
+                best_pts.extend(found)
+        
+        if not best_pts:
+            logger.warning("No best.pt found in any runs directory")
+            return
+        
+        # Get the most recent best.pt
+        best_pt = max(best_pts, key=lambda p: p.stat().st_mtime)
+        logger.info(f"Found best model: {best_pt}")
+        
+        # Create version directory
+        models_dir = Path(get_data_path("models"))
+        versions_dir = models_dir / "yolo_versions"
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate version name with timestamp
+        version_name = f"v{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        version_dir = versions_dir / version_name
+        version_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Copy best.pt to version directory
+        import shutil
+        target_path = version_dir / "best.pt"
+        shutil.copy2(best_pt, target_path)
+        logger.info(f"Archived model to: {target_path}")
+        
+        # Also copy any metadata files (dataset.yaml, etc.)
+        project_dir = best_pt.parent.parent
+        for metadata_file in ["args.yaml", "results.csv", "results.png"]:
+            src = project_dir / metadata_file
+            if src.exists():
+                shutil.copy2(src, version_dir / metadata_file)
+
+    def _archive_existing_models(self):
+        """Archive any existing trained models that haven't been archived yet."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Search for best.pt in multiple possible locations
+            search_paths = [
+                Path(get_data_path("training_data")) / "runs" / "detect",
+                Path.cwd() / "runs" / "detect",
+                Path.cwd() / "embereye-studio" / "runs" / "detect",
+                Path(get_data_path("")) / "runs" / "detect",
+            ]
+            
+            best_pts = []
+            for search_path in search_paths:
+                if search_path.exists():
+                    found = list(search_path.rglob("best.pt"))
+                    best_pts.extend(found)
+            
+            if not best_pts:
+                return
+            
+            # Get already archived models
+            models_dir = Path(get_data_path("models"))
+            versions_dir = models_dir / "yolo_versions"
+            versions_dir.mkdir(parents=True, exist_ok=True)
+            
+            archived_count = 0
+            for best_pt in sorted(best_pts, key=lambda p: p.stat().st_mtime):
+                # Extract timestamp from parent directory or use file modification time
+                try:
+                    # Try to parse project name like embereye_20260216_210145
+                    project_name = best_pt.parent.parent.name
+                    if "_" in project_name and len(project_name.split("_")) >= 3:
+                        parts = project_name.split("_")
+                        timestamp_str = f"{parts[-2]}_{parts[-1]}"
+                        version_name = f"v{timestamp_str}"
+                    else:
+                        # Use file modification time
+                        mtime = datetime.fromtimestamp(best_pt.stat().st_mtime)
+                        version_name = f"v{mtime.strftime('%Y%m%d_%H%M%S')}"
+                except Exception:
+                    # Fallback to file modification time
+                    mtime = datetime.fromtimestamp(best_pt.stat().st_mtime)
+                    version_name = f"v{mtime.strftime('%Y%m%d_%H%M%S')}"
+                
+                version_dir = versions_dir / version_name
+                
+                # Skip if already archived
+                if version_dir.exists() and (version_dir / "best.pt").exists():
+                    continue
+                
+                # Archive this model
+                version_dir.mkdir(parents=True, exist_ok=True)
+                
+                import shutil
+                target_path = version_dir / "best.pt"
+                shutil.copy2(best_pt, target_path)
+                
+                # Copy metadata files
+                project_dir = best_pt.parent.parent
+                for metadata_file in ["args.yaml", "results.csv", "results.png"]:
+                    src = project_dir / metadata_file
+                    if src.exists():
+                        shutil.copy2(src, version_dir / metadata_file)
+                
+                archived_count += 1
+            
+            if archived_count > 0:
+                logger.info(f"Archived {archived_count} existing trained models")
+        except Exception as e:
+            logger.warning(f"Failed to archive existing models: {e}")
+
+    def _on_training_finished(self, ok: bool, msg: str):
         """Handle training completion."""
         self.training_active = False
+        if self.training_worker:
+            self.training_worker.quit()
+            self.training_worker.wait(5000)
+            self.training_worker = None
         if hasattr(self, 'start_training_btn'):
             self.start_training_btn.setEnabled(True)
         if hasattr(self, 'cancel_training_btn'):
@@ -811,7 +981,17 @@ class TrainingTab(QWidget):
                 self.training_status_label.setText("✓ Training completed!")
             if hasattr(self, 'training_progress'):
                 self.training_progress.setValue(100)
+            
+            # Archive the trained model to yolo_versions
+            try:
+                self._archive_trained_model()
+            except Exception as e:
+                logger.warning(f"Failed to archive model: {e}")
+            
+            # Refresh UI components
             self._refresh_model_versions()
+            self._refresh_dataset_stats()
+            
             QMessageBox.information(self, "Training Complete", msg)
         else:
             if hasattr(self, 'training_status_label'):
@@ -893,24 +1073,21 @@ class TrainingTab(QWidget):
             self.cancel_training_btn.setEnabled(True)
             self.training_status_label.setText("Starting training...")
             self.training_progress.setValue(5)
+            self.training_epoch_label.setText("Epoch: 0/0")
+            self.training_active = True
 
-            pipeline = YOLOTrainingPipeline(config=config)
-            success, message = pipeline.run_full_pipeline()
-
-            if success:
-                self.training_status_label.setText("✓ Training completed!")
-                self.training_progress.setValue(100)
-                QMessageBox.information(self, "Training Complete", message)
-                self._refresh_model_versions()
-            else:
-                self.training_status_label.setText(f"✗ Training failed")
-                QMessageBox.critical(self, "Training Failed", message)
+            self.training_worker = TrainingWorker(config=config, parent=self)
+            self.training_worker.progress.connect(self._on_training_progress)
+            self.training_worker.finished.connect(self._on_training_finished)
+            self.training_worker.device_ready.connect(self._on_device_ready)
+            self.training_worker.start()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Training error: {str(e)}")
         finally:
-            self.start_training_btn.setEnabled(True)
-            self.cancel_training_btn.setEnabled(False)
+            if self.training_worker is None:
+                self.start_training_btn.setEnabled(True)
+                self.cancel_training_btn.setEnabled(False)
 
     def start_quick_retraining(self):
         """Quick retrain with fewer epochs"""
@@ -919,23 +1096,140 @@ class TrainingTab(QWidget):
 
     def cancel_model_training(self):
         """Cancel running training"""
-        if self.pipeline:
-            self.pipeline.training_active = False
+        if self.training_worker and self.training_worker.pipeline:
+            self.training_worker.pipeline.training_active = False
         self.training_status_label.setText("Training cancelled")
         self.cancel_training_btn.setEnabled(False)
 
-    def rollback_model_version(self):
-        """Rollback to selected model version"""
+    def _on_device_ready(self, device: str):
+        if hasattr(self.parent_window, "set_device_status"):
+            self.parent_window.set_device_status(device)
+
+    def export_model_version(self):
+        """Export selected model version as ZIP package for Field app"""
         selected = self.model_versions_list.currentItem()
         if not selected:
-            QMessageBox.warning(self, "Rollback", "Please select a version to rollback to.")
+            QMessageBox.warning(self, "Export Model", "Please select a model version to export.")
             return
         
-        QMessageBox.information(
-            self, "Rollback", 
-            f"Rolling back to: {selected.text()}\n\n"
-            "Feature will restore selected model version."
-        )
+        try:
+            import zipfile
+            import json
+            from datetime import datetime
+            
+            # Get selected version
+            version_name = selected.text().split(" ")[0]  # e.g., "v1"
+            models_dir = Path(get_data_path("models")) / "yolo_versions"
+            version_dir = models_dir / version_name
+            best_pt = version_dir / "best.pt"
+            
+            if not best_pt.exists():
+                QMessageBox.critical(self, "Export Error", f"Model file not found: {best_pt}")
+                return
+            
+            # Ask user where to save
+            from PyQt5.QtWidgets import QFileDialog
+            export_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Model Package",
+                f"{version_name}_model.zip",
+                "ZIP Files (*.zip);;All Files (*.*)"
+            )
+            
+            if not export_path:
+                return  # User cancelled
+            
+            export_path = Path(export_path)
+            
+            # Create metadata
+            metadata = {
+                "model_version": version_name,
+                "export_date": datetime.now().isoformat(),
+                "model_type": "YOLOv8",
+                "model_name": "best.pt",
+                "app": "EmberEye Studio",
+                "compatible_apps": ["EmberEye Field"],
+                "instructions": [
+                    "1. Extract the ZIP file",
+                    "2. Copy 'best.pt' to EmberEye Field's models directory",
+                    "3. Restart EmberEye Field",
+                    "4. Select the model from the model list"
+                ]
+            }
+            
+            # Create ZIP package
+            with zipfile.ZipFile(str(export_path), 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # Add model file
+                zipf.write(str(best_pt), arcname="best.pt")
+                
+                # Add metadata
+                zipf.writestr("metadata.json", json.dumps(metadata, indent=2))
+                
+                # Add README
+                readme = f"""# EmberEye Model Export
+
+Model Version: {version_name}
+Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Installation Instructions
+
+### For EmberEye Field App:
+
+1. Extract this ZIP file
+2. Locate EmberEye Field application directory:
+   - Default: `D:\\EE\\EmberEye\\embereye-field\\models\\`
+3. Copy `best.pt` to the models directory
+4. Restart EmberEye Field application
+5. The model will appear in the model selection dropdown
+
+## Files Included
+
+- `best.pt`: Trained YOLOv8 model weights (ready to use)
+- `metadata.json`: Model information and compatibility details
+- `README.md`: This installation guide
+
+## Compatibility
+
+✓ EmberEye Field (Desktop)
+✓ EmberEye Studio
+✓ YOLOv8 Framework
+
+## Contact
+
+For issues or questions, refer to the main EmberEye documentation.
+"""
+                zipf.writestr("README.md", readme)
+            
+            # Verify ZIP contents
+            with zipfile.ZipFile(str(export_path), 'r') as zipf:
+                file_list = zipf.namelist()
+                required_files = {'best.pt', 'metadata.json', 'README.md'}
+                missing = required_files - set(file_list)
+                
+                if missing:
+                    QMessageBox.critical(
+                        self, "Export Error",
+                        f"ZIP package incomplete. Missing: {', '.join(missing)}"
+                    )
+                    export_path.unlink()  # Delete incomplete file
+                    return
+            
+            # Success message with option to open folder
+            reply = QMessageBox.information(
+                self,
+                "Model Exported Successfully",
+                f"Model {version_name} has been exported to:\n\n{export_path}\n\n"
+                f"File size: {export_path.stat().st_size / (1024*1024):.2f} MB\n\n"
+                f"Would you like to open the destination folder?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                import subprocess
+                subprocess.Popen(f'explorer /select,"{export_path}"')
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export model: {e}")
 
     def delete_model_version(self):
         """Delete selected model version"""
@@ -989,7 +1283,8 @@ class TrainingTab(QWidget):
         """Update Dataset Stats panel using DatasetInspector."""
         try:
             from embereye.utils import DatasetInspector
-            inspector = DatasetInspector(base_dir=get_data_path(""))
+            # Use training_data as base_dir since that's where Studio datasets are prepared
+            inspector = DatasetInspector(base_dir=get_data_path("training_data"))
             if not inspector.exists():
                 self.dataset_images_counts_label.setText("Images: dataset not prepared")
                 self.dataset_classes_label.setText("Classes: —")
@@ -1013,8 +1308,11 @@ class TrainingTab(QWidget):
         self.model_versions_list.clear()
         models_dir = Path(get_data_path("models")) / "yolo_versions"
         if models_dir.exists():
-            for version_dir in sorted(models_dir.glob("v*")):
-                self.model_versions_list.addItem(version_dir.name)
+            version_dirs = sorted(models_dir.glob("v*"), reverse=True)
+            for version_dir in version_dirs:
+                # Only show versions that have a best.pt file
+                if (version_dir / "best.pt").exists():
+                    self.model_versions_list.addItem(version_dir.name)
 
     def _delete_all_training_data(self):
         """Delete all training data"""
@@ -1229,32 +1527,47 @@ class TrainingTab(QWidget):
             QMessageBox.critical(self, "Import ZIP", f"Error: {e}")
 
     def _create_sandbox_tab(self) -> QWidget:
-        """Create sandbox testing UI"""
-        from PyQt5.QtWidgets import QScrollArea
+        """Create sandbox testing UI with Active Learning"""
+        from PyQt5.QtWidgets import QScrollArea, QSplitter
         
-        sandbox_widget = QWidget()
-        main_layout = QVBoxLayout(sandbox_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        # Main container with scroll area
+        self.sandbox_widget = QWidget()
+        main_layout = QVBoxLayout(self.sandbox_widget)
+        main_layout.setContentsMargins(5, 5, 5, 5)
         
+        header = QLabel("🧪 Sandbox - Active Learning Review")
+        header.setStyleSheet("font-weight: bold; padding: 5px; font-size: 14px;")
+        main_layout.addWidget(header)
+        
+        # Create scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
+        # Scroll content widget
         scroll_content = QWidget()
-        sandbox_layout = QVBoxLayout(scroll_content)
-        sandbox_layout.setSpacing(5)
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
         
-        header = QLabel("🧪 Sandbox - Test models safely")
-        header.setStyleSheet("font-weight: bold; padding: 5px; font-size: 14px;")
-        sandbox_layout.addWidget(header)
+        # Create horizontal splitter for left panel (preview) and right panel (review queue)
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
         
-        # Top section with model and controls
-        top_section = QHBoxLayout()
+        # === LEFT PANEL: Model Testing ===
+        self.sandbox_left_panel = QWidget()
+        left_layout = QVBoxLayout(self.sandbox_left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Top row: Settings box (LEFT) + Buttons (RIGHT)
+        top_row_layout = QHBoxLayout()
+        
+        # LEFT: Combined Settings Box (Version + Thresholds)
+        settings_group = QGroupBox("Settings & Thresholds")
+        settings_layout = QVBoxLayout()
         
         # Model selection
-        model_group = QGroupBox("Model")
-        model_layout = QVBoxLayout()
-        
         model_select_layout = QHBoxLayout()
         model_select_layout.addWidget(QLabel("Version:"))
         self.sandbox_model_combo = QComboBox()
@@ -1265,62 +1578,52 @@ class TrainingTab(QWidget):
         refresh_btn.setMaximumWidth(35)
         refresh_btn.clicked.connect(self._refresh_sandbox_models)
         model_select_layout.addWidget(refresh_btn)
-        model_layout.addLayout(model_select_layout)
+        settings_layout.addLayout(model_select_layout)
         
-        self.sandbox_model_info = QLabel("No model")
-        self.sandbox_model_info.setStyleSheet("font-size: 10px; color: #666;")
-        self.sandbox_model_info.setWordWrap(True)
-        model_layout.addWidget(self.sandbox_model_info)
-
-        actions_row = QHBoxLayout()
-        verify_btn = QPushButton("Verify")
-        verify_btn.clicked.connect(self._sandbox_verify_model)
-        actions_row.addWidget(verify_btn)
-        
-        export_btn = QPushButton("📦 Export")
-        export_btn.clicked.connect(self._sandbox_export_model)
-        actions_row.addWidget(export_btn)
-        
-        import_btn = QPushButton("📥 Import")
-        import_btn.clicked.connect(self._sandbox_import_model)
-        actions_row.addWidget(import_btn)
-        actions_row.addStretch(1)
-        model_layout.addLayout(actions_row)
-        
-        model_group.setLayout(model_layout)
-        top_section.addWidget(model_group)
-        
-        # Inference controls
-        control_group = QGroupBox("Settings")
-        control_layout = QVBoxLayout()
-        
+        # Confidence threshold
         conf_layout = QHBoxLayout()
         conf_layout.addWidget(QLabel("Confidence:"))
         self.sandbox_conf_spin = QDoubleSpinBox()
         self.sandbox_conf_spin.setRange(0.0, 1.0)
         self.sandbox_conf_spin.setSingleStep(0.05)
-        self.sandbox_conf_spin.setValue(0.15)
+        self.sandbox_conf_spin.setValue(0.50)
         self.sandbox_conf_spin.setDecimals(2)
         conf_layout.addWidget(self.sandbox_conf_spin)
-        control_layout.addLayout(conf_layout)
+        settings_layout.addLayout(conf_layout)
         
-        iou_layout = QHBoxLayout()
-        iou_layout.addWidget(QLabel("IoU:"))
-        self.sandbox_iou_spin = QDoubleSpinBox()
-        self.sandbox_iou_spin.setRange(0.0, 1.0)
-        self.sandbox_iou_spin.setSingleStep(0.05)
-        self.sandbox_iou_spin.setValue(0.45)
-        self.sandbox_iou_spin.setDecimals(2)
-        iou_layout.addWidget(self.sandbox_iou_spin)
-        control_layout.addLayout(iou_layout)
+        # Grey zone thresholds
+        grey_low_layout = QHBoxLayout()
+        grey_low_layout.addWidget(QLabel("Grey Zone Low:"))
+        self.sandbox_grey_low_spin = QDoubleSpinBox()
+        self.sandbox_grey_low_spin.setRange(0.0, 1.0)
+        self.sandbox_grey_low_spin.setSingleStep(0.05)
+        self.sandbox_grey_low_spin.setValue(0.30)
+        self.sandbox_grey_low_spin.setDecimals(2)
+        self.sandbox_grey_low_spin.setToolTip("Detections below this are ignored")
+        grey_low_layout.addWidget(self.sandbox_grey_low_spin)
+        settings_layout.addLayout(grey_low_layout)
         
-        control_group.setLayout(control_layout)
-        top_section.addWidget(control_group)
+        grey_high_layout = QHBoxLayout()
+        grey_high_layout.addWidget(QLabel("Grey Zone High:"))
+        self.sandbox_grey_high_spin = QDoubleSpinBox()
+        self.sandbox_grey_high_spin.setRange(0.0, 1.0)
+        self.sandbox_grey_high_spin.setSingleStep(0.05)
+        self.sandbox_grey_high_spin.setValue(0.70)
+        self.sandbox_grey_high_spin.setDecimals(2)
+        self.sandbox_grey_high_spin.setToolTip("Detections above this are confirmed")
+        grey_high_layout.addWidget(self.sandbox_grey_high_spin)
+        settings_layout.addLayout(grey_high_layout)
         
-        sandbox_layout.addLayout(top_section)
-
-        # Action buttons
-        action_layout = QHBoxLayout()
+        # Legend
+        legend = QLabel("🟢 >70% Confirmed | 🟠 30-70% Grey Zone | 🔴 Flagged")
+        legend.setStyleSheet("font-size: 10px; color: #666; padding: 5px;")
+        settings_layout.addWidget(legend)
+        
+        settings_group.setLayout(settings_layout)
+        top_row_layout.addWidget(settings_group, 1)  # Stretch to take remaining space
+        
+        # RIGHT: Action buttons - STACKED VERTICALLY
+        action_layout = QVBoxLayout()
         
         upload_img_btn = QPushButton("🖼 Select Image")
         upload_img_btn.clicked.connect(self._sandbox_upload_image)
@@ -1334,22 +1637,17 @@ class TrainingTab(QWidget):
         self.sandbox_run_btn.clicked.connect(self._sandbox_run_inference)
         action_layout.addWidget(self.sandbox_run_btn)
         
-        action_layout.addStretch(1)
-        sandbox_layout.addLayout(action_layout)
-
-        # Preview area
-        preview_layout = QHBoxLayout()
+        action_layout.addStretch()  # Push buttons to top
+        top_row_layout.addLayout(action_layout)
         
-        input_group = QGroupBox("Input")
-        input_layout = QVBoxLayout()
-        self.sandbox_input_label = QLabel("No input")
-        self.sandbox_input_label.setAlignment(Qt.AlignCenter)
-        self.sandbox_input_label.setStyleSheet("border: 1px dashed #ccc; background: #f9f9f9; min-height: 300px;")
-        input_layout.addWidget(self.sandbox_input_label)
-        input_group.setLayout(input_layout)
-        preview_layout.addWidget(input_group)
+        left_layout.addLayout(top_row_layout)
 
-        results_group = QGroupBox("Result")
+        # Preview area - Result (LEFT) + Frame Viewer (RIGHT)
+        preview_layout = QHBoxLayout()
+        preview_layout.setSpacing(5)
+        
+        # LEFT: Result with Color-Coded Detections
+        results_group = QGroupBox("Result with Color-Coded Detections")
         results_layout = QVBoxLayout()
         
         self.sandbox_progress = QProgressBar()
@@ -1358,34 +1656,179 @@ class TrainingTab(QWidget):
         
         self.sandbox_results_label = QLabel("Results appear here")
         self.sandbox_results_label.setAlignment(Qt.AlignCenter)
-        self.sandbox_results_label.setStyleSheet("border: 1px solid #333; background: #111; min-height: 300px;")
+        self.sandbox_results_label.setStyleSheet("border: 1px solid #333; background: #111;")
+        self.sandbox_results_label.setMinimumSize(280, 210)
+        self.sandbox_results_label.setMaximumSize(500, 375)
+        self.sandbox_results_label.setScaledContents(False)
+        self.sandbox_results_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Click to popup full image
+        self.sandbox_results_label.mousePressEvent = lambda event: self._sandbox_show_popup_frame(self.sandbox_results_label)
+        self.sandbox_results_label.setCursor(Qt.PointingHandCursor)
         results_layout.addWidget(self.sandbox_results_label)
         
         self.sandbox_stats_label = QLabel("Detections: - | Time: -")
         self.sandbox_stats_label.setStyleSheet("font-size: 10px; font-family: monospace;")
         results_layout.addWidget(self.sandbox_stats_label)
         
-        self.sandbox_detections_list = QListWidget()
-        self.sandbox_detections_list.setMaximumHeight(100)
-        results_layout.addWidget(self.sandbox_detections_list)
-        
         results_group.setLayout(results_layout)
         preview_layout.addWidget(results_group)
         
-        sandbox_layout.addLayout(preview_layout)
+        # RIGHT: Frame Viewer with Prev/Next
+        frame_viewer_group = QGroupBox("Frame Viewer")
+        frame_viewer_layout = QVBoxLayout()
         
+        self.sandbox_frame_label = QLabel("No frame selected")
+        self.sandbox_frame_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_frame_label.setStyleSheet("border: 1px solid #ccc; background: #f5f5f5;")
+        self.sandbox_frame_label.setMinimumSize(280, 210)
+        self.sandbox_frame_label.setMaximumSize(500, 375)
+        self.sandbox_frame_label.setScaledContents(False)
+        self.sandbox_frame_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Click to popup full image
+        self.sandbox_frame_label.mousePressEvent = lambda event: self._sandbox_show_popup_frame(self.sandbox_frame_label)
+        self.sandbox_frame_label.setCursor(Qt.PointingHandCursor)
+        frame_viewer_layout.addWidget(self.sandbox_frame_label)
+        
+        # Navigation buttons
+        nav_layout = QHBoxLayout()
+        self.sandbox_prev_btn = QPushButton("◄ PREV")
+        self.sandbox_prev_btn.clicked.connect(self._sandbox_prev_frame)
+        nav_layout.addWidget(self.sandbox_prev_btn)
+        
+        self.sandbox_next_btn = QPushButton("NEXT ►")
+        self.sandbox_next_btn.clicked.connect(self._sandbox_next_frame)
+        nav_layout.addWidget(self.sandbox_next_btn)
+        
+        frame_viewer_layout.addLayout(nav_layout)
+        
+        frame_viewer_group.setLayout(frame_viewer_layout)
+        preview_layout.addWidget(frame_viewer_group)
+        
+        left_layout.addLayout(preview_layout)
+        
+        splitter.addWidget(self.sandbox_left_panel)
+        
+        # === RIGHT PANEL: Review Queues ===
+        self.sandbox_right_panel = QWidget()
+        right_layout = QVBoxLayout(self.sandbox_right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        queue_header = QLabel("Review Queues")
+        queue_header.setStyleSheet("font-weight: bold; font-size: 12px; padding: 3px;")
+        right_layout.addWidget(queue_header)
+        
+        # Grey Zone Queue
+        grey_zone_group = QGroupBox("🟠 Grey Zone (30-70% Confidence)")
+        grey_zone_layout = QVBoxLayout()
+        
+        self.grey_zone_list = QListWidget()
+        self.grey_zone_list.setMaximumHeight(200)
+        self.grey_zone_list.itemClicked.connect(self._on_grey_zone_item_clicked)
+        grey_zone_layout.addWidget(self.grey_zone_list)
+        
+        grey_zone_btn_layout = QHBoxLayout()
+        confirm_grey_btn = QPushButton("✓ Confirm")
+        confirm_grey_btn.setStyleSheet("background: #2d5; color: white;")
+        confirm_grey_btn.clicked.connect(lambda: self._confirm_detection(is_grey_zone=True))
+        grey_zone_btn_layout.addWidget(confirm_grey_btn)
+        
+        reject_grey_btn = QPushButton("✗ Reject")
+        reject_grey_btn.setStyleSheet("background: #d52; color: white;")
+        reject_grey_btn.clicked.connect(lambda: self._reject_detection(is_grey_zone=True))
+        grey_zone_btn_layout.addWidget(reject_grey_btn)
+        
+        flag_grey_btn = QPushButton("🚩 Flag")
+        flag_grey_btn.setStyleSheet("background: #fa0; color: white;")
+        flag_grey_btn.clicked.connect(lambda: self._flag_detection(is_grey_zone=True))
+        grey_zone_btn_layout.addWidget(flag_grey_btn)
+        
+        grey_zone_layout.addLayout(grey_zone_btn_layout)
+        grey_zone_group.setLayout(grey_zone_layout)
+        right_layout.addWidget(grey_zone_group)
+        
+        # User Flags Queue
+        flags_group = QGroupBox("🔴 User Flagged Items")
+        flags_layout = QVBoxLayout()
+        
+        self.flagged_list = QListWidget()
+        self.flagged_list.setMaximumHeight(150)
+        self.flagged_list.itemClicked.connect(self._on_flagged_item_clicked)
+        flags_layout.addWidget(self.flagged_list)
+        
+        flags_btn_layout = QHBoxLayout()
+        resolve_flag_btn = QPushButton("✓ Resolve")
+        resolve_flag_btn.clicked.connect(self._resolve_flagged_item)
+        flags_btn_layout.addWidget(resolve_flag_btn)
+        
+        annotate_btn = QPushButton("✏ Annotate")
+        annotate_btn.clicked.connect(self._annotate_flagged_item)
+        flags_btn_layout.addWidget(annotate_btn)
+        
+        flags_layout.addLayout(flags_btn_layout)
+        flags_group.setLayout(flags_layout)
+        right_layout.addWidget(flags_group)
+        
+        # Feedback Stats
+        stats_group = QGroupBox("📊 Feedback Stats")
+        stats_layout = QVBoxLayout()
+        self.feedback_stats_label = QLabel("Total Feedback: 0\nGrey Zone: 0\nFlagged: 0")
+        self.feedback_stats_label.setStyleSheet("font-size: 10px; font-family: monospace;")
+        stats_layout.addWidget(self.feedback_stats_label)
+        
+        refresh_stats_btn = QPushButton("Refresh Stats")
+        refresh_stats_btn.clicked.connect(self._refresh_feedback_stats)
+        stats_layout.addWidget(refresh_stats_btn)
+        
+        stats_group.setLayout(stats_layout)
+        right_layout.addWidget(stats_group)
+        
+        right_layout.addStretch()
+        
+        splitter.addWidget(self.sandbox_right_panel)
+        
+        # Set splitter sizes (70% left, 30% right)
+        splitter.setSizes([700, 300])
+        
+        scroll_layout.addWidget(splitter)
         scroll_area.setWidget(scroll_content)
         main_layout.addWidget(scroll_area)
         
+        # Initialize data
         self._refresh_sandbox_models()
+        self._refresh_feedback_stats()
         
-        return sandbox_widget
+        # Store current image/video path and detections
+        self.sandbox_current_image = None
+        self.sandbox_is_video = False
+        self.sandbox_current_detections = []
+        self.sandbox_current_frame_index = 0  # For frame viewer navigation
+        self.sandbox_video_frames = {}  # Cache for video frames {frame_num: frame_data}
+        self.sandbox_current_pixmap = None  # For popup
+        
+        return self.sandbox_widget
 
     def _refresh_sandbox_models(self):
         """Refresh sandbox model list"""
         self.sandbox_model_combo.clear()
+        
+        # Add trained versions from yolo_versions (newest first)
+        models_dir = Path(get_data_path("models")) / "yolo_versions"
+        has_trained_models = False
+        if models_dir.exists():
+            for version_dir in sorted(models_dir.glob("v*"), reverse=True):
+                best_pt = version_dir / "best.pt"
+                if best_pt.exists():
+                    self.sandbox_model_combo.addItem(f"{version_dir.name} (trained)")
+                    has_trained_models = True
+        
+        # Add pretrained models
         self.sandbox_model_combo.addItem("yolov8n.pt (pretrained)")
-        self.sandbox_model_info.setText("Pretrained YOLO model")
+        
+        # Set default selection to latest trained model if available
+        if has_trained_models:
+            self.sandbox_model_combo.setCurrentIndex(0)
+        else:
+            self.sandbox_model_combo.setCurrentIndex(self.sandbox_model_combo.count() - 1)
 
     def _sandbox_verify_model(self):
         """Verify selected model"""
@@ -1405,7 +1848,13 @@ class TrainingTab(QWidget):
             self, "Select Image", "", "Images (*.png *.jpg *.jpeg *.bmp)"
         )
         if file_path:
-            self.sandbox_input_label.setText(f"Selected: {Path(file_path).name}")
+            self.sandbox_current_image = file_path
+            self.sandbox_is_video = False
+            # Clear frame viewer
+            self.sandbox_frame_label.setText(f"Ready: {Path(file_path).name}")
+            self.sandbox_video_frames.clear()
+            self.sandbox_current_frame_index = 0
+            QMessageBox.information(self, "Image Selected", f"Ready to run inference on:\n{Path(file_path).name}")
 
     def _sandbox_upload_video(self):
         """Select video for inference"""
@@ -1413,11 +1862,635 @@ class TrainingTab(QWidget):
             self, "Select Video", "", "Videos (*.mp4 *.avi *.mov)"
         )
         if file_path:
-            self.sandbox_input_label.setText(f"Selected: {Path(file_path).name}")
+            self.sandbox_current_image = file_path  # Store video path
+            self.sandbox_is_video = True
+            # Clear frame viewer and cache
+            self.sandbox_frame_label.setText(f"Ready: {Path(file_path).name}\n📹 Video selected - run inference to start")
+            self.sandbox_video_frames.clear()
+            self.sandbox_current_frame_index = 0
+            QMessageBox.information(self, "Video Selected", f"Ready to run inference on:\n{Path(file_path).name}")
 
     def _sandbox_run_inference(self):
-        """Run inference on selected media"""
-        QMessageBox.information(self, "Inference", "Sandbox inference feature coming soon!")
+        """Run inference on selected image/video with color-coded detections"""
+        if not hasattr(self, 'sandbox_current_image') or not self.sandbox_current_image:
+            QMessageBox.warning(self, "No Media", "Please select an image or video first")
+            return
+        
+        # Check if it's a video
+        if hasattr(self, 'sandbox_is_video') and self.sandbox_is_video:
+            self._sandbox_run_video_inference()
+            return
+        
+        # Image inference
+        self._sandbox_run_image_inference()
+
+    def _sandbox_run_image_inference(self):
+        """Run inference on a single image"""
+        
+        try:
+            import cv2
+            import time
+            from ultralytics import YOLO
+            
+            # Get selected model
+            model_name = self.sandbox_model_combo.currentText()
+            if "(pretrained)" in model_name:
+                model_path = "yolov8n.pt"
+            else:
+                version = model_name.split(" ")[0]
+                models_dir = Path(get_data_path("models")) / "yolo_versions"
+                model_path = str(models_dir / version / "best.pt")
+            
+            # Load model
+            self.sandbox_progress.setVisible(True)
+            self.sandbox_progress.setValue(10)
+            model = YOLO(model_path)
+            
+            # Run inference
+            self.sandbox_progress.setValue(30)
+            start_time = time.time()
+            results = model(self.sandbox_current_image, conf=self.sandbox_conf_spin.value())
+            inference_time = time.time() - start_time
+            
+            # Process results
+            self.sandbox_progress.setValue(60)
+            img = cv2.imread(self.sandbox_current_image)
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            grey_low = self.sandbox_grey_low_spin.value()
+            grey_high = self.sandbox_grey_high_spin.value()
+            
+            grey_zone_items = []
+            confirmed_items = []
+            
+            for result in results:
+                boxes = result.boxes
+                for box in boxes:
+                    # Get box coordinates and confidence
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0])
+                    cls = int(box.cls[0])
+                    class_name = model.names[cls] if cls < len(model.names) else f"class_{cls}"
+                    
+                    # Color-code based on confidence
+                    if conf >= grey_high:
+                        # Green: Confirmed (>70%)
+                        color = (0, 255, 0)
+                        confirmed_items.append(f"{class_name}: {conf:.2f}")
+                    elif conf >= grey_low:
+                        # Orange: Grey Zone (30-70%)
+                        color = (255, 165, 0)
+                        grey_zone_items.append({
+                            'class': class_name,
+                            'conf': conf,
+                            'bbox': [int(x1), int(y1), int(x2), int(y2)]
+                        })
+                    else:
+                        # Skip items below grey_low
+                        continue
+                    
+                    # Draw bounding box
+                    cv2.rectangle(img_rgb, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                    
+                    # Draw label with background
+                    label = f"{class_name} {conf:.2f}"
+                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    cv2.rectangle(img_rgb, (int(x1), int(y1) - label_h - 10), (int(x1) + label_w, int(y1)), color, -1)
+                    cv2.putText(img_rgb, label, (int(x1), int(y1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # Display result
+            self.sandbox_progress.setValue(80)
+            height, width, channel = img_rgb.shape
+            bytes_per_line = 3 * width
+            q_img = QImage(img_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img)
+            # Scale to fit within label bounds
+            label_size = self.sandbox_results_label.size()
+            scaled_pixmap = pixmap.scaled(
+                label_size.width() - 4,
+                label_size.height() - 4,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.sandbox_results_label.setPixmap(scaled_pixmap)
+            
+            # Update stats
+            total_detections = len(confirmed_items) + len(grey_zone_items)
+            self.sandbox_stats_label.setText(
+                f"Detections: {total_detections} | Confirmed: {len(confirmed_items)} | Grey Zone: {len(grey_zone_items)} | Time: {inference_time:.2f}s"
+            )
+            
+            # Update grey zone queue
+            self.grey_zone_list.clear()
+            for item in grey_zone_items:
+                self.grey_zone_list.addItem(f"{item['class']}: {item['conf']:.2f}")
+            
+            # Store detections for feedback
+            self.sandbox_current_detections = grey_zone_items
+            
+            self.sandbox_progress.setValue(100)
+            self.sandbox_progress.setVisible(False)
+            
+        except Exception as e:
+            self.sandbox_progress.setVisible(False)
+            QMessageBox.critical(self, "Inference Error", f"Failed to run inference: {e}")
+
+    def _sandbox_run_video_inference(self):
+        """Run inference on video and save output"""
+        try:
+            import cv2
+            import time
+            from ultralytics import YOLO
+            
+            # Get selected model
+            model_name = self.sandbox_model_combo.currentText()
+            if "(pretrained)" in model_name:
+                model_path = "yolov8n.pt"
+            else:
+                version = model_name.split(" ")[0]
+                models_dir = Path(get_data_path("models")) / "yolo_versions"
+                model_path = str(models_dir / version / "best.pt")
+            
+            # Load model
+            self.sandbox_progress.setVisible(True)
+            self.sandbox_progress.setValue(5)
+            model = YOLO(model_path)
+            
+            # Open video
+            cap = cv2.VideoCapture(self.sandbox_current_image)
+            if not cap.isOpened():
+                raise Exception("Failed to open video file")
+            
+            # Get video properties
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Create output path
+            input_path = Path(self.sandbox_current_image)
+            output_path = input_path.parent / f"{input_path.stem}_inference{input_path.suffix}"
+            
+            # Create video writer
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+            
+            # Get thresholds
+            grey_low = self.sandbox_grey_low_spin.value()
+            grey_high = self.sandbox_grey_high_spin.value()
+            
+            # Process video
+            frame_count = 0
+            total_detections = 0
+            grey_zone_count = 0
+            grey_zone_items = []  # Store grey zone detections
+            start_time = time.time()
+            
+            self.sandbox_progress.setValue(10)
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Run inference
+                results = model(frame, conf=self.sandbox_conf_spin.value(), verbose=False)
+                
+                # Draw detections
+                for result in results:
+                    boxes = result.boxes
+                    for box in boxes:
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        conf = float(box.conf[0])
+                        cls = int(box.cls[0])
+                        class_name = model.names[cls] if cls < len(model.names) else f"class_{cls}"
+                        
+                        # Color-code based on confidence
+                        if conf >= grey_high:
+                            # Green: Confirmed (>70%)
+                            color = (0, 255, 0)
+                            total_detections += 1
+                        elif conf >= grey_low:
+                            # Orange: Grey Zone (30-70%)
+                            color = (255, 165, 0)
+                            total_detections += 1
+                            grey_zone_count += 1
+                            # Store grey zone item for review
+                            grey_zone_items.append({
+                                'class': class_name,
+                                'conf': conf,
+                                'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                                'frame': frame_count
+                            })
+                        else:
+                            # Skip items below grey_low
+                            continue
+                        
+                        # Draw bounding box
+                        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                        
+                        # Draw label
+                        label = f"{class_name} {conf:.2f}"
+                        (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                        cv2.rectangle(frame, (int(x1), int(y1) - label_h - 10), (int(x1) + label_w, int(y1)), color, -1)
+                        cv2.putText(frame, label, (int(x1), int(y1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                # Write frame
+                out.write(frame)
+                
+                # Update progress
+                frame_count += 1
+                progress = int(10 + (frame_count / total_frames) * 80)
+                self.sandbox_progress.setValue(progress)
+                
+                # Show sample frame in results (every 30 frames)
+                if frame_count % 30 == 0:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    h, w, c = frame_rgb.shape
+                    bytes_per_line = 3 * w
+                    q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                    pixmap = QPixmap.fromImage(q_img)
+                    label_size = self.sandbox_results_label.size()
+                    scaled_pixmap = pixmap.scaled(
+                        label_size.width() - 4,
+                        label_size.height() - 4,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    self.sandbox_results_label.setPixmap(scaled_pixmap)
+            
+            # Release resources
+            cap.release()
+            out.release()
+            
+            # Populate grey zone list for review
+            self.grey_zone_list.clear()
+            for item in grey_zone_items[:100]:  # Limit to first 100 for performance
+                self.grey_zone_list.addItem(f"{item['class']}: {item['conf']:.2f} (Frame {item['frame']})")
+            
+            # Store detections for feedback
+            self.sandbox_current_detections = grey_zone_items
+            
+            # Calculate stats
+            processing_time = time.time() - start_time
+            avg_fps = frame_count / processing_time if processing_time > 0 else 0
+            
+            # Update stats
+            self.sandbox_stats_label.setText(
+                f"Video: {frame_count} frames | Detections: {total_detections} | Grey Zone: {grey_zone_count} | "
+                f"Time: {processing_time:.1f}s ({avg_fps:.1f} FPS)"
+            )
+            
+            self.sandbox_progress.setValue(100)
+            self.sandbox_progress.setVisible(False)
+            
+            # Show completion message
+            reply = QMessageBox.question(
+                self,
+                "Video Inference Complete",
+                f"Video processed successfully!\n\n"
+                f"Frames processed: {frame_count}\n"
+                f"Total detections: {total_detections}\n"
+                f"Grey zone detections: {grey_zone_count}\n"
+                f"Processing time: {processing_time:.1f}s\n\n"
+                f"Output saved to:\n{output_path}\n\n"
+                f"Would you like to open the output folder?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                import subprocess
+                subprocess.Popen(f'explorer /select,"{output_path}"')
+            
+        except Exception as e:
+            self.sandbox_progress.setVisible(False)
+            QMessageBox.critical(self, "Video Inference Error", f"Failed to process video: {e}")
+
+    def _on_grey_zone_item_clicked(self, item):
+        """Handle click on grey zone item - show frame with that detection"""
+        index = self.grey_zone_list.row(item)
+        if index < 0 or index >= len(self.sandbox_current_detections):
+            return
+        
+        detection = self.sandbox_current_detections[index]
+        frame_num = detection.get('frame', 0)
+        self._sandbox_display_frame(frame_num, highlight_detection=detection)
+
+    def _on_flagged_item_clicked(self, item):
+        """Handle click on flagged item - show frame with that detection"""
+        index = self.flagged_list.row(item)
+        if index < 0:
+            return
+        
+        # Get flagged items from database
+        db = StudioDatabaseManager()
+        flagged_items = db.get_flagged_items()
+        db.close()
+        
+        if index < len(flagged_items):
+            flagged = flagged_items[index]
+            # Parse detection data
+            import json
+            try:
+                detection = json.loads(flagged['detection_data'])
+                frame_num = detection.get('frame', 0)
+                self._sandbox_display_frame(frame_num, highlight_detection=detection)
+            except:
+                pass
+
+    def _sandbox_display_frame(self, frame_num, highlight_detection=None):
+        """Display a specific frame from video with optional detection highlight"""
+        if not self.sandbox_is_video or not self.sandbox_current_image:
+            return
+        
+        try:
+            import cv2
+            
+            # Get frame from cache or extract from video
+            if frame_num in self.sandbox_video_frames:
+                frame = self.sandbox_video_frames[frame_num]
+            else:
+                # Extract frame from video
+                cap = cv2.VideoCapture(self.sandbox_current_image)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
+                cap.release()
+                
+                if not ret:
+                    return
+                
+                # Cache frame
+                self.sandbox_video_frames[frame_num] = frame
+            
+            # Draw all detections from this frame
+            frame_detections = [d for d in self.sandbox_current_detections if d.get('frame') == frame_num]
+            
+            for detection in frame_detections:
+                bbox = detection.get('bbox', [0, 0, 100, 100])
+                conf = detection.get('conf', 0)
+                class_name = detection.get('class', 'unknown')
+                
+                # Color based on confidence
+                grey_low = self.sandbox_grey_low_spin.value()
+                grey_high = self.sandbox_grey_high_spin.value()
+                
+                if conf >= grey_high:
+                    color = (0, 255, 0)  # Green
+                elif conf >= grey_low:
+                    color = (255, 165, 0)  # Orange
+                else:
+                    color = (255, 0, 0)  # Red
+                
+                # Highlight selected detection with thicker border
+                thickness = 3 if highlight_detection and detection == highlight_detection else 2
+                cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, thickness)
+                
+                # Draw label
+                label = f"{class_name} {conf:.2f}"
+                (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(frame, (bbox[0], bbox[1] - label_h - 10), (bbox[0] + label_w, bbox[1]), color, -1)
+                cv2.putText(frame, label, (bbox[0], bbox[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # Convert to QPixmap and display
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, c = frame_rgb.shape
+            bytes_per_line = 3 * w
+            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img)
+            
+            # Store for popup
+            self.sandbox_current_pixmap = pixmap
+            
+            # Display in frame viewer (scaled)
+            label_size = self.sandbox_frame_label.size()
+            scaled_pixmap = pixmap.scaled(
+                label_size.width() - 4,
+                label_size.height() - 4,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.sandbox_frame_label.setPixmap(scaled_pixmap)
+            
+            # Update current frame index for prev/next
+            self.sandbox_current_frame_index = frame_num
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Frame Display Error", f"Failed to display frame: {e}")
+
+    def _sandbox_prev_frame(self):
+        """Display previous frame"""
+        if self.sandbox_current_frame_index > 0:
+            self._sandbox_display_frame(self.sandbox_current_frame_index - 1)
+
+    def _sandbox_next_frame(self):
+        """Display next frame"""
+        # Get max frame from detections
+        if self.sandbox_current_detections:
+            max_frame = max(d.get('frame', 0) for d in self.sandbox_current_detections)
+            if self.sandbox_current_frame_index < max_frame:
+                self._sandbox_display_frame(self.sandbox_current_frame_index + 1)
+
+    def _sandbox_show_popup_frame(self, label):
+        """Show full resolution image in popup window"""
+        # Use stored pixmap if available
+        if not self.sandbox_current_pixmap:
+            QMessageBox.warning(self, "No Image", "No image to display")
+            return
+        
+        try:
+            # Create popup window
+            popup = QWidget()
+            popup.setWindowTitle("Frame Preview - Press ESC to close")
+            popup.resize(1000, 800)
+            popup.setStyleSheet("background: #111;")
+            
+            layout = QVBoxLayout(popup)
+            layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Create scroll area for large images
+            scroll = QScrollArea()
+            scroll.setStyleSheet("background: #111;")
+            scroll.setWidgetResizable(True)
+            
+            # Create a NEW label inside the popup (don't reuse the original label)
+            img_label = QLabel()
+            img_label.setPixmap(self.sandbox_current_pixmap)
+            img_label.setAlignment(Qt.AlignCenter)
+            scroll.setWidget(img_label)
+            
+            layout.addWidget(scroll)
+            
+            # Info label
+            info = QLabel("Press ESC to close")
+            info.setStyleSheet("color: #888; font-size: 10px; padding: 5px;")
+            layout.addWidget(info)
+            
+            # Handle ESC key to close popup
+            def handle_key(event):
+                if event.key() == Qt.Key_Escape:
+                    popup.close()
+            
+            popup.keyPressEvent = handle_key
+            popup.setFocus()
+            popup.show()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Popup Error", f"Failed to show popup: {e}")
+
+    def _confirm_detection(self, is_grey_zone=True):
+        """Confirm a detection as correct"""
+        list_widget = self.grey_zone_list if is_grey_zone else self.flagged_list
+        current_item = list_widget.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select an item from the queue")
+            return
+        
+        # Get the detection data
+        index = list_widget.currentRow()
+        if is_grey_zone and index < len(self.sandbox_current_detections):
+            detection = self.sandbox_current_detections[index]
+            
+            # Store feedback in database
+            db = StudioDatabaseManager()
+            model_version = self.sandbox_model_combo.currentText()
+            db.add_sandbox_feedback(
+                image_path=self.sandbox_current_image,
+                model_version=model_version,
+                detection_data=detection,
+                confidence=detection['conf'],
+                user_label='confirmed',
+                feedback='confirmed',
+                flagged=0,
+                reviewed_by='current_user',
+                notes='User confirmed detection'
+            )
+            db.close()
+            
+            # Remove from grey zone queue
+            list_widget.takeItem(index)
+            self.sandbox_current_detections.pop(index)
+            
+            # Refresh stats
+            self._refresh_feedback_stats()
+            
+            QMessageBox.information(self, "Confirmed", "Detection confirmed and saved for training")
+
+    def _reject_detection(self, is_grey_zone=True):
+        """Reject a detection as incorrect"""
+        list_widget = self.grey_zone_list if is_grey_zone else self.flagged_list
+        current_item = list_widget.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select an item from the queue")
+            return
+        
+        # Get the detection data
+        index = list_widget.currentRow()
+        if is_grey_zone and index < len(self.sandbox_current_detections):
+            detection = self.sandbox_current_detections[index]
+            
+            # Store feedback in database
+            db = StudioDatabaseManager()
+            model_version = self.sandbox_model_combo.currentText()
+            db.add_sandbox_feedback(
+                image_path=self.sandbox_current_image,
+                model_version=model_version,
+                detection_data=detection,
+                confidence=detection['conf'],
+                user_label='rejected',
+                feedback='rejected',
+                flagged=0,
+                reviewed_by='current_user',
+                notes='User rejected detection'
+            )
+            db.close()
+            
+            # Remove from grey zone queue
+            list_widget.takeItem(index)
+            self.sandbox_current_detections.pop(index)
+            
+            # Refresh stats
+            self._refresh_feedback_stats()
+            
+            QMessageBox.information(self, "Rejected", "Detection rejected and saved for training")
+
+    def _flag_detection(self, is_grey_zone=True):
+        """Flag a detection for manual annotation"""
+        list_widget = self.grey_zone_list if is_grey_zone else self.flagged_list
+        current_item = list_widget.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select an item from the queue")
+            return
+        
+        # Get the detection data
+        index = list_widget.currentRow()
+        if is_grey_zone and index < len(self.sandbox_current_detections):
+            detection = self.sandbox_current_detections[index]
+            
+            # Store feedback in database with flagged status
+            db = StudioDatabaseManager()
+            model_version = self.sandbox_model_combo.currentText()
+            db.add_sandbox_feedback(
+                image_path=self.sandbox_current_image,
+                model_version=model_version,
+                detection_data=detection,
+                confidence=detection['conf'],
+                user_label='flagged',
+                feedback='flagged_for_review',
+                flagged=1,
+                reviewed_by='current_user',
+                notes='Flagged for manual annotation'
+            )
+            db.close()
+            
+            # Move to flagged list
+            self.flagged_list.addItem(current_item.text())
+            list_widget.takeItem(index)
+            self.sandbox_current_detections.pop(index)
+            
+            # Refresh stats
+            self._refresh_feedback_stats()
+            
+            QMessageBox.information(self, "Flagged", "Detection flagged for manual annotation")
+
+    def _resolve_flagged_item(self):
+        """Resolve a flagged item"""
+        current_item = self.flagged_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select a flagged item")
+            return
+        
+        # Remove from flagged list
+        self.flagged_list.takeItem(self.flagged_list.currentRow())
+        self._refresh_feedback_stats()
+        QMessageBox.information(self, "Resolved", "Flagged item resolved")
+
+    def _annotate_flagged_item(self):
+        """Open annotation tool for flagged item"""
+        current_item = self.flagged_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select a flagged item to annotate")
+            return
+        
+        QMessageBox.information(self, "Annotate", "Annotation tool integration coming soon!\n\nThis will open the annotation tool to manually label the detection.")
+
+    def _refresh_feedback_stats(self):
+        """Refresh feedback statistics"""
+        try:
+            db = StudioDatabaseManager()
+            total_feedback = db.get_feedback_count()
+            flagged_items = db.get_flagged_items()
+            db.close()
+            
+            grey_zone_count = self.grey_zone_list.count()
+            flagged_count = len(flagged_items)
+            
+            self.feedback_stats_label.setText(
+                f"Total Feedback: {total_feedback}\n"
+                f"Grey Zone: {grey_zone_count}\n"
+                f"Flagged: {flagged_count}"
+            )
+        except Exception as e:
+            self.feedback_stats_label.setText(f"Error loading stats: {e}")
 
 
 class DatasetTab(QWidget):
@@ -1746,15 +2819,15 @@ class StudioMainWindow(QMainWindow):
 
         # Tabs
         tabs = QTabWidget()
-        training_tab = TrainingTab(self)
-        tabs.addTab(training_tab, "Training (ForgeLab)")
+        self.training_tab = TrainingTab(self)
+        tabs.addTab(self.training_tab, "Training (ForgeLab)")
         try:
             from annotation_tab import AnnotationTab
             tabs.addTab(AnnotationTab(self), "🖊️ Annotation")
         except Exception as e:
             print(f"Could not load annotation tab: {e}")
         try:
-            sandbox_widget = training_tab.create_sandbox_tab()
+            sandbox_widget = self.training_tab.create_sandbox_tab()
             tabs.addTab(sandbox_widget, "🧪 Sandbox")
         except Exception as e:
             print(f"Could not load sandbox tab: {e}")
@@ -1765,6 +2838,14 @@ class StudioMainWindow(QMainWindow):
 
         central_widget.setLayout(layout)
         self.setCentralWidget(central_widget)
+
+        self.status_label = QLabel("Device: checking...")
+        self.status_label.setStyleSheet("color: #ddd;")
+        self.statusBar().showMessage("Ready")
+        self.statusBar().addPermanentWidget(self.status_label)
+        
+        # Delay device detection slightly to ensure everything is initialized
+        QTimer.singleShot(100, self._init_device_status)
 
         # Apply comprehensive stylesheet
         self.setStyleSheet("""
@@ -1848,6 +2929,51 @@ class StudioMainWindow(QMainWindow):
                 background-color: #4CAF50;
             }
         """)
+
+    def set_status_message(self, message: str):
+        self.statusBar().showMessage(message)
+
+    def set_device_status(self, device: str):
+        if hasattr(self, "status_label") and self.status_label is not None:
+            self.status_label.setText(f"Device: {device}")
+
+    def _init_device_status(self):
+        """Initialize device status display on startup"""
+        try:
+            # Import here to ensure DLL paths are set up
+            from forgelab import DeviceManager
+            
+            resolved = DeviceManager.resolve_device("auto")
+            self.set_device_status(resolved)
+            
+            # Log device info
+            devices = DeviceManager.get_available_devices()
+            if devices.get('gpu'):
+                gpu_name = devices.get('gpu_name', 'Unknown')
+                print(f"EmberEye Studio: Using GPU - {gpu_name}")
+                self.statusBar().showMessage(f"GPU ready: {gpu_name}", 5000)
+                self._write_startup_log(f"GPU ready: {gpu_name}")
+            else:
+                print(f"EmberEye Studio: Using CPU (no GPU detected)")
+                self.statusBar().showMessage("Using CPU (no GPU detected)", 5000)
+                self._write_startup_log("CPU mode: no GPU detected")
+                
+        except Exception as e:
+            print(f"Warning: Device detection failed: {e}")
+            self.set_device_status("cpu")
+            import traceback
+            traceback.print_exc()
+            self._write_startup_log(f"Device detection failed: {e}")
+
+    def _write_startup_log(self, message: str):
+        try:
+            log_dir = Path(__file__).parent / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "startup.log"
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_path.write_text(f"[{timestamp}] {message}\n", encoding="utf-8")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

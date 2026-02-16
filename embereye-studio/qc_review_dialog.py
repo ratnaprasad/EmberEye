@@ -347,6 +347,16 @@ class QCReviewDialog(QDialog):
         if content_size.width() > 10 and content_size.height() > 10:
             self.image_label.setFixedSize(content_size)
 
+    def _lock_image_frame_size(self):
+        # Lock the image frame to its current size after initial layout
+        if not hasattr(self, "image_frame") or self.image_frame is None:
+            return
+        content_size = self.image_frame.contentsRect().size()
+        if content_size.width() < 10 or content_size.height() < 10:
+            return
+        self.image_frame.setMinimumSize(content_size)
+        self.image_frame.setMaximumSize(content_size)
+
     def _post_layout_sync(self):
         self._sync_image_label_size()
         if self._last_pixmap is not None:

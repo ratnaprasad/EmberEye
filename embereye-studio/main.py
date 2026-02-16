@@ -10,6 +10,41 @@ import sys
 import os
 from pathlib import Path
 
+# Setup DLL paths for PyTorch CUDA before any imports
+# This ensures torch DLLs are found even when the venv is not activated
+try:
+    repo_root = Path(__file__).parent.parent.resolve()
+    candidates = []
+    env_venv = os.environ.get("EMBEREYE_VENV_PATH")
+    if env_venv:
+        candidates.append(Path(env_venv))
+    candidates.append(repo_root / ".venv")
+    candidates.append(Path(sys.executable).parent.parent)
+
+    for venv_path in candidates:
+        torch_lib_path = venv_path / "Lib" / "site-packages" / "torch" / "lib"
+        if not torch_lib_path.exists():
+            continue
+
+        torch_lib_str = str(torch_lib_path)
+        if torch_lib_str not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+
+        if hasattr(os, 'add_dll_directory'):
+            try:
+                os.add_dll_directory(torch_lib_str)
+            except Exception:
+                pass
+        break
+except Exception as e:
+    print(f"Warning: Could not setup torch DLL paths: {e}")
+
+# Preload torch before Qt to avoid DLL conflicts
+try:
+    import torch  # noqa: F401
+except Exception as e:
+    print(f"Warning: torch preload failed: {e}")
+
 # Ensure studio directory is in path first (before parent)
 STUDIO_DIR = Path(__file__).parent.absolute()
 if str(STUDIO_DIR) not in sys.path:

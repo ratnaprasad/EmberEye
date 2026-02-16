@@ -4,6 +4,7 @@ Supports: Windows, macOS, Linux with automatic device detection.
 """
 
 import os
+import sys
 import json
 import yaml
 import shutil
@@ -15,6 +16,36 @@ from datetime import datetime
 import numpy as np
 import cv2
 from enum import Enum
+
+# Setup DLL paths for PyTorch CUDA (Windows)
+# This must happen BEFORE any torch imports
+try:
+    studio_root = Path(__file__).resolve().parent.parent
+    repo_root = studio_root.parent
+    candidates = []
+    env_venv = os.environ.get("EMBEREYE_VENV_PATH")
+    if env_venv:
+        candidates.append(Path(env_venv))
+    candidates.append(repo_root / ".venv")
+    candidates.append(Path(sys.executable).parent.parent)
+
+    for venv_path in candidates:
+        torch_lib_path = venv_path / "Lib" / "site-packages" / "torch" / "lib"
+        if not torch_lib_path.exists():
+            continue
+
+        torch_lib_str = str(torch_lib_path)
+        if torch_lib_str not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+
+        if hasattr(os, 'add_dll_directory'):
+            try:
+                os.add_dll_directory(torch_lib_str)
+            except Exception:
+                pass
+        break
+except Exception:
+    pass  # Silently ignore DLL setup errors
 
 # Configure logging
 logging.basicConfig(
