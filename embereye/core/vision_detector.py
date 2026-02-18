@@ -314,10 +314,36 @@ class VisionDetector:
 
     def _get_bundled_model_path(self):
         """
-        Get the path to the bundled YOLO model.
-        Works for both development and PyInstaller bundled app.
+        Get the path to a YOLO model.
+        Priority:
+        1. Current best model from ModelVersionManager (imported/trained models)
+        2. Latest loose model in ./models/ directory
+        3. Bundled model in embereye/core/models/yolov8n_fire.pt
         """
-        # Check if running as PyInstaller bundle
+        from pathlib import Path
+        
+        # First, try ModelVersionManager (imported models from Field/Studio)
+        try:
+            from embereye.core.model_versioning import ModelVersionManager
+            manager = ModelVersionManager()
+            current_best = manager.get_current_best()
+            if current_best and current_best.exists():
+                print(f"[VisionDetector] Using ModelVersionManager best: {current_best.name}")
+                return str(current_best)
+        except Exception as e:
+            print(f"[VisionDetector] ModelVersionManager check skipped: {e}")
+        
+        # Fallback: Check for loose models in ./models directory
+        models_dir = Path("./models")
+        if models_dir.exists():
+            model_files = [f for f in models_dir.glob("*.pt") if f.is_file() and not f.name.startswith(".")]
+            if model_files:
+                # Use the latest imported model (most recently modified)
+                latest_model = max(model_files, key=lambda p: p.stat().st_mtime)
+                print(f"[VisionDetector] Using loose model: {latest_model.name}")
+                return str(latest_model)
+        
+        # Final fallback to bundled model
         if getattr(sys, 'frozen', False):
             # Running as compiled executable
             base_path = sys._MEIPASS
@@ -334,16 +360,42 @@ class VisionDetector:
         """
         try:
             from ultralytics import YOLO
-            print(f"Loading YOLO model from: {path}")
+            print(f"[VisionDetector] Loading YOLO model from: {path}")
             self.model = YOLO(path)
             self.model_loaded = True
-            print(f"YOLO model loaded successfully. Classes: {self.model.names if hasattr(self.model, 'names') else 'N/A'}")
+            print(f"[VisionDetector] [OK] Model loaded successfully. Classes: {self.model.names if hasattr(self.model, 'names') else 'N/A'}")
+            return True
         except ImportError:
-            print("Warning: ultralytics package not installed. Install with: pip install ultralytics")
+            print("[VisionDetector] [ERROR] ultralytics package not installed. Install with: pip install ultralytics")
             self.model_loaded = False
+            return False
         except Exception as e:
-            print(f"Error loading YOLO model: {e}")
+            print(f"[VisionDetector] [ERROR] Error loading YOLO model: {e}")
             self.model_loaded = False
+            return False
+
+    def reload_from_latest_model(self):
+        """
+        Reload the latest .pt model from ./models directory.
+        Called after importing a new model to activate it.
+        """
+        from pathlib import Path
+        models_dir = Path("./models")
+        
+        if not models_dir.exists():
+            print("[VisionDetector] [ERROR] Models directory not found")
+            return False
+        
+        # Find latest .pt model
+        model_files = list(models_dir.glob("*.pt"))
+        if not model_files:
+            print("[VisionDetector] [ERROR] No .pt models found in ./models")
+            return False
+        
+        latest_model = max(model_files, key=lambda p: p.stat().st_mtime)
+        print(f"[VisionDetector] Found latest model: {latest_model.name}")
+        
+        return self.load_model(str(latest_model))
 
     def heuristic_fire_smoke(self, frame):
         """
@@ -379,6 +431,18 @@ class VisionDetector:
             return 0.0
         
         try:
+            # Track frame processing with a simple counter
+            if not hasattr(self, '_frame_count'):
+                self._frame_count = 0
+                self._last_log_frame = 0
+            
+            self._frame_count += 1
+            
+            # Log every 100 frames to avoid spam
+            if self._frame_count - self._last_log_frame >= 100:
+                self._last_log_frame = self._frame_count
+                print(f"[VisionDetector] Processing frame #{self._frame_count} through model...")
+            
             # Run inference (verbose=False to suppress output)
             results = self.model(frame, verbose=False, conf=0.25)  # 25% confidence threshold
             
