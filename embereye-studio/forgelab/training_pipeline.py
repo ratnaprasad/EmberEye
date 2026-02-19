@@ -295,15 +295,33 @@ class DatasetManager:
             
             logger.info(f"✓ {len(valid_files)} valid annotations")
             
-            # Build final class names list (current taxonomy + any unclassified discovered)
+            # CRITICAL FIX: Only use classes that actually have annotations
+            # Discover which class IDs are actually used in annotation .txt files
+            used_class_ids = self._discover_used_classes(valid_files)            
+            logger.info(f"Found {len(used_class_ids)} class IDs with actual annotations: {sorted(used_class_ids)}")
+            
+            # Build final class names list (only used classes + any unclassified discovered)
             current_leaf_classes = self._get_current_leaf_classes()
             # Pre-scan to discover orphaned classes and record categories
             self._discover_orphans(valid_files, current_leaf_classes)
-            # Compose final names list in stable order
-            self.final_names = list(current_leaf_classes)
+            
+            # Compose final names list with ONLY classes that have data
+            # Map used class IDs to actual class names from master_classes.json
+            self.final_names = []
+            for idx in sorted(used_class_ids):
+                if idx < len(current_leaf_classes):
+                    class_name = current_leaf_classes[idx]
+                    self.final_names.append(class_name)
+                    logger.info(f"  Class ID {idx} → {class_name}")
+                else:
+                    logger.warning(f"  Class ID {idx} out of range (max: {len(current_leaf_classes)-1})")
+            
+            # Add any unclassified classes discovered
             for extra in sorted(self._extra_unclassified):
                 if extra not in self.final_names:
                     self.final_names.append(extra)
+            
+            logger.info(f"Final dataset will have {len(self.final_names)} classes")
 
             # Split dataset and remap labels to final_names indices
             self._split_dataset(valid_files, config)
@@ -553,7 +571,7 @@ class DatasetManager:
     def _get_current_leaf_classes(self) -> List[str]:
         """Return current taxonomy leaf classes from master_class_config in annotation order."""
         try:
-            from master_class_config import load_master_classes
+            from embereye.core.class_config import load_master_classes
             classes_dict = load_master_classes()
             leaf_classes = []
             for category in classes_dict.get("IncidentEnvironment", []) or []:
@@ -566,7 +584,7 @@ class DatasetManager:
     def _find_category_for_class(self, cls_name: str) -> str:
         """Find the category name for a given leaf class name; returns 'UNKNOWN' if not found."""
         try:
-            from master_class_config import load_master_classes
+            from embereye.core.class_config import load_master_classes
             classes_dict = load_master_classes()
             for category in classes_dict.get("IncidentEnvironment", []) or []:
                 if cls_name in (classes_dict.get(category, []) or []):
@@ -585,6 +603,29 @@ class DatasetManager:
         unclassified = f"unclassified_{category}"
         self._extra_unclassified.add(unclassified)
         return unclassified
+
+    def _discover_used_classes(self, files: List[Path]) -> set[int]:
+        """Discover which class IDs are actually used in annotation .txt files.
+        
+        Returns:
+            Set of class IDs that have actual annotations
+        """
+        used_class_ids = set()
+        
+        for ann_file in files:
+            try:
+                with open(ann_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            parts = line.split()
+                            if len(parts) >= 5:  # YOLO format: class_id x y w h
+                                class_id = int(parts[0])
+                                used_class_ids.add(class_id)
+            except Exception:
+                continue
+        
+        return used_class_ids
 
     def _discover_orphans(self, files: List[Path], current_leaf_classes: List[str]):
         """Pre-scan annotation files to discover orphaned classes and record categories."""

@@ -780,7 +780,7 @@ class TrainingTab(QWidget):
     def _get_files_grouped_by_class(self, annotations_dir: str) -> dict:
         """Group annotation files by detected classes."""
         try:
-            from master_class_config import load_master_classes
+            from embereye.core.class_config import load_master_classes
             
             files_by_class = {}
             flat_classes = []
@@ -840,7 +840,7 @@ class TrainingTab(QWidget):
             )
 
     def _archive_trained_model(self):
-        """Archive the trained model to models/yolo_versions/v[timestamp]."""
+        """Archive the trained model to models/yolo_versions/v[timestamp] - only if not already archived."""
         import logging
         logger = logging.getLogger(__name__)
         
@@ -864,16 +864,36 @@ class TrainingTab(QWidget):
         
         # Get the most recent best.pt
         best_pt = max(best_pts, key=lambda p: p.stat().st_mtime)
-        logger.info(f"Found best model: {best_pt}")
+        best_pt_size = best_pt.stat().st_size
+        best_pt_mtime = best_pt.stat().st_mtime
+        logger.info(f"Found best model: {best_pt} (size: {best_pt_size}, mtime: {best_pt_mtime})")
         
-        # Create version directory
+        # Check if this model has already been archived
         models_dir = Path(get_data_path("models"))
         versions_dir = models_dir / "yolo_versions"
         versions_dir.mkdir(parents=True, exist_ok=True)
         
-        # Generate version name with timestamp
-        version_name = f"v{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Check all existing archived versions
+        for version_dir in versions_dir.glob("v*"):
+            archived_best = version_dir / "best.pt"
+            if archived_best.exists():
+                # Compare size and modification time
+                if (archived_best.stat().st_size == best_pt_size and 
+                    abs(archived_best.stat().st_mtime - best_pt_mtime) < 2):
+                    logger.info(f"Model already archived as {version_dir.name} - skipping duplicate")
+                    return
+        
+        # Model not yet archived - create new version
+        # Use the source file's modification time for the version name to ensure consistency
+        version_timestamp = datetime.fromtimestamp(best_pt_mtime).strftime('%Y%m%d_%H%M%S')
+        version_name = f"v{version_timestamp}"
         version_dir = versions_dir / version_name
+        
+        # If this version already exists, skip (shouldn't happen but be safe)
+        if version_dir.exists():
+            logger.info(f"Version {version_name} already exists - skipping")
+            return
+            
         version_dir.mkdir(parents=True, exist_ok=True)
         
         # Copy best.pt to version directory
@@ -888,6 +908,18 @@ class TrainingTab(QWidget):
             src = project_dir / metadata_file
             if src.exists():
                 shutil.copy2(src, version_dir / metadata_file)
+        
+        # Clean up the runs directory to avoid re-archiving duplicates on next startup
+        try:
+            runs_root = best_pt.parents[3]  # Go up from best.pt to runs root
+            if runs_root.name == "detect" and runs_root.parent.name == "detect":
+                # This is a nested runs/detect structure - delete the embereye_* folder
+                model_run = best_pt.parents[2]  # The embereye_TIMESTAMP folder
+                import shutil
+                shutil.rmtree(model_run)
+                logger.info(f"Cleaned up runs directory: {model_run}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up runs directory: {e}")
 
     def _archive_existing_models(self):
         """Archive any existing trained models that haven't been archived yet."""
@@ -991,6 +1023,11 @@ class TrainingTab(QWidget):
             # Refresh UI components
             self._refresh_model_versions()
             self._refresh_dataset_stats()
+            # Refresh sandbox models to show the newly trained model
+            try:
+                self._refresh_sandbox_models()
+            except Exception as e:
+                logger.warning(f"Failed to refresh sandbox models: {e}")
             
             QMessageBox.information(self, "Training Complete", msg)
         else:
@@ -1141,7 +1178,13 @@ class TrainingTab(QWidget):
             
             export_path = Path(export_path)
             
-            # Create metadata
+            # Create metadata with class versioning
+            from embereye.core.class_config import get_leaf_classes, get_classes_hash, load_master_classes
+            
+            classes_dict = load_master_classes()
+            leaf_classes = get_leaf_classes(classes_dict)
+            classes_hash = get_classes_hash(leaf_classes)
+            
             metadata = {
                 "model_version": version_name,
                 "export_date": datetime.now().isoformat(),
@@ -1149,6 +1192,9 @@ class TrainingTab(QWidget):
                 "model_name": "best.pt",
                 "app": "EmberEye Studio",
                 "compatible_apps": ["EmberEye Field"],
+                "class_count": len(leaf_classes),
+                "class_hash": classes_hash,
+                "class_names": leaf_classes,
                 "instructions": [
                     "1. Extract the ZIP file",
                     "2. Copy 'best.pt' to EmberEye Field's models directory",
@@ -1161,6 +1207,11 @@ class TrainingTab(QWidget):
             with zipfile.ZipFile(str(export_path), 'w', zipfile.ZIP_DEFLATED) as zipf:
                 # Add model file
                 zipf.write(str(best_pt), arcname="best.pt")
+                
+                # Add master classes
+                master_classes_path = Path(__file__).parent / "master_classes.json"
+                if master_classes_path.exists():
+                    zipf.write(str(master_classes_path), arcname="master_classes.json")
                 
                 # Add metadata
                 zipf.writestr("metadata.json", json.dumps(metadata, indent=2))
@@ -1177,14 +1228,16 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 1. Extract this ZIP file
 2. Locate EmberEye Field application directory:
-   - Default: `D:\\EE\\EmberEye\\embereye-field\\models\\`
+   - Default: `D:\\EE\\EmberEye\\embereye-field\\`
 3. Copy `best.pt` to the models directory
-4. Restart EmberEye Field application
-5. The model will appear in the model selection dropdown
+4. Copy `master_classes.json` to the main application directory (replace existing if different)
+5. Restart EmberEye Field application
+6. The model will appear in the model selection dropdown
 
 ## Files Included
 
 - `best.pt`: Trained YOLOv8 model weights (ready to use)
+- `master_classes.json`: Class definitions (fire, smoke, structural, human, vehicle, safety, environment)
 - `metadata.json`: Model information and compatibility details
 - `README.md`: This installation guide
 
@@ -1193,6 +1246,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ✓ EmberEye Field (Desktop)
 ✓ EmberEye Studio
 ✓ YOLOv8 Framework
+
+## Important Notes
+
+- **Class Definitions**: This export includes `master_classes.json` which contains the class hierarchy this model was trained with. For proper detection labeling, ensure these classes are used with this model.
+- **Backup**: Consider backing up your existing `master_classes.json` before updating, in case you need to revert.
 
 ## Contact
 
@@ -1203,7 +1261,7 @@ For issues or questions, refer to the main EmberEye documentation.
             # Verify ZIP contents
             with zipfile.ZipFile(str(export_path), 'r') as zipf:
                 file_list = zipf.namelist()
-                required_files = {'best.pt', 'metadata.json', 'README.md'}
+                required_files = {'best.pt', 'master_classes.json', 'metadata.json', 'README.md'}
                 missing = required_files - set(file_list)
                 
                 if missing:
@@ -1280,39 +1338,107 @@ For issues or questions, refer to the main EmberEye documentation.
             self.training_ready_count_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #f44336; border: none; background: transparent;")
 
     def _refresh_dataset_stats(self):
-        """Update Dataset Stats panel using DatasetInspector."""
+        """Update Dataset Stats panel from resolved YOLO dataset."""
         try:
-            from embereye.utils import DatasetInspector
-            # Use training_data as base_dir since that's where Studio datasets are prepared
-            inspector = DatasetInspector(base_dir=get_data_path("training_data"))
-            if not inspector.exists():
+            yolo_dataset_dir = Path(get_data_path("training_data")) / "yolo_dataset"
+            
+            # Check if resolved dataset exists
+            if not yolo_dataset_dir.exists():
                 self.dataset_images_counts_label.setText("Images: dataset not prepared")
                 self.dataset_classes_label.setText("Classes: —")
                 return
-            summary = inspector.summary()
-            imgs = summary.get('images', {})
+            
+            # Count images in train/val
+            train_imgs = len(list((yolo_dataset_dir / "images" / "train").glob("*.*"))) if (yolo_dataset_dir / "images" / "train").exists() else 0
+            val_imgs = len(list((yolo_dataset_dir / "images" / "val").glob("*.*"))) if (yolo_dataset_dir / "images" / "val").exists() else 0
+            
             self.dataset_images_counts_label.setText(
-                f"Images: train {imgs.get('train',0)}, val {imgs.get('val',0)}, test {imgs.get('test',0)}"
+                f"Images: train {train_imgs}, val {val_imgs}, test 0"
             )
-            classes = summary.get('classes', {})
-            total_cls = len(classes)
-            top = sorted(classes.items(), key=lambda kv: kv[1], reverse=True)[:5]
-            top_txt = ", ".join([f"{k} ({v})" for k, v in top]) if top else "—"
+            
+            # Count class distribution from labels
+            class_counts = {}
+            for split_dir in [(yolo_dataset_dir / "labels" / "train"), (yolo_dataset_dir / "labels" / "val")]:
+                if split_dir.exists():
+                    for label_file in split_dir.glob("*.txt"):
+                        try:
+                            with open(label_file) as f:
+                                for line in f:
+                                    if line.strip():
+                                        class_id = int(line.split()[0])
+                                        class_counts[class_id] = class_counts.get(class_id, 0) + 1
+                        except:
+                            pass
+            
+            total_cls = len(class_counts)
+            
+            # Show top 5 classes by count
+            if class_counts:
+                top = sorted(class_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                # Try to map class IDs to names from dataset.yaml
+                class_names = {}
+                yaml_file = yolo_dataset_dir / "dataset.yaml"
+                if yaml_file.exists():
+                    import yaml
+                    try:
+                        with open(yaml_file) as f:
+                            yaml_data = yaml.safe_load(f)
+                            class_names = yaml_data.get('names', {})
+                    except:
+                        pass
+                
+                top_txt = ", ".join([
+                    f"{class_names.get(k, k)} ({v})" if isinstance(class_names.get(k), str) else f"Class {k} ({v})"
+                    for k, v in top
+                ]) if top else "—"
+            else:
+                top_txt = "—"
+            
             self.dataset_classes_label.setText(f"Classes: {total_cls} ({top_txt})")
-        except Exception:
+        except Exception as e:
             self.dataset_images_counts_label.setText("Images: —")
             self.dataset_classes_label.setText("Classes: —")
 
     def _refresh_model_versions(self):
-        """Refresh model versions list"""
+        """Refresh model versions list - auto-archive any unarchived trained models first"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # First, auto-archive any recent trained models from runs/
+        try:
+            search_paths = [
+                Path(get_data_path("training_data")) / "runs" / "detect",
+                Path.cwd() / "runs" / "detect",
+                Path.cwd() / "embereye-studio" / "runs" / "detect",
+            ]
+            
+            recent_best_pts = []
+            for search_path in search_paths:
+                if search_path.exists():
+                    found = list(search_path.rglob("best.pt"))
+                    recent_best_pts.extend(found)
+            
+            # If we found recent trained models, archive them
+            if recent_best_pts:
+                try:
+                    self._archive_trained_model()
+                    logger.info("Auto-archived recent trained models")
+                except Exception as e:
+                    logger.warning(f"Failed to auto-archive model: {e}")
+        except Exception as e:
+            logger.warning(f"Error checking for recent models: {e}")
+        
+        # Now show all archived versions
         self.model_versions_list.clear()
         models_dir = Path(get_data_path("models")) / "yolo_versions"
         if models_dir.exists():
             version_dirs = sorted(models_dir.glob("v*"), reverse=True)
-            for version_dir in version_dirs:
+            for idx, version_dir in enumerate(version_dirs):
                 # Only show versions that have a best.pt file
                 if (version_dir / "best.pt").exists():
-                    self.model_versions_list.addItem(version_dir.name)
+                    # Tag the first (most recent) model as "latest"
+                    label = f"{version_dir.name} (latest)" if idx == 0 else version_dir.name
+                    self.model_versions_list.addItem(label)
 
     def _delete_all_training_data(self):
         """Delete all training data"""
@@ -1614,6 +1740,16 @@ For issues or questions, refer to the main EmberEye documentation.
         grey_high_layout.addWidget(self.sandbox_grey_high_spin)
         settings_layout.addLayout(grey_high_layout)
         
+        # Detection mode toggle
+        detection_layout = QHBoxLayout()
+        detection_layout.addWidget(QLabel("Detection Mode:"))
+        self.sandbox_detection_mode_combo = QComboBox()
+        self.sandbox_detection_mode_combo.addItems(["YOLO Only", "Hybrid Mode"])
+        self.sandbox_detection_mode_combo.setCurrentIndex(0)
+        self.sandbox_detection_mode_combo.setToolTip("YOLO Only: pure neural network | Hybrid Mode: YOLO + heuristics")
+        detection_layout.addWidget(self.sandbox_detection_mode_combo, 1)
+        settings_layout.addLayout(detection_layout)
+        
         # Legend
         legend = QLabel("🟢 >70% Confirmed | 🟠 30-70% Grey Zone | 🔴 Flagged")
         legend.setStyleSheet("font-size: 10px; color: #666; padding: 5px;")
@@ -1808,18 +1944,53 @@ For issues or questions, refer to the main EmberEye documentation.
         return self.sandbox_widget
 
     def _refresh_sandbox_models(self):
-        """Refresh sandbox model list"""
-        self.sandbox_model_combo.clear()
+        """Refresh sandbox model list from trained and pretrained models"""
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # Add trained versions from yolo_versions (newest first)
-        models_dir = Path(get_data_path("models")) / "yolo_versions"
+        self.sandbox_model_combo.clear()
         has_trained_models = False
-        if models_dir.exists():
-            for version_dir in sorted(models_dir.glob("v*"), reverse=True):
-                best_pt = version_dir / "best.pt"
-                if best_pt.exists():
-                    self.sandbox_model_combo.addItem(f"{version_dir.name} (trained)")
-                    has_trained_models = True
+        
+        # First, check for recently trained models in runs/ directory
+        try:
+            search_paths = [
+                Path(get_data_path("training_data")) / "runs" / "detect",
+                Path.cwd() / "runs" / "detect",
+                Path.cwd() / "embereye-studio" / "runs" / "detect",
+            ]
+            
+            recent_best_pts = []
+            for search_path in search_paths:
+                if search_path.exists():
+                    found = list(search_path.rglob("best.pt"))
+                    recent_best_pts.extend(found)
+            
+            # If we found recent trained models, archive them
+            if recent_best_pts:
+                try:
+                    self._archive_trained_model()
+                except Exception as e:
+                    logger.warning(f"Failed to auto-archive model: {e}")
+        except Exception as e:
+            logger.warning(f"Error checking for recent models: {e}")
+        
+        # Add archived version (trained models)
+        try:
+            models_dir = Path(get_data_path("models")) / "yolo_versions"
+            if models_dir.exists():
+                for idx, version_dir in enumerate(sorted(models_dir.glob("v*"), reverse=True)):
+                    best_pt = version_dir / "best.pt"
+                    if best_pt.exists():
+                        # Tag the first (most recent) model as "latest"
+                        if idx == 0:
+                            label = f"{version_dir.name} (latest)"
+                        else:
+                            label = f"{version_dir.name} (trained)"
+                        self.sandbox_model_combo.addItem(label)
+                        has_trained_models = True
+                        logger.info(f"Added trained model: {version_dir.name}")
+        except Exception as e:
+            logger.warning(f"Error loading trained models: {e}")
         
         # Add pretrained models
         self.sandbox_model_combo.addItem("yolov8n.pt (pretrained)")
@@ -2664,17 +2835,42 @@ class SettingsTab(QWidget):
 
         settings_tabs.addTab(classes_tab, "Classes")
 
+        # --- Models Tab ---
+        models_tab = QWidget()
+        models_layout = QVBoxLayout(models_tab)
+        models_layout.setContentsMargins(6, 6, 6, 6)
+        models_layout.setSpacing(6)
+
+        models_label = QLabel("Import and Manage YOLO Models:")
+        models_layout.addWidget(models_label)
+
+        import_model_btn = QPushButton("📥 Import Model (.pt)")
+        import_model_btn.setToolTip("Import a YOLO .pt model file into the workspace")
+        import_model_btn.clicked.connect(self._import_model)
+        models_layout.addWidget(import_model_btn)
+
+        models_info_label = QLabel("Available Models:")
+        models_layout.addWidget(models_info_label)
+
+        self.models_list = QTextEdit()
+        self.models_list.setReadOnly(True)
+        self.models_list.setPlaceholderText("Imported models will appear here...\n\nModels are stored in: workspace_data/models/")
+        models_layout.addWidget(self.models_list)
+
+        settings_tabs.addTab(models_tab, "Models")
+
         layout.addWidget(settings_tabs)
         layout.addStretch()
         self.setLayout(layout)
 
         self._refresh_classes_tree()
+        self._refresh_models_list()
 
     def show_master_class_config(self):
         """Open the master class configuration dialog and refresh classes on save."""
         try:
             from master_class_config_dialog import MasterClassConfigDialog
-            from master_class_config import load_master_classes
+            from embereye.core.class_config import load_master_classes
 
             dlg = MasterClassConfigDialog(self)
             if dlg.exec_() == QDialog.Accepted:
@@ -2688,7 +2884,7 @@ class SettingsTab(QWidget):
         if self.classes_tree is None:
             return
         try:
-            from master_class_config import load_master_classes
+            from embereye.core.class_config import load_master_classes
             self._classes_dict = load_master_classes()
         except Exception:
             self._classes_dict = {}
@@ -2776,6 +2972,75 @@ class SettingsTab(QWidget):
                 child_item = self._build_tree_item(item, child, full_path)
                 child_item.setExpanded(True)
         return item
+
+    def _import_model(self):
+        """Import a YOLO .pt model file"""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, 
+                "Import Model",
+                os.path.expanduser("~"),
+                "PyTorch Models (*.pt);;All Files (*)"
+            )
+            if not file_path:
+                return
+            
+            # Create models directory if it doesn't exist
+            models_dir = Path("./workspace_data/models")
+            models_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy model file to workspace
+            model_name = Path(file_path).name
+            dest_path = models_dir / model_name
+            
+            # Check if file already exists
+            if dest_path.exists():
+                reply = QMessageBox.question(
+                    self,
+                    "File Exists",
+                    f"Model '{model_name}' already exists. Overwrite?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+            
+            shutil.copy2(file_path, dest_path)
+            QMessageBox.information(
+                self,
+                "Model Imported",
+                f"Model '{model_name}' has been imported successfully.\n\nLocation: {dest_path}"
+            )
+            self._refresh_models_list()
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import model:\n{e}")
+
+    def _refresh_models_list(self):
+        """Refresh the list of available models"""
+        try:
+            models_dir = Path("./workspace_data/models")
+            if not models_dir.exists():
+                self.models_list.setText("No models directory. Models will be created on import.")
+                return
+            
+            model_files = list(models_dir.glob("*.pt"))
+            
+            if not model_files:
+                self.models_list.setText("No models imported yet.\n\nClick 'Import Model (.pt)' to add your first model.")
+                return
+            
+            # Display model information
+            model_info = "Available Models:\n" + "=" * 50 + "\n\n"
+            for idx, model_file in enumerate(sorted(model_files), 1):
+                size_mb = model_file.stat().st_size / (1024 * 1024)
+                mod_time = datetime.fromtimestamp(model_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                model_info += f"{idx}. {model_file.name}\n"
+                model_info += f"   Size: {size_mb:.2f} MB\n"
+                model_info += f"   Modified: {mod_time}\n\n"
+            
+            self.models_list.setText(model_info)
+        except Exception as e:
+            self.models_list.setText(f"Error loading models list:\n{e}")
 
 
 class StudioMainWindow(QMainWindow):
