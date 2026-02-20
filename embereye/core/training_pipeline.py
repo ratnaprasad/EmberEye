@@ -480,7 +480,7 @@ class DatasetManager:
     def _get_current_leaf_classes(self) -> List[str]:
         """Return current taxonomy leaf classes from master_class_config in annotation order."""
         try:
-            from master_class_config import load_master_classes
+            from embereye.core.class_config import load_master_classes
             classes_dict = load_master_classes()
             leaf_classes = []
             for category in classes_dict.get("IncidentEnvironment", []) or []:
@@ -493,7 +493,7 @@ class DatasetManager:
     def _find_category_for_class(self, cls_name: str) -> str:
         """Find the category name for a given leaf class name; returns 'UNKNOWN' if not found."""
         try:
-            from master_class_config import load_master_classes
+            from embereye.core.class_config import load_master_classes
             classes_dict = load_master_classes()
             for category in classes_dict.get("IncidentEnvironment", []) or []:
                 if cls_name in (classes_dict.get(category, []) or []):

@@ -46,6 +46,7 @@ except:
 # Import centralized get_data_path
 sys.path.insert(0, str(Path(__file__).parent.parent / "embereye"))
 from embereye.utils.resource_helper import get_data_path
+from embereye.core.class_config import get_leaf_classes, get_classes_hash
 
 
 class AnnotationCanvas(QLabel):
@@ -800,20 +801,9 @@ class AnnotationTab(QWidget):
             icon_pixmap.fill(color)
             self.class_combo.addItem(QIcon(icon_pixmap), class_name)
 
-    def _load_classes(self):
-        """Load class configuration"""
-        try:
-            from master_class_config import load_master_classes
-            classes = load_master_classes()
-            self.leaf_classes = []
-            for category in classes.get("IncidentEnvironment", []) or []:
-                for leaf in classes.get(category, []) or []:
-                    self.leaf_classes.append(leaf)
-        except:
-            self.leaf_classes = ["Fire", "Smoke", "Person"]
-
-        for idx, cls in enumerate(self.leaf_classes):
-            self.class_id_map[cls] = idx
+    def _rebuild_class_map(self, class_list):
+        self.leaf_classes = list(class_list or [])
+        self.class_id_map = {cls: idx for idx, cls in enumerate(self.leaf_classes)}
 
         # Build class colors and set on canvas
         self.class_colors = self._build_class_colors(self.leaf_classes)
@@ -829,6 +819,53 @@ class AnnotationTab(QWidget):
             self.class_combo.setCurrentIndex(-1)
 
         self._refresh_class_combo_items()
+
+    def _load_labels_list(self, labels_path: Path):
+        try:
+            lines = labels_path.read_text(encoding="utf-8").splitlines()
+            return [line.strip() for line in lines if line.strip()]
+        except Exception:
+            return []
+
+    def _apply_media_class_mapping(self):
+        if not self.media_base:
+            return
+        out_dir = Path(get_data_path(f"annotations/{self.media_base}"))
+        labels_path = out_dir / "labels.txt"
+        if not labels_path.exists():
+            return
+
+        labels = self._load_labels_list(labels_path)
+        if not labels:
+            return
+
+        if labels != self.leaf_classes:
+            QMessageBox.warning(
+                self,
+                "Class Mapping",
+                "labels.txt does not match the current class list.\n"
+                "Using labels.txt for this media to prevent ID drift."
+            )
+        self._rebuild_class_map(labels)
+
+    def _write_labels_files(self, out_dir: Path, class_list):
+        labels_path = out_dir / "labels.txt"
+        labels_path.write_text("\n".join(class_list) + "\n", encoding="utf-8")
+
+        meta = {
+            "class_count": len(class_list),
+            "class_hash": get_classes_hash(class_list),
+            "classes": list(class_list),
+        }
+        meta_path = out_dir / "labels_meta.json"
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    def _load_classes(self):
+        """Load class configuration"""
+        try:
+            self._rebuild_class_map(get_leaf_classes())
+        except Exception:
+            self._rebuild_class_map(["Fire", "Smoke", "Person"])
 
     def import_video(self):
         """Import video file"""
@@ -862,6 +899,8 @@ class AnnotationTab(QWidget):
             self.media_mode = 'video'
             self.video_path = path
             self.media_base = Path(path).stem
+
+            self._apply_media_class_mapping()
             
             self.frame_slider.setEnabled(True)
             self.play_btn.setEnabled(True)
@@ -891,6 +930,8 @@ class AnnotationTab(QWidget):
             self.frame_index = 0
             self.total_frames = len(self.image_paths)
             self.media_base = Path(self.image_paths[0]).parent.name
+
+            self._apply_media_class_mapping()
             
             self.frame_slider.setEnabled(True)
             self.prev_btn.setEnabled(True)
@@ -1073,6 +1114,9 @@ class AnnotationTab(QWidget):
                         f.write(f"{cls_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
             
             cv2.imwrite(str(img_path), self.current_frame)
+            
+            # Persist labels.txt and labels_meta.json for class consistency validation
+            self._write_labels_files(out_dir, self.leaf_classes)
             
             # Mark shapes as saved
             for shape in self.canvas.shapes:

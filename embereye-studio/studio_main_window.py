@@ -3207,19 +3207,23 @@ class StudioMainWindow(QMainWindow):
         try:
             # Import here to ensure DLL paths are set up
             from forgelab import DeviceManager
-            
-            resolved = DeviceManager.resolve_device("auto")
-            self.set_device_status(resolved)
-            
-            # Log device info
+
+            # Log device info and update UI status from detected device
             devices = DeviceManager.get_available_devices()
             if devices.get('gpu'):
                 gpu_name = devices.get('gpu_name', 'Unknown')
+                self.set_device_status("gpu")
                 print(f"EmberEye Studio: Using GPU - {gpu_name}")
                 self.statusBar().showMessage(f"GPU ready: {gpu_name}", 5000)
                 self._write_startup_log(f"GPU ready: {gpu_name}")
+            elif devices.get('mps'):
+                self.set_device_status("mps")
+                print("EmberEye Studio: Using MPS (Apple Metal)")
+                self.statusBar().showMessage("MPS ready", 5000)
+                self._write_startup_log("MPS ready")
             else:
-                print(f"EmberEye Studio: Using CPU (no GPU detected)")
+                self.set_device_status("cpu")
+                print("EmberEye Studio: Using CPU (no GPU detected)")
                 self.statusBar().showMessage("Using CPU (no GPU detected)", 5000)
                 self._write_startup_log("CPU mode: no GPU detected")
                 

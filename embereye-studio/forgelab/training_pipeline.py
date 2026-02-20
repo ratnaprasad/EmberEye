@@ -23,15 +23,23 @@ try:
     studio_root = Path(__file__).resolve().parent.parent
     repo_root = studio_root.parent
     candidates = []
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+        candidates.append(meipass)
     env_venv = os.environ.get("EMBEREYE_VENV_PATH")
     if env_venv:
         candidates.append(Path(env_venv))
     candidates.append(repo_root / ".venv")
     candidates.append(Path(sys.executable).parent.parent)
 
-    for venv_path in candidates:
-        torch_lib_path = venv_path / "Lib" / "site-packages" / "torch" / "lib"
-        if not torch_lib_path.exists():
+    for base_path in candidates:
+        torch_lib_candidates = [
+            base_path / "Lib" / "site-packages" / "torch" / "lib",  # venv layout
+            base_path / "torch" / "lib",                             # frozen app or direct installation
+        ]
+
+        torch_lib_path = next((p for p in torch_lib_candidates if p.exists()), None)
+        if torch_lib_path is None:
             continue
 
         torch_lib_str = str(torch_lib_path)

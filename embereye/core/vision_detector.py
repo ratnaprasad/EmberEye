@@ -70,6 +70,13 @@ class VisionDetector:
     def __init__(self, yolo_model_path=None):
         self.model = None
         self.model_loaded = False
+        self.central_class_names = []
+
+        try:
+            from embereye.core.class_config import get_leaf_classes
+            self.central_class_names = get_leaf_classes()
+        except Exception as exc:
+            log_warning(f"Could not load central class mapping: {exc}")
         
         # Auto-detect bundled model path
         if yolo_model_path is None:
@@ -479,14 +486,20 @@ class VisionDetector:
                         conf = float(box.conf[0])
                         class_id = int(box.cls[0])
                         
-                        # Get class name
+                        # Get raw class name from model
                         if names:
-                            class_name = names.get(class_id, str(class_id))
+                            raw_class_name = names.get(class_id, str(class_id))
                         else:
-                            class_name = str(class_id)
+                            raw_class_name = str(class_id)
+
+                        # Map class id to central canonical class label when available
+                        if 0 <= class_id < len(self.central_class_names):
+                            class_name = self.central_class_names[class_id]
+                        else:
+                            class_name = raw_class_name
                         
                         # Consider only fire-relevant classes
-                        if str(class_name).strip().lower() in allowed_names:
+                        if str(raw_class_name).strip().lower() in allowed_names:
                             detections.append({
                                 'class': class_name,
                                 'confidence': conf

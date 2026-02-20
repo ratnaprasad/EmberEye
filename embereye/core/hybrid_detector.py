@@ -31,6 +31,13 @@ class HybridDetector:
         self.model = None
         self.model_loaded = False
         self.yolo_model_path = model_path
+        self.central_class_names: List[str] = []
+
+        try:
+            from embereye.core.class_config import get_leaf_classes
+            self.central_class_names = get_leaf_classes()
+        except Exception as e:
+            print(f"[HybridDetector-{self.stream_id}] Could not load central class mapping: {e}")
         
         # Heuristic parameters
         self.heuristic_threshold = 0.20  # Skip YOLO if heuristic < 0.20
@@ -247,7 +254,10 @@ class HybridDetector:
                         for box in result.boxes:
                             class_id = int(box.cls[0])
                             confidence = float(box.conf[0])
-                            class_name = self.model.names.get(class_id, f"class_{class_id}")
+                            if 0 <= class_id < len(self.central_class_names):
+                                class_name = self.central_class_names[class_id]
+                            else:
+                                class_name = self.model.names.get(class_id, f"class_{class_id}")
                             
                             detections.append({
                                 'class': class_name,
