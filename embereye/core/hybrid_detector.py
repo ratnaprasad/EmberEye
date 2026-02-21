@@ -31,7 +31,11 @@ class HybridDetector:
         self.model = None
         self.model_loaded = False
         self.yolo_model_path = model_path
+        self.last_load_error = None
+        self.inference_device = "cpu"
         self.central_class_names: List[str] = []
+
+        print(f"[HybridDetector-{self.stream_id}] Init with model_path={model_path!r}")
 
         try:
             from embereye.core.class_config import get_leaf_classes
@@ -69,19 +73,24 @@ class HybridDetector:
         }
         
         # Try to load YOLO model
-        if model_path:
+        env_model_path = os.environ.get("YOLO_MODEL_PATH")
+        if env_model_path:
+            self._load_yolo_model(env_model_path)
+        elif model_path:
             self._load_yolo_model(model_path)
         else:
             self._auto_load_model()
     
     def _auto_load_model(self) -> None:
         """Automatically find and load latest model from ModelVersionManager or ./models/"""
+        print(f"[HybridDetector-{self.stream_id}] Auto-load model starting...")
         # First, try to use ModelVersionManager (preferred location for imported models)
         try:
             from embereye.core.model_versioning import ModelVersionManager
             manager = ModelVersionManager()
             current_best = manager.get_current_best()
             if current_best and current_best.exists():
+                print(f"[HybridDetector-{self.stream_id}] ModelVersionManager best: {current_best}")
                 self._load_yolo_model(str(current_best))
                 return
         except Exception as e:
@@ -96,23 +105,82 @@ class HybridDetector:
                 reverse=True
             )
             if model_files:
-                print(f"[HybridDetector-{self.stream_id}] Using loose model file: {model_files[0].name}")
+                print(f"[HybridDetector-{self.stream_id}] Using loose model file: {model_files[0]}")
                 self._load_yolo_model(str(model_files[0]))
                 return
         
         print(f"[HybridDetector-{self.stream_id}] No model found in ModelVersionManager or ./models/")
     
+    def _ensure_torch_dlls(self) -> None:
+        """Best-effort add torch DLL directories to PATH (Windows)."""
+        try:
+            repo_root = Path(__file__).parent.parent.parent.resolve()
+            candidates = []
+            if getattr(sys, "frozen", False):
+                meipass = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+                candidates.append(meipass)
+            env_venv = os.environ.get("EMBEREYE_VENV_PATH")
+            if env_venv:
+                candidates.append(Path(env_venv))
+            candidates.append(repo_root / ".venv")
+            candidates.append(Path(sys.executable).parent.parent)
+
+            for base_path in candidates:
+                torch_lib_candidates = [
+                    base_path / "Lib" / "site-packages" / "torch" / "lib",
+                    base_path / "torch" / "lib",
+                ]
+                torch_lib_path = next((p for p in torch_lib_candidates if p.exists()), None)
+                if torch_lib_path is None:
+                    continue
+
+                torch_lib_str = str(torch_lib_path)
+                if torch_lib_str not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+
+                if hasattr(os, "add_dll_directory"):
+                    try:
+                        os.add_dll_directory(torch_lib_str)
+                    except Exception:
+                        pass
+                break
+        except Exception:
+            pass
+
     def _load_yolo_model(self, model_path: str) -> None:
         """Load YOLO model (must be called in worker thread to avoid DLL issues)"""
+        self._ensure_torch_dlls()
         try:
+            force_cpu = os.environ.get("EMBEREYE_FORCE_CPU", "").strip().lower() in ("1", "true", "yes")
+            if force_cpu:
+                os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+            import torch
             from ultralytics import YOLO
-            print(f"[HybridDetector-{self.stream_id}] Loading YOLO from: {model_path}")
-            self.model = YOLO(model_path)
+
+            # Normalize path to avoid escape sequence issues
+            normalized_path = model_path.replace('\\', '/')
+            exists = os.path.exists(normalized_path)
+            device = "cpu" if force_cpu or not torch.cuda.is_available() else "0"
+            self.inference_device = device
+            print(f"[HybridDetector-{self.stream_id}] Loading YOLO from: {normalized_path} (exists={exists}, device={device})")
+
+            self.model = YOLO(normalized_path)
             self.model_loaded = True
-            self.yolo_model_path = model_path
+            self.last_load_error = None
+            self.yolo_model_path = normalized_path
             print(f"[HybridDetector-{self.stream_id}] [OK] Model loaded. Classes: {len(self.model.names)}")
+        except OSError as e:
+            self.last_load_error = repr(e)
+            if 'DLL' in str(e) or 'initialization routine' in str(e):
+                print(f"[HybridDetector-{self.stream_id}] [WARN] DLL init error, fallback to heuristic-only: {e!r}")
+            else:
+                print(f"[HybridDetector-{self.stream_id}] [ERROR] Failed to load model from {model_path}: {e!r}")
+            self.model_loaded = False
+            self.model = None
         except Exception as e:
-            print(f"[HybridDetector-{self.stream_id}] [ERROR] Failed to load model: {e}")
+            self.last_load_error = repr(e)
+            print(f"[HybridDetector-{self.stream_id}] [ERROR] Failed to load model from {model_path}: {e!r}")
             self.model_loaded = False
             self.model = None
     
@@ -241,7 +309,7 @@ class HybridDetector:
                 )
             
             # Inference
-            results = self.model(frame, verbose=False, conf=0.25)
+            results = self.model(frame, verbose=False, conf=0.25, device=self.inference_device)
             
             detections = []
             max_confidence = 0.0

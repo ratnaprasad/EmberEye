@@ -15,13 +15,14 @@ from PyQt5.QtCore import (
     QObject, QMetaObject, Q_ARG
 )
 
-from shared.infernoml import VisionDetector
+from embereye.core.vision_detector import VisionDetector
+from embereye.core.pipeline_logs import log_vision_event
 from shared.emberkit import log_debug, log_error
 from debug_config import is_debug_enabled
-from concurrent.futures import ThreadPoolExecutor
 from shared.emberkit import get_fps_controller
 from shared.emberkit import get_metrics
 # Hybrid detection system imports
+import threading
 import time
 from embereye.core.detection_queue import get_detection_queue, FrameMetadata
 from embereye.core.detection_worker import get_detection_worker, stop_detection_worker
@@ -33,6 +34,8 @@ class VideoWorker(QObject):
     vision_score_ready = pyqtSignal(float)  # New signal for fire/smoke confidence
     # Emit when an anomaly frame is captured: QImage, score, stream_id, yolo_score, detections
     anomaly_frame_ready = pyqtSignal(QImage, float, str, float, object)
+    # Emit when YOLO returns detections: status, yolo_score, detections, frame_size
+    detection_event = pyqtSignal(str, float, object, object)
     start_timer_requested = pyqtSignal()  # Signal to safely start timer from main thread
     stop_timer_requested = pyqtSignal()  # Signal to safely stop timer from main thread
     set_interval_requested = pyqtSignal(int)  # Signal to safely set timer interval from main thread
@@ -53,9 +56,6 @@ class VideoWorker(QObject):
         self.detection_queue = get_detection_queue()
         self.detection_worker = None  # Will be started in init_detection_worker()
         self._detection_frame_id = 0  # Counter for tracking queued frames
-        # Thread pool for asynchronous vision detection to prevent blocking capture loop
-        self.detection_pool = ThreadPoolExecutor(max_workers=4)
-        self._pending_detections = 0  # simple backpressure counter
         # Adaptive FPS controller and metrics
         self.fps_controller = get_fps_controller()
         self.metrics = get_metrics()
@@ -64,9 +64,16 @@ class VideoWorker(QObject):
         # Anomaly capture
         self.anomaly_threshold = 0.4
         self._last_qimage = None
+        self._detections_lock = threading.Lock()
+        self._latest_detections = []
+        self._latest_detection_ts = 0.0
+        self._detection_overlay_ttl_ms = 1500
+        self._detection_counter = 0
+        self._last_frame_size = None
         # RTSP buffer management for low latency
         self._is_rtsp_stream = self._check_if_rtsp(rtsp_url)
         self._frame_skip_count = 0  # Track frames skipped for buffer drain
+        self._heuristic_log_counter = 0
 
     def init_detection_worker(self):
         """Initialize the background DetectionWorker for async YOLO processing."""
@@ -97,6 +104,12 @@ class VideoWorker(QObject):
             detections = result.detections
             primary_class = result.primary_class
             yolo_latency = result.yolo_latency_ms
+
+            with self._detections_lock:
+                self._latest_detections = detections or []
+                self._latest_detection_ts = result.timestamp_ms or (time.time() * 1000)
+                if detections:
+                    self._detection_counter += 1
             
             # Map confidence level to numerical score for backward compatibility
             if status == 'CONFIRMED':
@@ -108,6 +121,15 @@ class VideoWorker(QObject):
             
             # ONLY emit anomaly if YOLO confirmed detection (>= 0.50)
             # This prevents heuristic false positives from appearing in Anomalies tab
+            if detections:
+                self.detection_event.emit(status, yolo_score, detections or [], self._last_frame_size)
+
+            log_vision_event(
+                "YOLO",
+                str(self.stream_id),
+                f"status={status} conf={confidence:.3f} yolo_score={yolo_score:.3f} det={len(detections or [])} class={primary_class or '-'} latency_ms={yolo_latency:.1f}"
+            )
+
             if status in ['CONFIRMED', 'POSSIBLE'] and len(detections) > 0:
                 # Emit anomaly frame with YOLO results
                 if self._last_qimage:
@@ -118,6 +140,59 @@ class VideoWorker(QObject):
                     print(f"[DETECTION_RESULT] Skipping emission: stream={self.stream_id}, status={status}, yolo={yolo_score:.3f} (below 0.50 threshold)", flush=True)
         except Exception as e:
             log_debug(f"Detection result handler error: {e}")
+
+    def _draw_hybrid_detections(self, frame):
+        """Overlay latest hybrid detection boxes on the display frame."""
+        try:
+            with self._detections_lock:
+                detections = list(self._latest_detections)
+                last_ts = self._latest_detection_ts
+
+            if not detections:
+                return frame
+
+            age_ms = (time.time() * 1000) - last_ts
+            if age_ms > self._detection_overlay_ttl_ms:
+                return frame
+
+            for det in detections:
+                bbox = det.get('bbox')
+                if not bbox or len(bbox) != 4:
+                    continue
+
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+                class_name = det.get('class', 'UNKNOWN')
+                conf = float(det.get('confidence', 0.0))
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
+                label = f"{class_name} {conf:.2f}"
+                cv2.putText(frame, label, (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 2)
+
+            return frame
+        except Exception as e:
+            log_debug(f"Hybrid overlay error: {e}")
+            return frame
+
+    def _draw_detection_counter(self, frame):
+        """Draw a small per-stream detection counter for live debugging."""
+        try:
+            with self._detections_lock:
+                count = self._detection_counter
+
+            label = f"DET:{count}"
+            cv2.putText(
+                frame,
+                label,
+                (8, 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 0),
+                2
+            )
+            return frame
+        except Exception as e:
+            log_debug(f"Detection counter overlay error: {e}")
+            return frame
 
     def start_stream(self):
         try:
@@ -253,15 +328,10 @@ class VideoWorker(QObject):
             # Record frame processed
             self.metrics.record_frame_processed(self.stream_id)
 
-            # Draw detections on frame BEFORE display (synchronous, fast path)
-            # This ensures detection boxes are visible on the video wall
+            # Draw detections on frame BEFORE display (fast path)
             display_frame = frame.copy()
-            try:
-                display_frame = self.vision_detector.draw_detections(display_frame, confidence_threshold=0.25)
-            except Exception as e:
-                log_debug(f"Detection drawing error: {e}")
-                # Fallback to original frame if drawing fails
-                display_frame = frame
+            display_frame = self._draw_hybrid_detections(display_frame)
+            display_frame = self._draw_detection_counter(display_frame)
 
             # Convert for display immediately (fast path)
             frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
@@ -271,6 +341,7 @@ class VideoWorker(QObject):
             self.frame_ready.emit(QPixmap.fromImage(q_img))
             # Keep a copy for anomaly capture (thread-safe copy created above)
             self._last_qimage = q_img
+            self._last_frame_size = (w, h)
             
             # HYBRID DETECTION: Heuristic-first, then queue for YOLO if needed
             try:
@@ -295,33 +366,33 @@ class VideoWorker(QObject):
                     )
                     self._detection_frame_id += 1
                     self.detection_queue.add_frame(metadata)
+                    log_vision_event(
+                        "HEURISTIC",
+                        str(self.stream_id),
+                        f"score={h_score:.3f} threshold={heuristic_threshold:.3f} decision=QUEUED frame_id={frame_id}"
+                    )
                     if is_debug_enabled():
                         print(f"[HYBRID_DETECTION] Queued frame {metadata['frame_id']} for YOLO (heur={h_score:.3f})", flush=True)
+                else:
+                    self._heuristic_log_counter += 1
+                    if self._heuristic_log_counter % 30 == 0:
+                        log_vision_event(
+                            "HEURISTIC",
+                            str(self.stream_id),
+                            f"score={h_score:.3f} threshold={heuristic_threshold:.3f} decision=SKIP"
+                        )
             except Exception as e:
                 log_debug(f"Hybrid detection error: {e}")
 
-            # Submit vision detection asynchronously if backlog is low
-            if self._pending_detections < 8:  # simple cap to avoid unbounded queue
-                self._pending_detections += 1
-                if is_debug_enabled():
-                    print(f"[FRAME_SUBMIT] Submitting detection for stream {self.stream_id}, pending={self._pending_detections}", flush=True)
-                future = self.detection_pool.submit(self._detect_safe, frame, time.time())
-                future.add_done_callback(self._on_detection_done)
-                if is_debug_enabled():
-                    print(f"[FRAME_SUBMIT] Detection submitted successfully", flush=True)
-            else:
-                # Drop frame due to backpressure
-                print(f"[FRAME_DROP] Dropped frame, pending={self._pending_detections}", flush=True)
-                self.metrics.record_frame_dropped(self.stream_id)
-            
-            # Update metrics and adaptive FPS
-            self.metrics.update_detection_queue_depth(self.stream_id, self._pending_detections)
+            # Update metrics - track hybrid queue depth instead of old pending counter
+            queue_depth = self.detection_queue.get_queue_size()
+            self.metrics.update_detection_queue_depth(self.stream_id, queue_depth)
             
             # Periodic FPS adjustment check
             now = time.time()
             if now - self._last_fps_check >= self._fps_check_interval:
                 self._last_fps_check = now
-                new_fps = self.fps_controller.update(self.stream_id, self._pending_detections)
+                new_fps = self.fps_controller.update(self.stream_id, queue_depth)
                 new_interval = self.fps_controller.get_interval_ms(self.stream_id)
                 if self.timer.interval() != new_interval:
                     # Request timer interval change from main thread
@@ -334,60 +405,6 @@ class VideoWorker(QObject):
             self.connection_status.emit(False)
             self.stop_stream()
 
-    def _detect_safe(self, frame, start_time):
-        try:
-            import time
-            # Get heuristic and YOLO separately
-            h_score = self.vision_detector.heuristic_fire_smoke(frame)
-            y_score = self.vision_detector.yolo_detect(frame)
-            score = max(h_score, y_score)
-            latency_ms = (time.time() - start_time) * 1000
-            return (score, y_score, latency_ms)
-        except Exception as e:
-            log_error(f"Vision detection error: {e}")
-            return (None, 0, 0)
-
-    def _on_detection_done(self, future):
-        if is_debug_enabled():
-            print(f"[DETECTION_DONE] Called for stream {self.stream_id}", flush=True)
-        self._pending_detections = max(0, self._pending_detections - 1)
-        result = future.result()
-        if is_debug_enabled():
-            print(f"[DETECTION_DONE] Result: {result}", flush=True)
-        if result:
-            score, yolo_score, latency_ms = result
-            if is_debug_enabled():
-                print(f"[DETECTION_DONE] score={score}, yolo={yolo_score}, latency={latency_ms}", flush=True)
-            if score is not None:
-                # Record metrics
-                self.metrics.record_vision_latency(self.stream_id, latency_ms)
-                try:
-                    # Lightweight debug log for visibility during tests
-                    log_debug(f"[Vision] {self.stream_id} score={score:.3f}, yolo={yolo_score:.3f}, latency={latency_ms:.1f}ms")
-                except Exception:
-                    pass
-                # Emit signal on GUI thread
-                self.vision_score_ready.emit(score)
-                # Capture incident frame when score meets or exceeds configured threshold
-                # This respects the user-configured threshold from sensor settings
-                try:
-                    threshold = getattr(self, 'anomaly_threshold', 0.4)
-                    has_image = self._last_qimage is not None
-                    if is_debug_enabled():
-                        print(f"[INCIDENT_CHECK] stream={self.stream_id}, score={score:.3f}, threshold={threshold:.3f}, has_image={has_image}, meets_threshold={score >= threshold}", flush=True)
-                    if score >= threshold and self._last_qimage is not None:
-                        # Emit QImage with both scores and detections
-                        detections = []
-                        if getattr(self.vision_detector, 'last_details', None):
-                            detections = self.vision_detector.last_details.get('detections', []) or []
-                        log_debug(f"[INCIDENT] Emitting incident frame: stream={self.stream_id}, score={score:.3f}, threshold={threshold:.3f}, detections={len(detections)}")
-                        if is_debug_enabled():
-                            print(f"[INCIDENT] Emitting incident frame: stream={self.stream_id}, score={score:.3f}, threshold={threshold:.3f}, detections={len(detections)}", flush=True)
-                        self.anomaly_frame_ready.emit(self._last_qimage, score, str(self.stream_id), yolo_score, detections)
-                except Exception as e:
-                    log_error(f"Incident capture error: {e}")
-                    print(f"[INCIDENT_ERROR] {e}", flush=True)
-
     def stop_stream(self):
         with QMutexLocker(self.mutex):
             if self.cap and self.cap.isOpened():
@@ -395,11 +412,6 @@ class VideoWorker(QObject):
             # Request timer stop from main thread (timer lives in GUI thread)
             self.stop_timer_requested.emit()
             self.connection_status.emit(False)
-        # Shutdown detection pool (non-blocking attempt)
-        try:
-            self.detection_pool.shutdown(wait=False)
-        except Exception:
-            pass
 
     def _check_if_rtsp(self, url):
         """Check if URL is an RTSP stream (not local device)."""

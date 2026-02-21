@@ -13,7 +13,7 @@ import os
 import cv2
 import numpy as np
 from pathlib import Path
-from master_class_config import load_master_classes, get_hierarchical_class_labels
+from embereye.core.class_config import load_master_classes, get_hierarchical_class_labels
 
 
 class QCReviewDialog(QDialog):

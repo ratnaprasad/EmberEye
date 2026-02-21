@@ -1,4 +1,4 @@
 """
-Compatibility shim: re-export from embereye.app.master_class_config
+Compatibility shim: re-export from embereye.core.class_config
 """
-from embereye.app.master_class_config import *  # noqa
+from embereye.core.class_config import *  # noqa

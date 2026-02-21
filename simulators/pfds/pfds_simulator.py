@@ -312,9 +312,22 @@ class PFDSSimulator:
             return
 
         try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((self.host, self.port))
-            logger.info(f"Connected to {self.host}:{self.port}")
+            # Keep trying until Field TCP server is ready (e.g., after login window).
+            while self.sock is None:
+                try:
+                    candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    candidate.connect((self.host, self.port))
+                    self.sock = candidate
+                    logger.info(f"Connected to {self.host}:{self.port}")
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Connect retry to {self.host}:{self.port}: {e}")
+                    try:
+                        candidate.close()
+                    except Exception:
+                        pass
+                    time.sleep(2.0)
 
             cmd_thread = threading.Thread(target=self.handle_commands, daemon=True)
             cmd_thread.start()

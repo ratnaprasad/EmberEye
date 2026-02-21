@@ -53,8 +53,21 @@ class VideoWidget(QWidget):
         # Alarm state and frame freeze
         self.alarm_active = False
         self.frozen_frame = None
-        self.freeze_on_alarm = True
+        self.freeze_on_alarm = False
         self.current_temp = 22.5
+
+        # Detection highlight (border) for live grid tiles
+        self._detection_highlight_ms = 1200
+        self._detection_highlight_timer = QTimer(self)
+        self._detection_highlight_timer.setSingleShot(True)
+        self._detection_highlight_timer.timeout.connect(self._clear_detection_highlight)
+        self._tile_border_px = 4
+        self._tile_border_inset = 0
+        self._latest_detections = []
+        self._latest_detection_ts = 0.0
+        self._latest_detection_frame_size = None
+        self._detection_overlay_ttl_ms = 1500
+        self._last_frame_size_from_pixmap = None
         
         # Fusion data display
         self.fusion_data = None
@@ -65,15 +78,18 @@ class VideoWidget(QWidget):
         # Expand to fill grid cell
         self.setMinimumSize(160, 120)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setObjectName("videoTile")
+        self._apply_tile_border()
+
         self.video_label = QLabel(self)
-        self.video_label.setStyleSheet("""
-            QLabel {
-                background-color: #000000;
-                border: none;
-            }
-        """)
+        self._apply_video_label_style()
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.detection_overlay = QLabel(self)
+        self.detection_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.detection_overlay.setStyleSheet("QLabel { background-color: transparent; border: none; }")
+        self.detection_overlay.hide()
 
         self.sensor_handler = SensorHandler()
         self.sensor_handler.data_received.connect(self.update_sensor_display)
@@ -89,6 +105,7 @@ class VideoWidget(QWidget):
         else:
             self.worker = None
             self.worker_thread = None
+        self.detection_overlay.raise_()
         self.top_left_controls.raise_()
         self.right_overlay_controls.raise_()
         self.bottom_right_status.raise_()
@@ -143,33 +160,13 @@ class VideoWidget(QWidget):
             print(f"Thermal handler error: {e}")
 
     def set_hot_cells(self, hot_cells):
-        """Set the list of hot cells detected by sensor fusion."""
-        import time
-        current_time = time.time()
-        
-        # Update hot cells with timestamps
-        if hot_cells:
-            self.hot_cells = hot_cells
-            for cell in hot_cells:
-                self.hot_cells_timestamps[cell] = current_time
-        else:
-            self.hot_cells = []
-        
-        # Clean up expired hot cells from history
-        expired_cells = [cell for cell, ts in self.hot_cells_timestamps.items() 
-                        if current_time - ts > self.hot_cells_decay_time]
-        for cell in expired_cells:
-            del self.hot_cells_timestamps[cell]
-        
-        # Get all active hot cells (current + recent history)
-        self.hot_cells_history = list(self.hot_cells_timestamps.keys())
-        
-        # Trigger redraw if we have a current frame and grid view is OFF
-        if not self.thermal_grid_view_enabled and self.video_label.pixmap() and not self.video_label.pixmap().isNull():
-            self._redraw_with_grid()
+        """Thermal hot-cell grid overlay has been removed (no-op kept for compatibility)."""
+        self.hot_cells = []
+        self.hot_cells_history = []
+        self.hot_cells_timestamps = {}
 
     def _redraw_with_grid(self):
-        """Redraw current frame with thermal grid overlay on hot cells and fusion data."""
+        """Redraw current frame with fusion data overlay only."""
         try:
             base_pixmap = self.video_label.pixmap()
             if not base_pixmap or base_pixmap.isNull():
@@ -205,53 +202,6 @@ class VideoWidget(QWidget):
                 result = padded
 
             painter = QPainter(result)
-            
-            # Draw thermal grid if enabled and hot cells exist
-            if self.thermal_grid_enabled and self.hot_cells_history:
-                # Calculate cell dimensions based on CURRENT LABEL SIZE, not video frame size
-                widget_width = max(1, self.video_label.width())
-                widget_height = max(1, self.video_label.height())
-                
-                # Fallback if label size is invalid
-                if widget_width < 50 or widget_height < 50:
-                    widget_width = base_pixmap.width()
-                    widget_height = base_pixmap.height()
-                
-                cell_width = widget_width / self.thermal_grid_cols
-                cell_height = widget_height / self.thermal_grid_rows
-                
-                # Calculate scale factor based on widget size (baseline 640×480)
-                scale_factor = min(widget_width / 640, widget_height / 480)
-                scale_factor = max(0.5, min(scale_factor, 1.5))  # Clamp to reasonable range
-                border_width = max(1, int(2 * scale_factor))
-                
-                current_time = time.time()
-                
-                # Draw each hot cell with age-based opacity
-                for row, col in self.hot_cells_history:
-                    if 0 <= row < self.thermal_grid_rows and 0 <= col < self.thermal_grid_cols:
-                        x = int(col * cell_width)
-                        y = int(row * cell_height)
-                        w = int(cell_width)
-                        h = int(cell_height)
-                        
-                        # Calculate opacity based on age
-                        age = current_time - self.hot_cells_timestamps.get((row, col), current_time)
-                        opacity = max(0.3, 1.0 - (age / self.hot_cells_decay_time))
-                        
-                        # Adjust color alpha based on age
-                        color = QColor(self.thermal_grid_color)
-                        color.setAlpha(int(color.alpha() * opacity))
-                        
-                        # Fill cell with semi-transparent color
-                        painter.fillRect(x, y, w, h, color)
-                        
-                        # Draw border with adaptive width
-                        border_color = QColor(self.thermal_grid_border)
-                        border_color.setAlpha(int(border_color.alpha() * opacity))
-                        pen = QPen(border_color, border_width)
-                        painter.setPen(pen)
-                        painter.drawRect(x, y, w, h)
             
             # Draw fusion data overlay if enabled
             if self.show_fusion_overlay and self.fusion_data:
@@ -850,7 +800,7 @@ class VideoWidget(QWidget):
 
     def resizeEvent(self, event):
         """Handle widget resizing"""
-        self.video_label.resize(event.size())
+        self._update_video_label_geometry(event.size())
         self.position_controls()
         
         # Invalidate caches on resize to force regeneration with proper scaling
@@ -920,6 +870,9 @@ class VideoWidget(QWidget):
         if hasattr(self.worker, 'anomaly_frame_ready'):
             result = self.worker.anomaly_frame_ready.connect(self.handle_anomaly_frame, Qt.QueuedConnection)
             print(f"[VIDEO_WIDGET_INIT] Connected anomaly_frame_ready: {result}", flush=True)
+        if hasattr(self.worker, 'detection_event'):
+            result = self.worker.detection_event.connect(self.handle_detection_event, Qt.QueuedConnection)
+            print(f"[VIDEO_WIDGET_INIT] Connected detection_event: {result}", flush=True)
         else:
             print(f"[VIDEO_WIDGET_INIT] Worker does NOT have anomaly_frame_ready signal!", flush=True)
 
@@ -946,6 +899,14 @@ class VideoWidget(QWidget):
     @pyqtSlot(QImage, float, str, float, object)
     def handle_anomaly_frame(self, qimage, score, stream_id, yolo_score, detections):
         """Forward anomaly/incident frame to main window with metadata."""
+        import time
+        self._set_detection_highlight("#00ff00")
+        try:
+            self._latest_detections = detections or []
+            self._latest_detection_frame_size = (qimage.width(), qimage.height())
+            self._latest_detection_ts = time.time() * 1000
+        except Exception:
+            pass
         if is_debug_enabled():
             import sys
             sys.stderr.write(f"[HANDLER_CALLED] qimage={type(qimage).__name__}, score={score}, stream_id={stream_id}, yolo={yolo_score}, det={len(detections or [])}\n")
@@ -963,6 +924,86 @@ class VideoWidget(QWidget):
             from error_logger import get_error_logger
             get_error_logger().log(self.name, f"Anomaly forward error: {e}")
             print(f"[VIDEO_WIDGET] Exception: {e}", flush=True)
+
+    @pyqtSlot(str, float, object, object)
+    def handle_detection_event(self, status, yolo_score, detections, frame_size):
+        """Highlight tile when YOLO returns any detection."""
+        import time
+        color = "#00ff00" if status in ("CONFIRMED", "POSSIBLE") else "#ffa500"
+        self._set_detection_highlight(color)
+        self._latest_detections = detections or []
+        if frame_size and len(frame_size) == 2:
+            self._latest_detection_frame_size = frame_size
+        elif self._last_frame_size_from_pixmap:
+            self._latest_detection_frame_size = self._last_frame_size_from_pixmap
+        self._latest_detection_ts = time.time() * 1000
+
+    def _apply_video_label_style(self):
+        """Apply base style to video label."""
+        self.video_label.setStyleSheet(
+            "QLabel { background-color: #000000; border: none; }"
+        )
+
+    def _apply_tile_border(self, border_color=None):
+        """Apply optional detection border to the tile container."""
+        if border_color:
+            border = f"{self._tile_border_px}px solid {border_color}"
+            self._tile_border_inset = self._tile_border_px
+        else:
+            border = "none"
+            self._tile_border_inset = 0
+        self.setStyleSheet(
+            f"QWidget#videoTile {{ border: {border}; }}"
+        )
+        self._update_video_label_geometry()
+
+    def _set_detection_highlight(self, color):
+        """Highlight the tile briefly when a detection is received."""
+        self._apply_tile_border(color)
+        self._apply_detection_overlay(color)
+        self._detection_highlight_timer.start(self._detection_highlight_ms)
+
+    def _clear_detection_highlight(self):
+        """Clear detection highlight border."""
+        self._apply_tile_border()
+        self._clear_detection_overlay()
+
+    def _update_video_label_geometry(self, size=None):
+        """Keep the video label inset when a border is shown."""
+        if not hasattr(self, "video_label"):
+            return
+        if size is None:
+            size = self.size()
+        inset = self._tile_border_inset
+        width = max(1, size.width() - (inset * 2))
+        height = max(1, size.height() - (inset * 2))
+        self.video_label.setGeometry(inset, inset, width, height)
+        self._update_detection_overlay_geometry(size)
+
+    def _update_detection_overlay_geometry(self, size=None):
+        if not hasattr(self, "detection_overlay"):
+            return
+        if size is None:
+            size = self.size()
+        self.detection_overlay.setGeometry(0, 0, max(1, size.width()), max(1, size.height()))
+
+    def _apply_detection_overlay(self, color):
+        if not hasattr(self, "detection_overlay"):
+            return
+        border = f"{self._tile_border_px}px solid {color}"
+        self.detection_overlay.setStyleSheet(
+            f"QLabel {{ background-color: transparent; border: {border}; }}"
+        )
+        self.detection_overlay.show()
+        self.detection_overlay.raise_()
+        self.top_left_controls.raise_()
+        self.right_overlay_controls.raise_()
+        self.bottom_right_status.raise_()
+
+    def _clear_detection_overlay(self):
+        if not hasattr(self, "detection_overlay"):
+            return
+        self.detection_overlay.hide()
 
     def update_frame(self, pixmap):
         if pixmap is None or pixmap.isNull():
@@ -984,6 +1025,8 @@ class VideoWidget(QWidget):
                 # Clear frozen frame when alarm clears
                 self.frozen_frame = None
             
+            self._last_frame_size_from_pixmap = (pixmap.width(), pixmap.height())
+
             # Scale video frame to fully fill the tile (allow slight crop to avoid letterboxing)
             scaled_video = pixmap.scaled(
                 self.video_label.size(),
@@ -1013,12 +1056,14 @@ class VideoWidget(QWidget):
                     self._redraw_with_grid()
                 else:
                     self.video_label.setPixmap(scaled_video)
-            elif (self.thermal_grid_enabled and self.hot_cells_history) or (self.show_fusion_overlay and self.fusion_data):
+            elif self.show_fusion_overlay and self.fusion_data:
                 # Default camera view with fusion overlay
-                self.video_label.setPixmap(scaled_video)
+                overlay_pixmap = self._overlay_detection_boxes(scaled_video)
+                self.video_label.setPixmap(overlay_pixmap)
                 self._redraw_with_grid()
             else:
-                self.video_label.setPixmap(scaled_video)
+                overlay_pixmap = self._overlay_detection_boxes(scaled_video)
+                self.video_label.setPixmap(overlay_pixmap)
             
             # Analyze frame luminance to adjust control colors for contrast
             self._update_controls_color_for_contrast(scaled_video)
@@ -1026,6 +1071,55 @@ class VideoWidget(QWidget):
             self.last_error_message = None
         except Exception as e:
             self.handle_error(str(e))
+
+    def _overlay_detection_boxes(self, base_pixmap):
+        """Overlay detection boxes on the pixmap when recent detections exist."""
+        try:
+            import time
+            from PyQt5.QtGui import QPainter, QPen, QColor
+
+            frame_size = self._latest_detection_frame_size or self._last_frame_size_from_pixmap
+            if not self._latest_detections or not frame_size:
+                return base_pixmap
+
+            age_ms = (time.time() * 1000) - self._latest_detection_ts
+            if age_ms > self._detection_overlay_ttl_ms:
+                return base_pixmap
+
+            frame_w, frame_h = frame_size
+            if not frame_w or not frame_h:
+                return base_pixmap
+
+            target_w = base_pixmap.width()
+            target_h = base_pixmap.height()
+            scale = max(target_w / frame_w, target_h / frame_h)
+
+            scaled_w = frame_w * scale
+            scaled_h = frame_h * scale
+            x_offset = (scaled_w - target_w) / 2.0
+            y_offset = (scaled_h - target_h) / 2.0
+
+            result = base_pixmap.copy()
+            painter = QPainter(result)
+            pen = QPen(QColor(0, 200, 255))
+            pen.setWidth(2)
+            painter.setPen(pen)
+
+            for det in self._latest_detections:
+                bbox = det.get("bbox") if isinstance(det, dict) else None
+                if not bbox or len(bbox) != 4:
+                    continue
+                x1, y1, x2, y2 = [float(v) for v in bbox]
+                sx1 = int(x1 * scale - x_offset)
+                sy1 = int(y1 * scale - y_offset)
+                sx2 = int(x2 * scale - x_offset)
+                sy2 = int(y2 * scale - y_offset)
+                painter.drawRect(sx1, sy1, max(1, sx2 - sx1), max(1, sy2 - sy1))
+
+            painter.end()
+            return result
+        except Exception:
+            return base_pixmap
 
     def handle_error(self, message):
         from error_logger import get_error_logger

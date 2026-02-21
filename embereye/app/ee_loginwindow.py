@@ -1,5 +1,7 @@
 import sqlite3
 import bcrypt
+import os
+import importlib.util
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -14,7 +16,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtGui import QPixmap
 from resource_helper import get_resource_path
-from main_window import BEMainWindow
 from sensor_server import SensorServer
 from threading import Thread
 from database_manager import DatabaseManager
@@ -23,6 +24,23 @@ from theme_manager import ThemeManager
 # from user_creation import UserCreationDialog
 from setup_wizard import SetupWizard
 from password_reset import PasswordResetDialog
+
+
+def _load_fieldglass_main_window():
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    fieldglass_path = os.path.join(base_dir, 'embereye-field', 'fieldglass', 'main_window.py')
+    spec = importlib.util.spec_from_file_location('fieldglass_main_window', fieldglass_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load FieldGlass main window from {fieldglass_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.BEMainWindow
+
+
+if os.environ.get('EMBEREYE_FIELD', '').strip().lower() in ('1', 'true', 'yes'):
+    BEMainWindow = _load_fieldglass_main_window()
+else:
+    from main_window import BEMainWindow
 
 class EELoginWindow(QWidget):
     success = pyqtSignal(QMainWindow)

@@ -43,9 +43,10 @@ from datetime import datetime
 from streamconfig_dialog import StreamConfigDialog
 from video_widget import VideoWidget
 from sensor_fusion import SensorFusion
+from embereye.core.pipeline_logs import VISION_LOG, FUSION_LOG, log_fusion_event
 from baseline_manager import BaselineManager
-from emberhawk_manager import EmberHawkManager, is_valid_ip
-from master_class_config import load_master_classes, flatten_classes
+from hawkcore.emberhawk_manager import EmberHawkManager, is_valid_ip
+from embereye.core.class_config import load_master_classes, get_leaf_classes
 from master_class_config_dialog import MasterClassConfigDialog
 from incidents import (
     ThermalROIExtractor,
@@ -309,6 +310,10 @@ class BEMainWindow(QMainWindow):
             if getattr(widget, 'loc_id', None) == loc_id:
                 # Run fusion with only vision score (other sources can be cached for full fusion)
                 fusion_result = self.sensor_fusion.fuse(vision_score=score)
+                try:
+                    log_fusion_event(str(loc_id), f"source=vision_only vision_score={float(score):.3f} alarm={fusion_result.get('alarm')} confidence={float(fusion_result.get('confidence', 0.0)):.3f} reason={fusion_result.get('alarm_reason', '-')}")
+                except Exception:
+                    pass
                 try:
                     key = str(loc_id) if loc_id is not None else "_broadcast"
                     self._fusion_by_loc_id[key] = fusion_result
@@ -682,6 +687,12 @@ class BEMainWindow(QMainWindow):
             # Run fusion if any relevant data
             if fusion_args:
                 fusion_result = self.sensor_fusion.fuse(**fusion_args)
+                try:
+                    log_fusion_event(
+                        str(loc_id),
+                        f"source=sensor_packet args={','.join(sorted(fusion_args.keys()))} alarm={fusion_result.get('alarm')} confidence={float(fusion_result.get('confidence', 0.0)):.3f} reason={fusion_result.get('alarm_reason', '-')}")
+                except Exception:
+                    pass
                 try:
                     key = str(loc_id) if loc_id is not None else "_broadcast"
                     self._fusion_by_loc_id[key] = fusion_result
@@ -2379,9 +2390,15 @@ class BEMainWindow(QMainWindow):
         # Master taxonomy manager
         settings_menu.addAction("📚 Class & Subclass Manager", self.show_master_class_config)
         settings_menu.addAction("📋 Log Viewer", self.show_log_viewer_dialog)
+        settings_menu.addAction("🌐 IP→Loc Mappings", self.show_ip_loc_mappings_dialog)
         settings_menu.addSeparator()
-        # Model Import for deployment
+        # Model Management (Import & Export)
         settings_menu.addAction("📥 Import Model", self.import_deployment_model)
+        export_model_menu = settings_menu.addMenu("📤 Export Model")
+        export_model_menu.addAction("Export to ONNX", lambda: self.export_model('onnx'))
+        export_model_menu.addAction("Export to TorchScript", lambda: self.export_model('torchscript'))
+        export_model_menu.addAction("Export to CoreML", lambda: self.export_model('coreml'))
+        export_model_menu.addAction("Export to TensorFlow Lite", lambda: self.export_model('tflite'))
         settings_menu.addSeparator()
         pfds_menu = settings_menu.addMenu("🔥 PFDS Devices")
         pfds_menu.addAction("➕ Add Device", self.show_pfds_add_dialog)
@@ -2506,8 +2523,23 @@ class BEMainWindow(QMainWindow):
         
         # Status text label
         self.tcp_status_label = QLabel("TCP Server: Initializing...")
-        self.tcp_status_label.setStyleSheet("QLabel { color: #333; font-size: 11px; }")
+        self.tcp_status_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
         status_layout.addWidget(self.tcp_status_label)
+
+        # Device indicator (resolved from active DetectionWorker)
+        self.device_status_label = QLabel("Device: Detecting...")
+        self.device_status_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
+        status_layout.addWidget(self.device_status_label)
+
+        # Model load indicator
+        self.model_status_label = QLabel("Model: Loading...")
+        self.model_status_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
+        status_layout.addWidget(self.model_status_label)
+
+        # Detection counter
+        self.detection_count_label = QLabel("Detections: 0")
+        self.detection_count_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
+        status_layout.addWidget(self.detection_count_label)
         
         # Restart button
         restart_btn = QPushButton("↻ Restart")
@@ -2535,6 +2567,16 @@ class BEMainWindow(QMainWindow):
         
         # Add to status bar (permanent widget on the left)
         self.statusBar().addPermanentWidget(status_widget, 0)
+
+        # Periodically update model load state
+        try:
+            if not hasattr(self, '_model_status_timer') or self._model_status_timer is None:
+                self._model_status_timer = QTimer(self)
+                self._model_status_timer.timeout.connect(self._refresh_model_status)
+                self._model_status_timer.start(2000)
+            self._refresh_model_status()
+        except Exception:
+            pass
     
     def update_tcp_status(self, is_running, message):
         """Update TCP server status indicator.
@@ -2570,6 +2612,41 @@ class BEMainWindow(QMainWindow):
             
         except Exception as e:
             print(f"TCP status update error: {e}")
+
+    def _refresh_model_status(self):
+        """Update model load status label based on DetectionWorker state."""
+        if not hasattr(self, 'model_status_label'):
+            return
+        try:
+            from embereye.core.detection_worker import get_detection_worker
+            worker = get_detection_worker()
+            if not worker:
+                self.model_status_label.setText("Model: Unavailable")
+                return
+            stats = worker.get_stats()
+            if hasattr(self, 'device_status_label'):
+                inferred_device = str(stats.get('inference_device', '') or '').strip().lower()
+                if inferred_device in ("0", "cuda", "gpu"):
+                    self.device_status_label.setText("Device: GPU")
+                elif inferred_device:
+                    self.device_status_label.setText(f"Device: {inferred_device.upper()}")
+                else:
+                    self.device_status_label.setText("Device: Detecting...")
+            if stats.get('model_loaded'):
+                self.model_status_label.setText("Model: Loaded")
+                self.model_status_label.setToolTip("")
+            else:
+                model_error = stats.get('model_error')
+                if model_error:
+                    self.model_status_label.setText("Model: Error")
+                    self.model_status_label.setToolTip(model_error)
+                else:
+                    self.model_status_label.setText("Model: Not Loaded")
+                    self.model_status_label.setToolTip("")
+            if hasattr(self, 'detection_count_label'):
+                self.detection_count_label.setText(f"Detections: {stats.get('detections_confirmed', 0)}")
+        except Exception:
+            self.model_status_label.setText("Model: Error")
 
     def show_tcp_port_dialog(self):
         from PyQt5.QtWidgets import QInputDialog
@@ -2749,13 +2826,13 @@ class BEMainWindow(QMainWindow):
         """Open the master class configuration dialog and refresh classes on save."""
         try:
             from master_class_config_dialog import MasterClassConfigDialog
-            from master_class_config import load_master_classes, flatten_classes
+            from embereye.core.class_config import load_master_classes, get_leaf_classes
             
             dlg = MasterClassConfigDialog(self)
             if dlg.exec_() == QDialog.Accepted:
                 # Reload taxonomy and refresh dependent UI controls
                 self._master_classes = load_master_classes()
-                self.training_video_classes = flatten_classes(self._master_classes)
+                self.training_video_classes = get_leaf_classes()
                 if hasattr(self, 'training_video_class_combo') and self.training_video_class_combo:
                     self.training_video_class_combo.clear()
                     self.training_video_class_combo.addItems(self.training_video_classes)
@@ -3072,26 +3149,115 @@ class BEMainWindow(QMainWindow):
 
         tabs.addTab(tcp_tab, "TCP Log Viewer")
 
-        # --- IP→Loc Mappings Admin Tab ---
-        map_tab = QDialog(dlg)
+        # --- Vision Detection Log Tab ---
+        vision_tab = QDialog(dlg)
+        vision_layout = QVBoxLayout(vision_tab)
+        vision_ctrl_row = QHBoxLayout()
+        vision_stage_combo = QComboBox(); vision_stage_combo.addItems(["All", "HEURISTIC", "YOLO"])
+        vision_ctrl_row.addWidget(QLabel("Stage:"))
+        vision_ctrl_row.addWidget(vision_stage_combo)
+        vision_layout.addLayout(vision_ctrl_row)
+        vision_view = QTextEdit(); vision_view.setReadOnly(True)
+        vision_layout.addWidget(vision_view)
+
+        def load_vision_log():
+            path = VISION_LOG
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()[-1500:]
+                    stage = vision_stage_combo.currentText()
+                    if stage != 'All':
+                        lines = [ln for ln in lines if f"\t{stage}\t" in ln]
+                    vision_view.setPlainText(''.join(lines))
+                except Exception as e:
+                    vision_view.setPlainText(f"Error loading Vision Detection log: {e}")
+            else:
+                vision_view.setPlainText(f"Log file not found: {path}")
+
+        vision_timer = QTimer(vision_tab)
+        vision_timer.setInterval(2000)
+        vision_timer.timeout.connect(load_vision_log)
+        vision_timer.start()
+        vision_stage_combo.currentIndexChanged.connect(load_vision_log)
+        load_vision_log()
+        tabs.addTab(vision_tab, "Vision Detection")
+
+        # --- Fusion Algorithm Log Tab ---
+        fusion_tab = QDialog(dlg)
+        fusion_layout = QVBoxLayout(fusion_tab)
+        fusion_ctrl_row = QHBoxLayout()
+        fusion_loc_combo = QComboBox(); fusion_loc_combo.addItem("All Locations")
+        try:
+            loc_ids = set()
+            for g in self.config.get('groups', []):
+                streams = self.config.get('streams', {}).get(g, [])
+                for s in streams:
+                    lid = s.get('location_id') or s.get('loc_id') or s.get('name')
+                    if lid:
+                        loc_ids.add(str(lid))
+            for lid in sorted(loc_ids):
+                fusion_loc_combo.addItem(lid)
+        except Exception:
+            pass
+        fusion_ctrl_row.addWidget(QLabel("Location:"))
+        fusion_ctrl_row.addWidget(fusion_loc_combo)
+        fusion_layout.addLayout(fusion_ctrl_row)
+        fusion_view = QTextEdit(); fusion_view.setReadOnly(True)
+        fusion_layout.addWidget(fusion_view)
+
+        def load_fusion_log():
+            path = FUSION_LOG
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()[-1500:]
+                    sel = fusion_loc_combo.currentText()
+                    if sel != 'All Locations':
+                        lines = [ln for ln in lines if f"\t{sel}\t" in ln]
+                    fusion_view.setPlainText(''.join(lines))
+                except Exception as e:
+                    fusion_view.setPlainText(f"Error loading Fusion Algorithm log: {e}")
+            else:
+                fusion_view.setPlainText(f"Log file not found: {path}")
+
+        fusion_timer = QTimer(fusion_tab)
+        fusion_timer.setInterval(2000)
+        fusion_timer.timeout.connect(load_fusion_log)
+        fusion_timer.start()
+        fusion_loc_combo.currentIndexChanged.connect(load_fusion_log)
+        load_fusion_log()
+        tabs.addTab(fusion_tab, "Fusion Algorithm")
+
+        dlg.resize(900, 600)
+        dlg.exec_()
+
+    def show_ip_loc_mappings_dialog(self):
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QMessageBox
         from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
-        map_layout = QVBoxLayout(map_tab)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("IP→Loc Mappings")
+        layout = QVBoxLayout(dlg)
+
         map_table = QTableWidget(0, 2)
         map_table.setHorizontalHeaderLabels(["IP", "Location Id"])
-        map_layout.addWidget(map_table)
+        layout.addWidget(map_table)
 
-        btn_row2 = QHBoxLayout()
+        btn_row = QHBoxLayout()
         add_btn = QPushButton("Add/Update Mapping")
         del_btn = QPushButton("Delete Selected")
-        refresh_btn2 = QPushButton("Refresh")
+        refresh_btn = QPushButton("Refresh")
         import_btn = QPushButton("Import…")
-        export_btn2 = QPushButton("Export…")
-        btn_row2.addWidget(add_btn)
-        btn_row2.addWidget(del_btn)
-        btn_row2.addWidget(refresh_btn2)
-        btn_row2.addWidget(import_btn)
-        btn_row2.addWidget(export_btn2)
-        map_layout.addLayout(btn_row2)
+        export_btn = QPushButton("Export…")
+        close_btn = QPushButton("Close")
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(del_btn)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(import_btn)
+        btn_row.addWidget(export_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
         def load_mappings():
             try:
@@ -3105,13 +3271,15 @@ class BEMainWindow(QMainWindow):
                 else:
                     for ip, loc in _json_load().items():
                         rows.append((ip, loc))
+
                 map_table.setRowCount(0)
                 for ip, loc in rows:
-                    r = map_table.rowCount(); map_table.insertRow(r)
+                    r = map_table.rowCount()
+                    map_table.insertRow(r)
                     map_table.setItem(r, 0, QTableWidgetItem(ip))
                     map_table.setItem(r, 1, QTableWidgetItem(loc))
             except Exception as e:
-                print(f"Load mappings error: {e}")
+                QMessageBox.critical(dlg, "Load Failed", f"Could not load mappings: {e}")
 
         def add_update_mapping():
             from PyQt5.QtWidgets import QInputDialog
@@ -3144,9 +3312,6 @@ class BEMainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(dlg, "Delete Failed", f"Could not delete mapping: {e}")
 
-        add_btn.clicked.connect(add_update_mapping)
-        del_btn.clicked.connect(delete_selected_mapping)
-        refresh_btn2.clicked.connect(load_mappings)
         def do_import():
             path, _ = QFileDialog.getOpenFileName(dlg, "Import Mappings", "", "JSON (*.json);;CSV (*.csv)")
             if not path:
@@ -3175,13 +3340,16 @@ class BEMainWindow(QMainWindow):
                     QMessageBox.critical(dlg, "Export", "Failed to export mappings.")
             except Exception as e:
                 QMessageBox.critical(dlg, "Export", f"Error: {e}")
+
+        add_btn.clicked.connect(add_update_mapping)
+        del_btn.clicked.connect(delete_selected_mapping)
+        refresh_btn.clicked.connect(load_mappings)
         import_btn.clicked.connect(do_import)
-        export_btn2.clicked.connect(do_export)
+        export_btn.clicked.connect(do_export)
+        close_btn.clicked.connect(dlg.accept)
+
         load_mappings()
-
-        tabs.addTab(map_tab, "IP→Loc Mappings")
-
-        dlg.resize(900, 600)
+        dlg.resize(780, 500)
         dlg.exec_()
 
     def import_deployment_model(self):
@@ -3367,6 +3535,42 @@ class BEMainWindow(QMainWindow):
             )
             metadata.save(version_dir / "metadata.json")
             
+            # Validate class hash if metadata includes it
+            try:
+                from embereye.core.class_config import load_master_classes, get_classes_hash, get_leaf_classes
+                
+                # Check if imported ZIP had class hash in its metadata
+                import zipfile
+                import json
+                class_hash_warning = ""
+                
+                if model_path.suffix.lower() == '.zip':
+                    try:
+                        with zipfile.ZipFile(str(model_path), 'r') as zipf:
+                            if 'metadata.json' in zipf.namelist():
+                                with zipf.open('metadata.json') as f:
+                                    imported_meta = json.load(f)
+                                    imported_hash = imported_meta.get('class_hash')
+                                    
+                                    if imported_hash:
+                                        current_classes = get_leaf_classes()
+                                        current_hash = get_classes_hash(current_classes)
+                                        
+                                        if imported_hash != current_hash:
+                                            class_hash_warning = (
+                                                f"\n\n⚠️ CLASS CONFIGURATION MISMATCH:\n"
+                                                f"Model trained with {imported_meta.get('class_count', '?')} classes\n"
+                                                f"Current system has {len(current_classes)} classes\n\n"
+                                                f"Detection labels may be incorrect. "
+                                                f"Consider updating master_classes.json."
+                                            )
+                    except Exception as e:
+                        logger.debug(f"Could not read class hash from ZIP: {e}")
+                
+            except Exception as e:
+                logger.debug(f"Class hash validation skipped: {e}")
+                class_hash_warning = ""
+            
             # Set as current best for active detection
             manager.set_current_best(version_name)
             
@@ -3382,6 +3586,7 @@ class BEMainWindow(QMainWindow):
                 f"Version: {version_name}\n\n"
                 f"The model is now active for all video streams.\n"
                 f"Detections will trigger alarms based on Class & Subclass rules."
+                + class_hash_warning
             )
             
             # Reload detection models in video workers if possible
@@ -3506,15 +3711,20 @@ class BEMainWindow(QMainWindow):
         command = cmd.get('command')
         if not ip or not command:
             return False
+
+        # Normalize endpoint: allow configured values like "127.0.0.1:4888"
+        target_ip = str(ip).strip()
+        if ':' in target_ip:
+            target_ip = target_ip.split(':', 1)[0].strip()
         
         # Send command through existing TCP server connection
         if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
-            success = self.tcp_sensor_server.send_command_to_client(ip, command)
+            success = self.tcp_sensor_server.send_command_to_client(target_ip, command)
             if success:
-                log_raw_packet(loc, f"PFDS_CMD {command} to {ip} ({name}) | sent via active connection")
+                log_raw_packet(loc, f"PFDS_CMD {command} to {target_ip} ({name}) | sent via active connection")
                 return True
             else:
-                log_error_packet(loc, f"PFDS_CMD_FAIL {command} to {ip} ({name}) | no active connection")
+                log_error_packet(loc, f"PFDS_CMD_FAIL {command} to {target_ip} ({name}) | no active connection")
                 return False
         else:
             log_error_packet(loc, f"PFDS_CMD_FAIL {command} to {ip} ({name}) | TCP server not available")
@@ -3537,18 +3747,23 @@ class BEMainWindow(QMainWindow):
             if not command or not ip:
                 print(f"❌ dispatch_emberhawk_command: missing command={command} or IP={ip}")
                 return False
+
+            # Normalize endpoint: allow configured values like "127.0.0.1:4888"
+            target_ip = str(ip).strip()
+            if ':' in target_ip:
+                target_ip = target_ip.split(':', 1)[0].strip()
             
             # Map EmberHawk commands to PFDS format
             # PFDS expects raw command strings like "PERIOD_ON", "EEPROM1", "REQUEST1", "PERIOD_OFF"
             if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
-                print(f"🔲 [dispatch_emberhawk_command] Sending '{command}' to IP={ip} via tcp_sensor_server")
-                success = self.tcp_sensor_server.send_command_to_client(ip, command)
+                print(f"🔲 [dispatch_emberhawk_command] Sending '{command}' to IP={target_ip} via tcp_sensor_server")
+                success = self.tcp_sensor_server.send_command_to_client(target_ip, command)
                 
                 if success:
-                    print(f"✅ dispatch_emberhawk_command: '{command}' sent to {ip}")
+                    print(f"✅ dispatch_emberhawk_command: '{command}' sent to {target_ip}")
                     return True
                 else:
-                    print(f"⚠️  dispatch_emberhawk_command: '{command}' failed for {ip} (no active connection)")
+                    print(f"⚠️  dispatch_emberhawk_command: '{command}' failed for {target_ip} (no active connection)")
                     return False
             else:
                 print(f"❌ dispatch_emberhawk_command: TCP server unavailable, cannot send '{command}'")

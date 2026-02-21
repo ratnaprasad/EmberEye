@@ -19,9 +19,11 @@ from embereye.core.detection_queue import get_detection_queue, FrameMetadata
 from embereye.core.detection_worker import get_detection_worker, stop_detection_worker
 
 class VideoTestProcessor:
-    def __init__(self, video_path, output_base='test_output'):
+    def __init__(self, video_path, output_base='test_output', max_frames=None, stop_after_high_conf=None):
         self.video_path = video_path
         self.output_base = Path(output_base)
+        self.max_frames = max_frames
+        self.stop_after_high_conf = stop_after_high_conf
         
         # Create output directories
         self.heuristic_dir = self.output_base / 'heuristic_frames'
@@ -41,6 +43,8 @@ class VideoTestProcessor:
         self.frame_id = 0
         self.heuristic_count = 0
         self.yolo_count = 0
+        self.high_conf_count = 0
+        self._stop_requested = False
         self.pending_frames = {}  # frame_id -> frame_data
         
         # Thresholds
@@ -50,6 +54,10 @@ class VideoTestProcessor:
         print(f"[CONFIG] Heuristic threshold: {self.heuristic_threshold}")
         print(f"[CONFIG] YOLO threshold: {self.yolo_threshold}")
         print(f"[CONFIG] Output directory: {self.output_base.absolute()}")
+        if self.max_frames is not None:
+            print(f"[CONFIG] Max frames: {self.max_frames}")
+        if self.stop_after_high_conf is not None:
+            print(f"[CONFIG] Stop after high-conf detections: {self.stop_after_high_conf}")
         
     def on_yolo_result(self, result):
         """Callback when YOLO processes a queued frame"""
@@ -125,7 +133,11 @@ class VideoTestProcessor:
                         output_path = self.yolo_dir / f"frame_{frame_id_num:05d}_yolo_{confidence:.3f}_{primary_class}.jpg"
                         cv2.imwrite(str(output_path), annotated_frame)
                         self.yolo_count += 1
+                        self.high_conf_count += 1
                         print(f"[YOLO_SAVE] Saved to detected: {output_path.name}")
+                        if self.stop_after_high_conf is not None and self.high_conf_count >= self.stop_after_high_conf:
+                            self._stop_requested = True
+                            print(f"[PROCESSING] Reached high-conf limit={self.stop_after_high_conf}, stopping early")
                     else:
                         # Low confidence - save to debug folder
                         debug_dir = self.output_base / 'yolo_low_confidence'
@@ -200,6 +212,13 @@ class VideoTestProcessor:
                 print(f"  -> Queued for YOLO validation")
             
             self.frame_id += 1
+
+            if self.max_frames is not None and self.frame_id >= self.max_frames:
+                print(f"[PROCESSING] Reached max_frames={self.max_frames}, stopping early")
+                break
+
+            if self._stop_requested:
+                break
             
             # Process every 10th frame for speed (optional)
             # Comment out these lines to process all frames
@@ -229,7 +248,11 @@ class VideoTestProcessor:
 
 
 if __name__ == "__main__":
-    video_path = "simulators/rtsp/data/IMG_1318.MOV"
+    video_path = os.environ.get("HYBRID_TEST_VIDEO") or "simulators/rtsp/data/IMG_1318.MOV"
+    max_frames_env = os.environ.get("HYBRID_TEST_MAX_FRAMES")
+    max_frames = int(max_frames_env) if max_frames_env else None
+    stop_after_env = os.environ.get("HYBRID_STOP_AFTER_HIGH_CONF")
+    stop_after_high_conf = int(stop_after_env) if stop_after_env else None
     
     if not os.path.exists(video_path):
         print(f"ERROR: Video file not found: {video_path}")
@@ -239,7 +262,11 @@ if __name__ == "__main__":
     print("HYBRID DETECTION TEST - Video Analysis")
     print("="*60)
     
-    processor = VideoTestProcessor(video_path)
+    processor = VideoTestProcessor(
+        video_path,
+        max_frames=max_frames,
+        stop_after_high_conf=stop_after_high_conf,
+    )
     
     try:
         processor.process_video()

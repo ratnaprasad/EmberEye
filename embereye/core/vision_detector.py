@@ -78,6 +78,18 @@ class VisionDetector:
         except Exception as exc:
             log_warning(f"Could not load central class mapping: {exc}")
         
+        # Check for special sentinel value to skip model loading (for threading safety)
+        if yolo_model_path == "__no_model__":
+            print("[VisionDetector] Skipping YOLO model load (heuristic-only mode)")
+            self.yolo_model_path = None
+            return
+        
+        field_mode = os.environ.get("EMBEREYE_FIELD", "").strip().lower() in ("1", "true", "yes")
+        if field_mode and yolo_model_path is None:
+            print("[VisionDetector] Field mode: skipping YOLO model load (heuristic-only mode)")
+            self.yolo_model_path = None
+            return
+
         # Auto-detect bundled model path
         if yolo_model_path is None:
             yolo_model_path = self._get_bundled_model_path()

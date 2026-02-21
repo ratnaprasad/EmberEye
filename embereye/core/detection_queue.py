@@ -5,6 +5,8 @@ Manages frame queuing and YOLO processing for multiple streams
 import threading
 import queue
 import time
+import os
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Callable, List
 from pathlib import Path
@@ -50,9 +52,18 @@ class DetectionQueue:
     - Backpressure handling (drop old frames if queue full)
     """
     
-    def __init__(self, max_queue_size: int = 100, result_cache_size: int = 500):
+    def __init__(self, max_queue_size: int = 100, result_cache_size: int = 500, per_stream_max: int = 4):
         self.max_queue_size = max_queue_size
-        self.queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
+        self.per_stream_max = max(1, per_stream_max)
+
+        # Per-stream bounded buffers + fair scheduler state
+        self.stream_queues: Dict[str, deque] = {}
+        self.active_streams: List[str] = []
+        self._next_stream_idx = 0
+        self._total_queued_items = 0
+        self._total_dequeued_items = 0
+        self._queue_lock = threading.Lock()
+        self._not_empty = threading.Condition(self._queue_lock)
         
         # Result cache: {frame_id: DetectionResult}
         self.result_cache: Dict[str, DetectionResult] = {}
@@ -65,9 +76,52 @@ class DetectionQueue:
             'total_processed': 0,
             'total_dropped': 0,
             'queue_overflow': 0,
+            'per_stream_dropped': {},
             'avg_queue_wait_ms': 0.0,
         }
         self.stats_lock = threading.Lock()
+
+    def _drop_oldest_from_stream_unlocked(self, stream_id: str) -> bool:
+        """Drop oldest frame from a specific stream. Caller must hold _queue_lock."""
+        stream_queue = self.stream_queues.get(stream_id)
+        if not stream_queue:
+            return False
+        stream_queue.popleft()
+        self._total_queued_items = max(0, self._total_queued_items - 1)
+
+        if len(stream_queue) == 0:
+            self.stream_queues.pop(stream_id, None)
+            if stream_id in self.active_streams:
+                idx = self.active_streams.index(stream_id)
+                self.active_streams.pop(idx)
+                if self.active_streams:
+                    self._next_stream_idx %= len(self.active_streams)
+                else:
+                    self._next_stream_idx = 0
+
+        with self.stats_lock:
+            self.stats['total_dropped'] += 1
+            self.stats['queue_overflow'] += 1
+            dropped_map = self.stats['per_stream_dropped']
+            dropped_map[stream_id] = dropped_map.get(stream_id, 0) + 1
+        return True
+
+    def _drop_oldest_global_unlocked(self) -> bool:
+        """Drop globally oldest frame across stream heads. Caller must hold _queue_lock."""
+        if not self.stream_queues:
+            return False
+        oldest_stream = None
+        oldest_ts = None
+        for stream_id, stream_queue in self.stream_queues.items():
+            if not stream_queue:
+                continue
+            head_ts = stream_queue[0].timestamp_ms
+            if oldest_ts is None or head_ts < oldest_ts:
+                oldest_ts = head_ts
+                oldest_stream = stream_id
+        if oldest_stream is None:
+            return False
+        return self._drop_oldest_from_stream_unlocked(oldest_stream)
     
     def add_frame(self, frame_metadata: FrameMetadata) -> bool:
         """
@@ -77,28 +131,36 @@ class DetectionQueue:
             True if frame added successfully
             False if queue full (frame dropped due to backpressure)
         """
-        try:
-            # Try to add without blocking
-            self.queue.put_nowait(frame_metadata)
+        stream_id = str(frame_metadata.stream_id)
+        with self._queue_lock:
+            stream_queue = self.stream_queues.get(stream_id)
+            if stream_queue is None:
+                stream_queue = deque()
+                self.stream_queues[stream_id] = stream_queue
+
+            # Per-stream backpressure: keep only freshest N per stream
+            if len(stream_queue) >= self.per_stream_max:
+                self._drop_oldest_from_stream_unlocked(stream_id)
+                stream_queue = self.stream_queues.get(stream_id)
+                if stream_queue is None:
+                    stream_queue = deque()
+                    self.stream_queues[stream_id] = stream_queue
+
+            # Global backpressure: bound total memory/latency
+            while self._total_queued_items >= self.max_queue_size:
+                if not self._drop_oldest_global_unlocked():
+                    break
+
+            stream_queue.append(frame_metadata)
+            self._total_queued_items += 1
+            if stream_id not in self.active_streams:
+                self.active_streams.append(stream_id)
+
             with self.stats_lock:
                 self.stats['total_queued'] += 1
+
+            self._not_empty.notify()
             return True
-        except queue.Full:
-            # Queue overflow - drop oldest frames and retry
-            with self.stats_lock:
-                self.stats['queue_overflow'] += 1
-                self.stats['total_dropped'] += 1
-            
-            # Try to make space by removing oldest
-            try:
-                self.queue.get_nowait()
-                # Retry adding
-                self.queue.put_nowait(frame_metadata)
-                with self.stats_lock:
-                    self.stats['total_queued'] += 1
-                return True
-            except queue.Empty:
-                return False
     
     def get_frame(self, timeout_s: float = 0.1) -> Optional[FrameMetadata]:
         """
@@ -110,11 +172,52 @@ class DetectionQueue:
         Returns:
             FrameMetadata or None if queue empty
         """
-        try:
-            frame = self.queue.get(timeout=timeout_s)
+        deadline = time.time() + timeout_s
+        with self._not_empty:
+            while self._total_queued_items == 0:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                self._not_empty.wait(timeout=remaining)
+
+            if not self.active_streams:
+                return None
+
+            self._next_stream_idx %= len(self.active_streams)
+            stream_id = self.active_streams[self._next_stream_idx]
+            stream_queue = self.stream_queues.get(stream_id)
+            if not stream_queue:
+                self.active_streams.pop(self._next_stream_idx)
+                if not self.active_streams:
+                    self._next_stream_idx = 0
+                    return None
+                self._next_stream_idx %= len(self.active_streams)
+                stream_id = self.active_streams[self._next_stream_idx]
+                stream_queue = self.stream_queues.get(stream_id)
+                if not stream_queue:
+                    return None
+
+            frame = stream_queue.popleft()
+            self._total_queued_items = max(0, self._total_queued_items - 1)
+            self._total_dequeued_items += 1
+
+            if len(stream_queue) == 0:
+                self.stream_queues.pop(stream_id, None)
+                self.active_streams.pop(self._next_stream_idx)
+                if self.active_streams:
+                    self._next_stream_idx %= len(self.active_streams)
+                else:
+                    self._next_stream_idx = 0
+            else:
+                self._next_stream_idx = (self._next_stream_idx + 1) % len(self.active_streams)
+
+            wait_ms = frame.age_ms()
+            with self.stats_lock:
+                processed = max(1, self._total_dequeued_items)
+                prev_avg = self.stats['avg_queue_wait_ms']
+                self.stats['avg_queue_wait_ms'] = prev_avg + ((wait_ms - prev_avg) / processed)
+
             return frame
-        except queue.Empty:
-            return None
     
     def cache_result(self, result: DetectionResult) -> None:
         """Cache YOLO detection result"""
@@ -145,13 +248,19 @@ class DetectionQueue:
     
     def get_queue_size(self) -> int:
         """Current queue depth"""
-        return self.queue.qsize()
+        with self._queue_lock:
+            return self._total_queued_items
     
     def get_stats(self) -> Dict:
         """Get queue statistics"""
+        with self._queue_lock:
+            queue_size = self._total_queued_items
+            active_stream_count = len(self.active_streams)
         with self.stats_lock:
             return {
-                'queue_size': self.get_queue_size(),
+                'queue_size': queue_size,
+                'active_streams': active_stream_count,
+                'per_stream_max': self.per_stream_max,
                 **self.stats
             }
     
@@ -174,5 +283,12 @@ def get_detection_queue() -> DetectionQueue:
     if _global_detection_queue is None:
         with _queue_lock:
             if _global_detection_queue is None:
-                _global_detection_queue = DetectionQueue()
+                max_queue_size = int(os.environ.get("EMBEREYE_DETECTION_QUEUE_MAX", "1000"))
+                per_stream_max = int(os.environ.get("EMBEREYE_DETECTION_QUEUE_PER_STREAM_MAX", "4"))
+                result_cache_size = int(os.environ.get("EMBEREYE_DETECTION_RESULT_CACHE_MAX", "1000"))
+                _global_detection_queue = DetectionQueue(
+                    max_queue_size=max_queue_size,
+                    result_cache_size=result_cache_size,
+                    per_stream_max=per_stream_max,
+                )
     return _global_detection_queue

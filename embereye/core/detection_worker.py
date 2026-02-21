@@ -36,7 +36,9 @@ class DetectionWorker(threading.Thread):
         self.detection_queue = get_detection_queue()
         self.detector = HybridDetector(model_path=model_path, stream_id="worker")
         
-        self.result_callback = result_callback
+        self.result_callbacks = []
+        if result_callback:
+            self.result_callbacks.append(result_callback)
         self.max_latency_ms = max_latency_ms
         
         self._stop_event = threading.Event()
@@ -47,6 +49,7 @@ class DetectionWorker(threading.Thread):
             'frames_dropped': 0,
             'avg_inference_ms': 0.0,
             'total_inference_ms': 0.0,
+            'detections_confirmed': 0,
         }
     
     def run(self) -> None:
@@ -83,15 +86,17 @@ class DetectionWorker(threading.Thread):
                 # Cache result
                 self.detection_queue.cache_result(result)
                 
-                # Call callback if provided
-                if self.result_callback:
+                # Call all registered callbacks
+                for callback in list(self.result_callbacks):
                     try:
-                        self.result_callback(result)
+                        callback(result)
                     except Exception as e:
                         print(f"[DetectionWorker] Callback error: {e}")
                 
                 # Update stats
                 self.stats['frames_processed'] += 1
+                if result.status in ("CONFIRMED", "POSSIBLE") and result.detections:
+                    self.stats['detections_confirmed'] += 1
                 self.stats['total_inference_ms'] += result.yolo_latency_ms
                 if self.stats['frames_processed'] > 0:
                     self.stats['avg_inference_ms'] = (
@@ -132,8 +137,17 @@ class DetectionWorker(threading.Thread):
             **self.stats,
             'queue_size': self.detection_queue.get_queue_size(),
             'queue_stats': self.detection_queue.get_stats(),
-            'model_loaded': self.detector.model_loaded
+            'model_loaded': self.detector.model_loaded,
+            'model_error': self.detector.last_load_error,
+            'inference_device': getattr(self.detector, 'inference_device', 'cpu')
         }
+
+    def add_result_callback(self, callback: Optional[Callable[[DetectionResult], None]]) -> None:
+        """Register an additional callback for detection results."""
+        if not callback:
+            return
+        if callback not in self.result_callbacks:
+            self.result_callbacks.append(callback)
     
     def reset_stats(self) -> None:
         """Reset statistics"""
@@ -155,6 +169,8 @@ def get_detection_worker(result_callback: Optional[Callable] = None) -> Detectio
             if _global_worker is None or not _global_worker.is_running():
                 _global_worker = DetectionWorker(result_callback=result_callback)
                 _global_worker.start()
+    elif result_callback is not None:
+        _global_worker.add_result_callback(result_callback)
     return _global_worker
 
 

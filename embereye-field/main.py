@@ -1,6 +1,64 @@
 
 import sys
 import os
+from pathlib import Path
+
+# Setup DLL paths for PyTorch before any Qt/YOLO imports
+# This mirrors Studio startup to avoid DLL init failures on Windows.
+try:
+    repo_root = Path(__file__).parent.parent.resolve()
+    candidates = []
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+        candidates.append(meipass)
+    env_venv = os.environ.get("EMBEREYE_VENV_PATH")
+    if env_venv:
+        candidates.append(Path(env_venv))
+    candidates.append(repo_root / ".venv")
+    candidates.append(Path(sys.executable).parent.parent)
+
+    for base_path in candidates:
+        torch_lib_candidates = [
+            base_path / "Lib" / "site-packages" / "torch" / "lib",
+            base_path / "torch" / "lib",
+        ]
+
+        torch_lib_path = next((p for p in torch_lib_candidates if p.exists()), None)
+        if torch_lib_path is None:
+            continue
+
+        torch_lib_str = str(torch_lib_path)
+        if torch_lib_str not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(torch_lib_str)
+            except Exception:
+                pass
+        break
+except Exception as e:
+    print(f"Warning: Could not setup torch DLL paths: {e}")
+
+# Preload torch before Qt to avoid DLL conflicts and set device fallback info
+device_label = "CPU"
+try:
+    import torch  # noqa: F401
+    force_cpu = os.environ.get("EMBEREYE_FORCE_CPU", "").strip().lower() in ("1", "true", "yes")
+    if force_cpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        device_label = "CPU (forced)"
+    elif torch.cuda.is_available():
+        device_label = "GPU"
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        device_label = "CPU"
+except Exception as e:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    device_label = "CPU"
+    print(f"Warning: torch preload failed: {e}")
+
+os.environ.setdefault("EMBEREYE_DEVICE", device_label)
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -8,6 +66,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # EmberEye Field Edition - Monitoring and Detection Only
 # No training dependencies required
+os.environ.setdefault('EMBEREYE_FIELD', '1')
 
 import platform
 import logging
