@@ -74,6 +74,20 @@ class VideoWorker(QObject):
         self._is_rtsp_stream = self._check_if_rtsp(rtsp_url)
         self._frame_skip_count = 0  # Track frames skipped for buffer drain
         self._heuristic_log_counter = 0
+        heuristic_env = os.environ.get("EMBEREYE_HEURISTIC_THRESHOLD", "0.20")
+        try:
+            self.heuristic_threshold = max(0.0, min(1.0, float(heuristic_env)))
+        except Exception:
+            self.heuristic_threshold = 0.20
+        force_yolo_env = os.environ.get("EMBEREYE_FORCE_YOLO_EVERY_N", "10")
+        try:
+            self.force_yolo_every_n_frames = max(1, int(force_yolo_env))
+        except Exception:
+            self.force_yolo_every_n_frames = 10
+        box_mode_env = str(os.environ.get("EMBEREYE_BBOX_MODE", "all")).strip().lower()
+        self.detection_box_mode = box_mode_env if box_mode_env in ("all", "specific") else "all"
+        box_classes_env = str(os.environ.get("EMBEREYE_BBOX_CLASSES", "")).strip()
+        self.detection_box_classes = set(class_name.strip() for class_name in box_classes_env.split(';') if class_name.strip())
 
     def init_detection_worker(self):
         """Initialize the background DetectionWorker for async YOLO processing."""
@@ -112,12 +126,21 @@ class VideoWorker(QObject):
                     self._detection_counter += 1
             
             # Map confidence level to numerical score for backward compatibility
+            possible_thr = 0.60
+            confirmed_thr = 0.80
+            if self.detection_worker and getattr(self.detection_worker, 'detector', None):
+                detector = self.detection_worker.detector
+                possible_thr = float(getattr(detector, 'possible_threshold', possible_thr))
+                confirmed_thr = float(getattr(detector, 'confirmed_threshold', confirmed_thr))
+            if confirmed_thr <= possible_thr:
+                confirmed_thr = min(1.0, possible_thr + 0.05)
+
             if status == 'CONFIRMED':
-                yolo_score = max(0.70, confidence)  # >= 0.70
+                yolo_score = max(confirmed_thr, confidence)
             elif status == 'POSSIBLE':
-                yolo_score = max(0.50, min(0.70, confidence))  # 0.50-0.70
+                yolo_score = max(possible_thr, min(confirmed_thr, confidence))
             else:
-                yolo_score = min(0.50, confidence)  # < 0.50
+                yolo_score = min(possible_thr, confidence)
             
             # ONLY emit anomaly if YOLO confirmed detection (>= 0.50)
             # This prevents heuristic false positives from appearing in Anomalies tab
@@ -163,6 +186,9 @@ class VideoWorker(QObject):
                 x1, y1, x2, y2 = [int(v) for v in bbox]
                 class_name = det.get('class', 'UNKNOWN')
                 conf = float(det.get('confidence', 0.0))
+
+                if self.detection_box_mode == 'specific' and class_name not in self.detection_box_classes:
+                    continue
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
                 label = f"{class_name} {conf:.2f}"
@@ -347,14 +373,17 @@ class VideoWorker(QObject):
             try:
                 # Step 1: Fast heuristic detection on current frame
                 h_score = self.vision_detector.heuristic_fire_smoke(frame)
-                heuristic_threshold = 0.20  # Only queue if heuristic >= 0.20
+                heuristic_threshold = self.heuristic_threshold
+                force_sample = (self._detection_frame_id % self.force_yolo_every_n_frames) == 0
+                should_queue = h_score >= heuristic_threshold or force_sample
+                queue_reason = "HEURISTIC" if h_score >= heuristic_threshold else "PERIODIC_SAMPLE"
                 
                 if is_debug_enabled():
                     print(f"[HYBRID_DETECTION] stream={self.stream_id}, heuristic={h_score:.3f}, threshold={heuristic_threshold}", flush=True)
                 
                 # Step 2: If heuristic score is above threshold, queue for YOLO validation
                 # This prevents obvious non-hazards from being sent to YOLO
-                if h_score >= heuristic_threshold:
+                if should_queue:
                     # Queue the frame for background YOLO processing
                     frame_id = f"{self.stream_id}-{self._detection_frame_id:05d}"
                     metadata = FrameMetadata(
@@ -369,10 +398,10 @@ class VideoWorker(QObject):
                     log_vision_event(
                         "HEURISTIC",
                         str(self.stream_id),
-                        f"score={h_score:.3f} threshold={heuristic_threshold:.3f} decision=QUEUED frame_id={frame_id}"
+                        f"score={h_score:.3f} threshold={heuristic_threshold:.3f} decision=QUEUED reason={queue_reason} frame_id={frame_id}"
                     )
                     if is_debug_enabled():
-                        print(f"[HYBRID_DETECTION] Queued frame {metadata['frame_id']} for YOLO (heur={h_score:.3f})", flush=True)
+                        print(f"[HYBRID_DETECTION] Queued frame {metadata.frame_id} for YOLO (heur={h_score:.3f}, reason={queue_reason})", flush=True)
                 else:
                     self._heuristic_log_counter += 1
                     if self._heuristic_log_counter % 30 == 0:

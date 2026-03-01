@@ -11,6 +11,7 @@ import sys
 from typing import List
 from pathlib import Path
 from threading import Thread, Event
+import subprocess
 
 # Prefer fieldglass modules first, then parent directory for root-level utilities
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,7 +43,7 @@ except Exception:
 from datetime import datetime
 from streamconfig_dialog import StreamConfigDialog
 from video_widget import VideoWidget
-from sensor_fusion import SensorFusion
+from embereye.core.sensor_fusion import SensorFusion
 from embereye.core.pipeline_logs import VISION_LOG, FUSION_LOG, log_fusion_event
 from baseline_manager import BaselineManager
 from hawkcore.emberhawk_manager import EmberHawkManager, is_valid_ip
@@ -480,11 +481,15 @@ class BEMainWindow(QMainWindow):
         flame_thr = float(self.config.get('flame_threshold_pct', 25.0))
         temp_thr = float(self.config.get('temp_threshold', 40.0))
         gas_thr = float(self.config.get('gas_ppm_threshold', 400))
+        vision_thr = float(self.config.get('vision_threshold', 0.7))
+        vision_weight = float(self.config.get('vision_confidence_weight', 0.5))
         self.sensor_fusion = SensorFusion(temp_threshold=temp_thr,
                           gas_ppm_threshold=gas_thr,
                           smoke_threshold_pct=smoke_thr,
-                          flame_threshold_pct=flame_thr)
-        print(f"Loaded fusion thresholds: Smoke={smoke_thr}%, Flame={flame_thr}%, Temp={temp_thr}°C, Gas={gas_thr}ppm")
+                  flame_threshold_pct=flame_thr,
+                  vision_threshold=vision_thr,
+                  vision_confidence_weight=vision_weight)
+        print(f"Loaded fusion thresholds: Smoke={smoke_thr}%, Flame={flame_thr}%, Temp={temp_thr}°C, Gas={gas_thr}ppm, VisionThr={vision_thr}, VisionWeight={vision_weight}")
         # Hybrid alarm support (rules + fusion)
         self._fusion_by_loc_id = {}
         self._fusion_ts_by_loc_id = {}
@@ -492,8 +497,24 @@ class BEMainWindow(QMainWindow):
             self._rule_engine = VisionDetector(yolo_model_path="__no_model__")
         except Exception:
             self._rule_engine = None
-        self._rule_min_fusion_conf = 0.3
-        self._rule_min_yolo_conf = 0.5
+        self.heuristic_threshold = float(self.config.get('heuristic_threshold', 0.20))
+        self.force_yolo_every_n_frames = int(self.config.get('force_yolo_every_n_frames', 10))
+        self.yolo_conf_threshold = float(self.config.get('yolo_conf_threshold', 0.05))
+        self.possible_conf_threshold = float(self.config.get('possible_conf_threshold', 0.60))
+        self.confirmed_conf_threshold = float(self.config.get('confirmed_conf_threshold', 0.80))
+        if self.confirmed_conf_threshold <= self.possible_conf_threshold:
+            self.confirmed_conf_threshold = min(1.0, self.possible_conf_threshold + 0.05)
+        self._rule_min_fusion_conf = float(self.config.get('rule_min_fusion_conf', 0.3))
+        self._rule_min_yolo_conf = float(self.config.get('rule_min_yolo_conf', 0.6))
+        self.detection_box_mode = str(self.config.get('detection_box_mode', 'all')).strip().lower()
+        if self.detection_box_mode not in ('all', 'specific'):
+            self.detection_box_mode = 'all'
+        raw_box_classes = self.config.get('detection_box_classes', [])
+        if not isinstance(raw_box_classes, list):
+            raw_box_classes = []
+        self.detection_box_classes = [str(class_name).strip() for class_name in raw_box_classes if str(class_name).strip()]
+        os.environ['EMBEREYE_BBOX_MODE'] = self.detection_box_mode
+        os.environ['EMBEREYE_BBOX_CLASSES'] = ';'.join(self.detection_box_classes)
         self.baseline_manager = BaselineManager()
         self.baseline_manager.load_from_disk()
         
@@ -546,7 +567,7 @@ class BEMainWindow(QMainWindow):
             tcp_mode = self.config.get('tcp_mode', 'threaded')
             try:
                 if tcp_mode == 'async':
-                    from tcp_async_server import TCPAsyncSensorServer
+                    from embereye.core.tcp_async_server import TCPAsyncSensorServer
                     import asyncio, threading
                     # Create dedicated event loop thread if not already present
                     if self._async_loop is None:
@@ -561,7 +582,7 @@ class BEMainWindow(QMainWindow):
                     if self.tcp_server:
                         asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
                 else:
-                    from tcp_sensor_server import TCPSensorServer
+                    from embereye.core.tcp_sensor_server import TCPSensorServer
                     self.tcp_server = TCPSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
                     self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
                     if self.tcp_server:
@@ -1418,7 +1439,7 @@ class BEMainWindow(QMainWindow):
             QMessageBox.warning(self, "Verify Model", f"Error: {e}")
     
     def _sandbox_export_model(self):
-        """Export current model to deployment format (ONNX, TorchScript, CoreML, TFLite)."""
+        """Export selected model version as Studio-compatible ZIP package for Field app."""
         version = self.sandbox_model_combo.currentText()
         if not version or version in ["No models available", "Error loading models"]:
             QMessageBox.warning(self, "Export Model", "Select a model version first.")
@@ -1426,17 +1447,20 @@ class BEMainWindow(QMainWindow):
         
         try:
             from embereye.core.model_versioning import ModelVersionManager
+            import zipfile
+            import json
+            from datetime import datetime
             
             manager = ModelVersionManager()
-            # Prefer the selected version's weights; fall back to current_best if missing
+            # Prefer selected version's weights; support both EmberEye.pt and best.pt
             weights_dir = manager.models_dir / version / "weights"
-            weight_path = weights_dir / "best.pt"
+            weight_path = weights_dir / "EmberEye.pt"
             if not weight_path.exists():
-                alt_path = weights_dir / "last.pt"
+                alt_path = weights_dir / "best.pt"
                 if alt_path.exists():
                     weight_path = alt_path
                 else:
-                    # Fall back to current_best.pt if present
+                    # Fall back to current_best if present
                     fallback = manager.get_current_best()
                     weight_path = fallback if fallback and fallback.exists() else None
             
@@ -1444,46 +1468,102 @@ class BEMainWindow(QMainWindow):
                 QMessageBox.warning(self, "Export Model", f"Model weights not found for {version}")
                 return
             
-            # Format selection dialog
-            formats = ["ONNX (.onnx)", "TorchScript (.pt)", "CoreML (.mlmodel)", "TFLite (.tflite)"]
-            format_keys = ["onnx", "torchscript", "coreml", "tflite"]
-            
-            format_text, ok = QInputDialog.getItem(
-                self, "Export Format", "Select export format:", formats, 0, False
-            )
-            
-            if not ok:
-                return
-            
-            fmt = format_keys[formats.index(format_text)]
-            
-            # File save dialog
-            default_name = f"EmberEye_{version}_{fmt}.{format_text.split('.')[-1]}"
+            # Save as Studio-compatible ZIP
+            version_name = version.split(" ")[0]
             save_path, _ = QFileDialog.getSaveFileName(
-                self, "Export Model", default_name, 
-                f"{format_text} Files (*.{format_text.split('.')[-1]})"
+                self,
+                "Export Model Package",
+                f"{version_name}_model.zip",
+                "ZIP Files (*.zip);;All Files (*.*)"
             )
             
             if not save_path:
                 return
             
+            export_path = Path(save_path)
+            if export_path.suffix.lower() != '.zip':
+                export_path = export_path.with_suffix('.zip')
+            
             # Show progress dialog
-            progress = QProgressDialog(f"Exporting to {fmt.upper()}...", None, 0, 0, self)
+            progress = QProgressDialog("Exporting model package...", None, 0, 0, self)
             progress.setWindowModality(Qt.WindowModal)
             progress.setMinimumDuration(0)
             QApplication.processEvents()
             
-            # Export
-            from ultralytics import YOLO
-            model = YOLO(str(weight_path))
-            export_path = model.export(format=fmt, imgsz=640)
-            
-            # Copy to requested location
-            import shutil
-            shutil.copy(str(export_path), save_path)
+            # Create metadata with class versioning (matches Studio format)
+            from embereye.core.class_config import get_leaf_classes, get_classes_hash, load_master_classes
+            classes_dict = load_master_classes()
+            leaf_classes = get_leaf_classes(classes_dict)
+            classes_hash = get_classes_hash(leaf_classes)
+
+            metadata = {
+                "model_version": version_name,
+                "export_date": datetime.now().isoformat(),
+                "model_type": "YOLOv8",
+                "model_name": "best.pt",
+                "app": "EmberEye Field",
+                "compatible_apps": ["EmberEye Field", "EmberEye Studio"],
+                "class_count": len(leaf_classes),
+                "class_hash": classes_hash,
+                "class_names": leaf_classes,
+                "instructions": [
+                    "1. Extract the ZIP file",
+                    "2. Copy 'best.pt' to EmberEye Field's models directory",
+                    "3. Restart EmberEye Field",
+                    "4. Select the model from the model list"
+                ]
+            }
+
+            # Create ZIP package compatible with Studio importer/exporter expectations
+            with zipfile.ZipFile(str(export_path), 'w', zipfile.ZIP_DEFLATED) as zipf:
+                zipf.write(str(weight_path), arcname="best.pt")
+                zipf.writestr("master_classes.json", json.dumps(classes_dict, indent=2))
+                zipf.writestr("metadata.json", json.dumps(metadata, indent=2))
+
+                readme = f"""# EmberEye Model Export
+
+Model Version: {version_name}
+Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Installation Instructions
+
+### For EmberEye Field App:
+
+1. Extract this ZIP file
+2. Copy `best.pt` to the Field models directory
+3. Copy `master_classes.json` if class definitions differ
+4. Restart EmberEye Field application
+
+## Files Included
+
+- `best.pt`: Trained YOLOv8 model weights
+- `master_classes.json`: Class definitions used during training/export
+- `metadata.json`: Model information and compatibility details
+- `README.md`: Installation guide
+"""
+                zipf.writestr("README.md", readme)
+
+            # Verify ZIP contents
+            with zipfile.ZipFile(str(export_path), 'r') as zipf:
+                file_list = set(zipf.namelist())
+                required_files = {'best.pt', 'master_classes.json', 'metadata.json', 'README.md'}
+                missing = required_files - file_list
+                if missing:
+                    progress.close()
+                    QMessageBox.critical(self, "Export Error", f"ZIP package incomplete. Missing: {', '.join(sorted(missing))}")
+                    try:
+                        export_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    return
             
             progress.close()
-            QMessageBox.information(self, "Export Complete", f"✓ Model exported to:\n{save_path}")
+            QMessageBox.information(
+                self,
+                "Export Complete",
+                f"✓ Model package exported:\n{export_path}\n\n"
+                f"File size: {export_path.stat().st_size / (1024 * 1024):.2f} MB"
+            )
             
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export model:\n{e}")
@@ -1557,17 +1637,9 @@ class BEMainWindow(QMainWindow):
                 training_strategy="imported",
             )
             
-            # Save metadata
+            # Save metadata in current schema
             metadata_file = version_dir / "metadata.json"
-            import json
-            with open(metadata_file, 'w') as f:
-                json.dump({
-                    'version': metadata.version,
-                    'created_at': metadata.timestamp,
-                    'best_accuracy': metadata.best_accuracy,
-                    'training_time_hours': metadata.training_time_hours,
-                    'notes': metadata.notes,
-                }, f, indent=2)
+            metadata.save(metadata_file)
             
             # Refresh dropdown
             self._refresh_sandbox_models()
@@ -2508,6 +2580,34 @@ class BEMainWindow(QMainWindow):
         status_layout = QHBoxLayout()
         status_layout.setContentsMargins(5, 0, 5, 0)
         status_layout.setSpacing(8)
+
+        # Tray-like icon strip (Windows system tray style)
+        self.status_tray_widget = QWidget()
+        tray_layout = QHBoxLayout(self.status_tray_widget)
+        tray_layout.setContentsMargins(0, 0, 0, 0)
+        tray_layout.setSpacing(4)
+
+        def _make_tray_icon(standard_icon, tooltip):
+            icon_label = QLabel()
+            icon_label.setFixedSize(16, 16)
+            icon_label.setPixmap(self.style().standardIcon(standard_icon).pixmap(14, 14))
+            icon_label.setToolTip(tooltip)
+            return icon_label
+
+        # Copies existing status items as icons
+        self.tray_tcp_icon = _make_tray_icon(QStyle.SP_DriveNetIcon, "TCP Server")
+        self.tray_device_icon = _make_tray_icon(QStyle.SP_DesktopIcon, "Inference Device")
+        self.tray_model_icon = _make_tray_icon(QStyle.SP_FileIcon, "Model Status")
+        self.tray_detection_icon = _make_tray_icon(QStyle.SP_DialogApplyButton, "Detections")
+        # Proposed new system icon
+        self.tray_system_icon = _make_tray_icon(QStyle.SP_ComputerIcon, "System")
+
+        tray_layout.addWidget(self.tray_tcp_icon)
+        tray_layout.addWidget(self.tray_device_icon)
+        tray_layout.addWidget(self.tray_model_icon)
+        tray_layout.addWidget(self.tray_detection_icon)
+        tray_layout.addWidget(self.tray_system_icon)
+        status_layout.addWidget(self.status_tray_widget)
         
         # LED indicator (colored circle)
         self.tcp_led = QLabel()
@@ -2568,6 +2668,9 @@ class BEMainWindow(QMainWindow):
         # Add to status bar (permanent widget on the left)
         self.statusBar().addPermanentWidget(status_widget, 0)
 
+        # Initial tooltip sync for tray icons
+        self._refresh_status_tray_icons(tcp_running=False)
+
         # Periodically update model load state
         try:
             if not hasattr(self, '_model_status_timer') or self._model_status_timer is None:
@@ -2575,6 +2678,38 @@ class BEMainWindow(QMainWindow):
                 self._model_status_timer.timeout.connect(self._refresh_model_status)
                 self._model_status_timer.start(2000)
             self._refresh_model_status()
+        except Exception:
+            pass
+
+    def _refresh_status_tray_icons(self, tcp_running=None):
+        """Sync tray icon appearance/tooltips with existing status labels."""
+        try:
+            if hasattr(self, 'tray_system_icon'):
+                self.tray_system_icon.setToolTip(f"System | PID: {os.getpid()}")
+
+            if hasattr(self, 'tray_tcp_icon'):
+                tcp_text = self.tcp_status_label.text() if hasattr(self, 'tcp_status_label') else "TCP Server"
+                self.tray_tcp_icon.setToolTip(tcp_text)
+                if tcp_running is True:
+                    self.tray_tcp_icon.setPixmap(self.style().standardIcon(QStyle.SP_DialogApplyButton).pixmap(14, 14))
+                elif tcp_running is False:
+                    self.tray_tcp_icon.setPixmap(self.style().standardIcon(QStyle.SP_MessageBoxCritical).pixmap(14, 14))
+
+            if hasattr(self, 'tray_device_icon') and hasattr(self, 'device_status_label'):
+                self.tray_device_icon.setToolTip(self.device_status_label.text())
+
+            if hasattr(self, 'tray_model_icon') and hasattr(self, 'model_status_label'):
+                model_text = self.model_status_label.text()
+                self.tray_model_icon.setToolTip(model_text)
+                if "Loaded" in model_text:
+                    self.tray_model_icon.setPixmap(self.style().standardIcon(QStyle.SP_DialogApplyButton).pixmap(14, 14))
+                elif "Error" in model_text:
+                    self.tray_model_icon.setPixmap(self.style().standardIcon(QStyle.SP_MessageBoxCritical).pixmap(14, 14))
+                else:
+                    self.tray_model_icon.setPixmap(self.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(14, 14))
+
+            if hasattr(self, 'tray_detection_icon') and hasattr(self, 'detection_count_label'):
+                self.tray_detection_icon.setToolTip(self.detection_count_label.text())
         except Exception:
             pass
     
@@ -2609,6 +2744,7 @@ class BEMainWindow(QMainWindow):
             
             # Update status text
             self.tcp_status_label.setText(message)
+            self._refresh_status_tray_icons(tcp_running=is_running)
             
         except Exception as e:
             print(f"TCP status update error: {e}")
@@ -2645,8 +2781,10 @@ class BEMainWindow(QMainWindow):
                     self.model_status_label.setToolTip("")
             if hasattr(self, 'detection_count_label'):
                 self.detection_count_label.setText(f"Detections: {stats.get('detections_confirmed', 0)}")
+            self._refresh_status_tray_icons()
         except Exception:
             self.model_status_label.setText("Model: Error")
+            self._refresh_status_tray_icons()
 
     def show_tcp_port_dialog(self):
         from PyQt5.QtWidgets import QInputDialog
@@ -2669,7 +2807,7 @@ class BEMainWindow(QMainWindow):
             
             # Restart with new port
             try:
-                from tcp_sensor_server import TCPSensorServer
+                from embereye.core.tcp_sensor_server import TCPSensorServer
                 self.tcp_message_count = 0
                 # Always connect the signal (PyQt5 does not duplicate connections)
                 self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
@@ -2738,6 +2876,8 @@ class BEMainWindow(QMainWindow):
             'temp_threshold': self.sensor_fusion.temp_threshold,
             'gas_ppm_threshold': self.sensor_fusion.gas_ppm_threshold,
             'flame_active_value': self.sensor_fusion.flame_active_value,
+            'smoke_threshold_pct': float(getattr(self.sensor_fusion, 'smoke_threshold_pct', self.config.get('smoke_threshold_pct', 25.0))),
+            'flame_threshold_pct': float(getattr(self.sensor_fusion, 'flame_threshold_pct', self.config.get('flame_threshold_pct', 25.0))),
             'min_sources': self.sensor_fusion.min_sources,
             
             # Gas sensor calibration
@@ -2749,8 +2889,22 @@ class BEMainWindow(QMainWindow):
             'hot_cell_decay_time': 5.0,
             'freeze_on_alarm': True,
             'show_fusion_overlay': True,
-            'vision_threshold': 0.7,
-            'vision_confidence_weight': 0.5,
+            'vision_threshold': float(getattr(self.sensor_fusion, 'vision_threshold', self.config.get('vision_threshold', getattr(self, 'vision_threshold', 0.7)))),
+            'vision_confidence_weight': float(getattr(self.sensor_fusion, 'vision_confidence_weight', self.config.get('vision_confidence_weight', 0.5))),
+
+            # Hybrid detection
+            'heuristic_threshold': float(self.config.get('heuristic_threshold', getattr(self, 'heuristic_threshold', 0.20))),
+            'force_yolo_every_n_frames': int(self.config.get('force_yolo_every_n_frames', getattr(self, 'force_yolo_every_n_frames', 10))),
+            'yolo_conf_threshold': float(self.config.get('yolo_conf_threshold', getattr(self, 'yolo_conf_threshold', 0.05))),
+            'possible_conf_threshold': float(self.config.get('possible_conf_threshold', getattr(self, 'possible_conf_threshold', 0.60))),
+            'confirmed_conf_threshold': float(self.config.get('confirmed_conf_threshold', getattr(self, 'confirmed_conf_threshold', 0.80))),
+            'rule_min_fusion_conf': float(self.config.get('rule_min_fusion_conf', getattr(self, '_rule_min_fusion_conf', 0.30))),
+            'rule_min_yolo_conf': float(self.config.get('rule_min_yolo_conf', getattr(self, '_rule_min_yolo_conf', 0.60))),
+            'detection_box_mode': self.detection_box_mode,
+            'detection_box_classes': list(self.detection_box_classes),
+            'detection_available_classes': sorted(set(get_leaf_classes() or [])),
+            'detection_selected_preset': str(self.config.get('detection_selected_preset', 'Custom')),
+            'detection_default_profile': self.config.get('detection_default_profile', {}),
             
             # Anomalies
             'anomaly_threshold': getattr(self, 'anomaly_threshold', 0.4),
@@ -2772,14 +2926,41 @@ class BEMainWindow(QMainWindow):
         dialog.settings_changed.connect(self.apply_sensor_config)
         
         if dialog.exec_():
-            QMessageBox.information(self, "Settings Applied", "Sensor configuration has been updated.")
+            applied = dialog.get_settings()
+            if applied.get('restart_app', False):
+                confirm = QMessageBox.question(
+                    self,
+                    "Restart Application",
+                    "Settings have been applied. Restart EmberEye Field now?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if confirm == QMessageBox.Yes:
+                    self._restart_application()
+                    return
+            QMessageBox.information(self, "Settings Applied", "Sensor configuration has been updated (no restart required).")
+
+    def _restart_application(self):
+        """Restart current application process."""
+        try:
+            if getattr(sys, 'frozen', False):
+                subprocess.Popen([sys.executable])
+            else:
+                subprocess.Popen([sys.executable] + sys.argv)
+            QApplication.quit()
+        except Exception as e:
+            QMessageBox.critical(self, "Restart Failed", f"Could not restart application: {e}")
     
     def apply_sensor_config(self, settings):
         """Apply sensor configuration settings."""
         # Update sensor fusion
         self.sensor_fusion.temp_threshold = settings['temp_threshold']
         self.sensor_fusion.gas_ppm_threshold = settings['gas_ppm_threshold']
-        self.sensor_fusion.flame_active_value = settings['flame_active_value']
+        self.sensor_fusion.smoke_threshold_pct = float(settings.get('smoke_threshold_pct', getattr(self.sensor_fusion, 'smoke_threshold_pct', 25.0)))
+        self.sensor_fusion.flame_threshold_pct = float(settings.get('flame_threshold_pct', getattr(self.sensor_fusion, 'flame_threshold_pct', 25.0)))
+        self.sensor_fusion.vision_threshold = float(settings.get('vision_threshold', getattr(self.sensor_fusion, 'vision_threshold', 0.7)))
+        self.sensor_fusion.vision_confidence_weight = float(settings.get('vision_confidence_weight', getattr(self.sensor_fusion, 'vision_confidence_weight', 0.5)))
+        self.sensor_fusion.flame_active_value = int(settings.get('flame_active_value', getattr(self.sensor_fusion, 'flame_active_value', 1)))
         self.sensor_fusion.min_sources = settings['min_sources']
         
         # Update gas sensor calibration
@@ -2798,9 +2979,51 @@ class BEMainWindow(QMainWindow):
         # Update threshold for all video workers
         anomaly_threshold = settings.get('anomaly_threshold', 0.4)
         debug_print(f"[CONFIG] Applying anomaly_threshold={anomaly_threshold} to {len(self.video_widgets)} video workers")
+
+        # Hybrid thresholds (apply live where possible)
+        self.heuristic_threshold = float(settings.get('heuristic_threshold', getattr(self, 'heuristic_threshold', 0.20)))
+        self.force_yolo_every_n_frames = int(settings.get('force_yolo_every_n_frames', getattr(self, 'force_yolo_every_n_frames', 10)))
+        self.yolo_conf_threshold = float(settings.get('yolo_conf_threshold', getattr(self, 'yolo_conf_threshold', 0.05)))
+        self.possible_conf_threshold = float(settings.get('possible_conf_threshold', getattr(self, 'possible_conf_threshold', 0.60)))
+        self.confirmed_conf_threshold = float(settings.get('confirmed_conf_threshold', getattr(self, 'confirmed_conf_threshold', 0.80)))
+        if self.confirmed_conf_threshold <= self.possible_conf_threshold:
+            self.confirmed_conf_threshold = min(1.0, self.possible_conf_threshold + 0.05)
+
+        self._rule_min_fusion_conf = float(settings.get('rule_min_fusion_conf', self._rule_min_fusion_conf))
+        self._rule_min_yolo_conf = float(settings.get('rule_min_yolo_conf', self._rule_min_yolo_conf))
+        mode_value = str(settings.get('detection_box_mode', self.detection_box_mode)).strip().lower()
+        self.detection_box_mode = mode_value if mode_value in ('all', 'specific') else 'all'
+        classes_value = settings.get('detection_box_classes', self.detection_box_classes)
+        if not isinstance(classes_value, list):
+            classes_value = []
+        self.detection_box_classes = [str(class_name).strip() for class_name in classes_value if str(class_name).strip()]
+
+        os.environ['EMBEREYE_YOLO_CONF'] = str(self.yolo_conf_threshold)
+        os.environ['EMBEREYE_HEURISTIC_THRESHOLD'] = str(self.heuristic_threshold)
+        os.environ['EMBEREYE_FORCE_YOLO_EVERY_N'] = str(self.force_yolo_every_n_frames)
+        os.environ['EMBEREYE_BBOX_MODE'] = self.detection_box_mode
+        os.environ['EMBEREYE_BBOX_CLASSES'] = ';'.join(self.detection_box_classes)
+
+        # Update global detection worker if running
+        try:
+            from embereye.core.detection_worker import get_detection_worker
+            detection_worker = get_detection_worker()
+            if detection_worker and getattr(detection_worker, 'detector', None):
+                detector = detection_worker.detector
+                detector.heuristic_threshold = self.heuristic_threshold
+                detector.yolo_conf_threshold = self.yolo_conf_threshold
+                detector.possible_threshold = self.possible_conf_threshold
+                detector.confirmed_threshold = self.confirmed_conf_threshold
+        except Exception as e:
+            debug_print(f"[CONFIG] Detection worker update skipped: {e}")
+
         for widget in self.video_widgets.values():
             if hasattr(widget, 'worker') and widget.worker:
                 widget.worker.anomaly_threshold = anomaly_threshold
+                widget.worker.heuristic_threshold = self.heuristic_threshold
+                widget.worker.force_yolo_every_n_frames = self.force_yolo_every_n_frames
+                widget.worker.detection_box_mode = self.detection_box_mode
+                widget.worker.detection_box_classes = set(self.detection_box_classes)
                 debug_print(f"[CONFIG] Set worker {widget.loc_id} threshold to {widget.worker.anomaly_threshold}")
         
         # Update display settings for all video widgets
@@ -2818,9 +3041,46 @@ class BEMainWindow(QMainWindow):
         self.anomaly_save_enabled = settings.get('anomaly_save_enabled', False)
         self.anomaly_save_dir = settings.get('anomaly_save_dir', '')
         self.anomaly_retention_days = settings.get('anomaly_retention_days', 7)
+
+        # Persist settings to stream config
+        self.config['smoke_threshold_pct'] = self.sensor_fusion.smoke_threshold_pct
+        self.config['flame_threshold_pct'] = self.sensor_fusion.flame_threshold_pct
+        self.config['temp_threshold'] = self.sensor_fusion.temp_threshold
+        self.config['gas_ppm_threshold'] = self.sensor_fusion.gas_ppm_threshold
+        self.config['vision_threshold'] = settings.get('vision_threshold', getattr(self, 'vision_threshold', 0.7))
+        self.config['vision_confidence_weight'] = self.sensor_fusion.vision_confidence_weight
+        self.config['anomaly_threshold'] = self.anomaly_threshold
+        self.config['anomaly_max_items'] = self._anomaly_max_items
+        self.config['anomaly_save_enabled'] = self.anomaly_save_enabled
+        self.config['anomaly_save_dir'] = self.anomaly_save_dir
+        self.config['anomaly_retention_days'] = self.anomaly_retention_days
+        self.config['heuristic_threshold'] = self.heuristic_threshold
+        self.config['force_yolo_every_n_frames'] = self.force_yolo_every_n_frames
+        self.config['yolo_conf_threshold'] = self.yolo_conf_threshold
+        self.config['possible_conf_threshold'] = self.possible_conf_threshold
+        self.config['confirmed_conf_threshold'] = self.confirmed_conf_threshold
+        self.config['rule_min_fusion_conf'] = self._rule_min_fusion_conf
+        self.config['rule_min_yolo_conf'] = self._rule_min_yolo_conf
+        self.config['detection_box_mode'] = self.detection_box_mode
+        self.config['detection_box_classes'] = list(self.detection_box_classes)
+        self.config['detection_selected_preset'] = str(settings.get('detection_selected_preset', self.config.get('detection_selected_preset', 'Custom')))
+        profile_value = settings.get('detection_default_profile', self.config.get('detection_default_profile', {}))
+        self.config['detection_default_profile'] = profile_value if isinstance(profile_value, dict) else {}
+        try:
+            StreamConfig.save_config(self.config)
+        except Exception as e:
+            debug_print(f"[CONFIG] Save config failed: {e}")
         
-        print(f"Sensor config updated: Temp={settings['temp_threshold']}, Gas={settings['gas_ppm_threshold']}, "
-              f"R0={settings['gas_r0']}, MinSources={settings['min_sources']}, AnomalyThr={self.anomaly_threshold}")
+        print(
+            f"Sensor config updated: Temp={settings['temp_threshold']}, Gas={settings['gas_ppm_threshold']}, "
+            f"Smoke={self.sensor_fusion.smoke_threshold_pct}%, Flame={self.sensor_fusion.flame_threshold_pct}%, "
+            f"VisionThr={self.sensor_fusion.vision_threshold}, VisionWeight={self.sensor_fusion.vision_confidence_weight}, "
+            f"R0={settings['gas_r0']}, MinSources={settings['min_sources']}, AnomalyThr={self.anomaly_threshold}, "
+            f"Heuristic={self.heuristic_threshold}, ForceEveryN={self.force_yolo_every_n_frames}, YOLOConf={self.yolo_conf_threshold}, "
+            f"Bands=({self.possible_conf_threshold}/{self.confirmed_conf_threshold}), "
+            f"Rule(yolo/fusion)=({self._rule_min_yolo_conf}/{self._rule_min_fusion_conf}), "
+            f"BoxMode={self.detection_box_mode}, BoxClasses={len(self.detection_box_classes)}"
+        )
 
     def show_master_class_config(self):
         """Open the master class configuration dialog and refresh classes on save."""
@@ -3376,7 +3636,7 @@ class BEMainWindow(QMainWindow):
         # Description
         desc = QLabel(
             "Select a trained model exported from Studio to use for real-time detection.\n"
-            "The model will be activated immediately for all video streams."
+            "After import, you can choose whether to activate it immediately for all video streams."
         )
         desc.setStyleSheet("color: #aaa; margin-bottom: 10px;")
         desc.setWordWrap(True)
@@ -3409,8 +3669,8 @@ class BEMainWindow(QMainWindow):
         
         # Info box
         info = QLabel(
-            "ℹ️ After import, the model will be set as the active detection model.\n"
-            "All video streams will use this model for fire and anomaly detection."
+            "ℹ️ The model is imported first.\n"
+            "You will be asked to confirm activation at runtime after import completes."
         )
         info.setStyleSheet(
             "background-color: rgba(0, 188, 212, 0.1); "
@@ -3429,7 +3689,7 @@ class BEMainWindow(QMainWindow):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         
-        import_btn = QPushButton("Import & Activate")
+        import_btn = QPushButton("Import Model")
         import_btn.setStyleSheet(
             "background-color: #00bcd4; color: white; "
             "padding: 8px 20px; font-weight: bold; border-radius: 4px;"
@@ -3451,7 +3711,7 @@ class BEMainWindow(QMainWindow):
             parent_dlg,
             "Select Model File",
             "",
-            "Model Files (*.pt *.onnx *.tflite *.mlmodel);;PyTorch (*.pt);;ONNX (*.onnx);;TFLite (*.tflite);;CoreML (*.mlmodel);;All Files (*)"
+            "Model Files (*.zip *.pt *.onnx *.tflite *.mlmodel);;Model Package (*.zip);;PyTorch (*.pt);;ONNX (*.onnx);;TFLite (*.tflite);;CoreML (*.mlmodel);;All Files (*)"
         )
         
         if file_path:
@@ -3463,6 +3723,7 @@ class BEMainWindow(QMainWindow):
             # Auto-detect model type from extension
             ext = Path(file_path).suffix.lower()
             type_map = {
+                '.zip': 0,
                 '.pt': 0,
                 '.onnx': 1,
                 '.tflite': 2,
@@ -3514,24 +3775,74 @@ class BEMainWindow(QMainWindow):
             weights_dir = version_dir / "weights"
             weights_dir.mkdir(exist_ok=True)
             
-            # Copy model file
-            dest_path = weights_dir / f"best.{model_path.suffix.lstrip('.')}"
-            shutil.copy2(model_path, dest_path)
-            
-            # Create metadata
+            # Resolve source model: direct file or ZIP package
+            import tempfile
+            import zipfile
+
+            source_model_path = model_path
+            zip_metadata = {}
+            temp_extract_dir = None
+
+            if model_path.suffix.lower() == '.zip':
+                temp_extract_dir = tempfile.TemporaryDirectory(prefix="embereye_model_import_")
+                extract_dir = Path(temp_extract_dir.name)
+
+                with zipfile.ZipFile(str(model_path), 'r') as zipf:
+                    zipf.extractall(str(extract_dir))
+                    if 'metadata.json' in zipf.namelist():
+                        try:
+                            with zipf.open('metadata.json') as f:
+                                zip_metadata = json.load(f)
+                        except Exception:
+                            zip_metadata = {}
+
+                candidate_names = ['EmberEye.pt', 'best.pt', 'EmberEye_gpu.pt', 'EmberEye_mps.pt']
+                source_model_path = None
+                for name in candidate_names:
+                    matches = list(extract_dir.rglob(name))
+                    if matches:
+                        source_model_path = matches[0]
+                        break
+
+                if source_model_path is None:
+                    pt_matches = list(extract_dir.rglob('*.pt'))
+                    if pt_matches:
+                        source_model_path = pt_matches[0]
+
+                if source_model_path is None:
+                    raise ValueError("No deployable model file found inside ZIP (expected EmberEye.pt or *.pt)")
+
+                model_type = 'pytorch' if source_model_path.suffix.lower() == '.pt' else model_type
+
+            # Copy model file into version weights directory
+            if source_model_path.suffix.lower() == '.pt':
+                dest_path = weights_dir / "EmberEye.pt"
+            else:
+                dest_path = weights_dir / f"best.{source_model_path.suffix.lstrip('.')}"
+            shutil.copy2(source_model_path, dest_path)
+
+            # Build metadata using current schema
+            training_meta = zip_metadata.get('training_metadata', {}) if isinstance(zip_metadata, dict) else {}
             metadata = ModelMetadata(
                 version=version_name,
-                created_at=datetime.datetime.now().isoformat(),
-                model_type=model_type,
-                source="imported_from_studio",
-                metrics={
-                    "imported_file": model_path.name,
-                    "format": model_type
-                },
-                config={
+                timestamp=datetime.datetime.now().isoformat(),
+                training_images=int(training_meta.get('training_images', training_meta.get('total_images', 0)) or 0),
+                new_images=int(training_meta.get('new_images', 0) or 0),
+                total_epochs=int(training_meta.get('total_epochs', training_meta.get('epochs', 0)) or 0),
+                best_accuracy=float(training_meta.get('best_accuracy', 0.0) or 0.0),
+                loss=float(training_meta.get('loss', 0.0) or 0.0),
+                training_time_hours=float(training_meta.get('training_time_hours', 0.0) or 0.0),
+                base_model=str(training_meta.get('base_model', 'imported')),
+                config_snapshot={
                     "imgsz": 640,
-                    "device": "auto"
-                }
+                    "device": "auto",
+                    "imported_file": model_path.name,
+                    "resolved_model": source_model_path.name,
+                    "format": model_type,
+                },
+                previous_version=training_meta.get('previous_version'),
+                notes=f"Imported from {model_path.name}",
+                training_strategy="imported",
             )
             metadata.save(version_dir / "metadata.json")
             
@@ -3541,7 +3852,6 @@ class BEMainWindow(QMainWindow):
                 
                 # Check if imported ZIP had class hash in its metadata
                 import zipfile
-                import json
                 class_hash_warning = ""
                 
                 if model_path.suffix.lower() == '.zip':
@@ -3571,26 +3881,48 @@ class BEMainWindow(QMainWindow):
                 logger.debug(f"Class hash validation skipped: {e}")
                 class_hash_warning = ""
             
-            # Set as current best for active detection
-            manager.set_current_best(version_name)
-            
+            if temp_extract_dir is not None:
+                temp_extract_dir.cleanup()
+
             progress.close()
             dialog.accept()
-            
-            QMessageBox.information(
+
+            activate_now = QMessageBox.question(
                 self,
-                "Import Successful",
-                f"✓ Model imported and activated!\n\n"
+                "Activate Imported Model?",
+                f"✓ Model imported successfully.\n\n"
                 f"Model: {model_path.name}\n"
                 f"Type: {model_type.upper()}\n"
                 f"Version: {version_name}\n\n"
-                f"The model is now active for all video streams.\n"
-                f"Detections will trigger alarms based on Class & Subclass rules."
-                + class_hash_warning
+                f"Do you want to activate this model now for all video streams?"
+                + class_hash_warning,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
-            
-            # Reload detection models in video workers if possible
-            self._reload_detection_models()
+
+            if activate_now == QMessageBox.Yes:
+                activated, activate_msg = manager.promote_to_best(version_name)
+                if not activated:
+                    raise RuntimeError(f"Model imported but activation failed: {activate_msg}")
+
+                # Reload detection models in video workers at runtime
+                self._reload_detection_models()
+
+                QMessageBox.information(
+                    self,
+                    "Activation Complete",
+                    f"✓ Model imported and activated at runtime.\n\n"
+                    f"Version: {version_name}\n"
+                    f"All video streams are now using this model."
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Import Complete",
+                    f"✓ Model imported but not activated.\n\n"
+                    f"Version: {version_name}\n"
+                    f"Current active model remains unchanged."
+                )
             
         except Exception as e:
             progress.close()
@@ -3604,12 +3936,21 @@ class BEMainWindow(QMainWindow):
     def _reload_detection_models(self):
         """Reload detection models in all active video workers."""
         try:
-            # Notify all video workers to reload their detection models
-            for stream_id, worker in self.video_workers.items():
-                if hasattr(worker, 'reload_model'):
-                    worker.reload_model()
-            
-            print(f"[MODEL_IMPORT] Detection models reloaded for {len(self.video_workers)} streams")
+            from embereye.core.detection_worker import stop_detection_worker
+
+            # Hard restart global detection worker so new current_best model is loaded
+            stop_detection_worker()
+
+            rebound = 0
+            for _, worker in self.video_workers.items():
+                if hasattr(worker, 'init_detection_worker'):
+                    worker.init_detection_worker()
+                    rebound += 1
+
+            # Force immediate status refresh (do not wait for timer)
+            self._refresh_model_status()
+
+            print(f"[MODEL_IMPORT] Detection worker restarted; callbacks rebound for {rebound} streams")
         except Exception as e:
             print(f"[MODEL_IMPORT] Warning: Could not reload models in workers: {e}")
 

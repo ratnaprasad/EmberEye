@@ -3,6 +3,21 @@ import sys
 import os
 from pathlib import Path
 
+# --------------------------------------------------------------------------
+# Early CUDA probe for frozen (PyInstaller) builds on Windows.
+# If the NVIDIA driver DLL isn't loadable, set CPU-only flags BEFORE
+# importing torch, so it never attempts to initialise CUDA backends
+# (which would trigger OSError 1114 from broken bundled CUDA DLLs).
+# --------------------------------------------------------------------------
+if getattr(sys, "frozen", False) and sys.platform == "win32":
+    os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+    try:
+        import ctypes
+        ctypes.WinDLL("nvcuda.dll")
+    except (OSError, Exception):
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["EMBEREYE_FORCE_CPU"] = "1"
+
 # Setup DLL paths for PyTorch before any Qt/YOLO imports
 # This mirrors Studio startup to avoid DLL init failures on Windows.
 try:
@@ -18,24 +33,34 @@ try:
     candidates.append(Path(sys.executable).parent.parent)
 
     for base_path in candidates:
+        base_candidates = [
+            base_path,
+            base_path / "_internal",
+            base_path / "Lib" / "site-packages",
+        ]
         torch_lib_candidates = [
             base_path / "Lib" / "site-packages" / "torch" / "lib",
             base_path / "torch" / "lib",
+            base_path / "_internal" / "torch" / "lib",
         ]
 
         torch_lib_path = next((p for p in torch_lib_candidates if p.exists()), None)
         if torch_lib_path is None:
             continue
 
-        torch_lib_str = str(torch_lib_path)
-        if torch_lib_str not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+        dll_dirs = [p for p in (base_candidates + [torch_lib_path]) if p.exists()]
+        path_value = os.environ.get("PATH", "")
+        for dll_dir in dll_dirs:
+            dll_dir_str = str(dll_dir)
+            if dll_dir_str not in path_value:
+                path_value = dll_dir_str + os.pathsep + path_value
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(dll_dir_str)
+                except Exception:
+                    pass
 
-        if hasattr(os, "add_dll_directory"):
-            try:
-                os.add_dll_directory(torch_lib_str)
-            except Exception:
-                pass
+        os.environ["PATH"] = path_value
         break
 except Exception as e:
     print(f"Warning: Could not setup torch DLL paths: {e}")
@@ -52,9 +77,17 @@ try:
         device_label = "GPU"
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        os.environ["EMBEREYE_FORCE_CPU"] = "1"
         device_label = "CPU"
+except OSError as e:
+    # Catch DLL init failures (error 1114) during torch import / CUDA probe
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["EMBEREYE_FORCE_CPU"] = "1"
+    device_label = "CPU"
+    print(f"Warning: torch preload OSError (forcing CPU): {e}")
 except Exception as e:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    os.environ["EMBEREYE_FORCE_CPU"] = "1"
     device_label = "CPU"
     print(f"Warning: torch preload failed: {e}")
 

@@ -14,9 +14,15 @@
             "name": "Mac Built-in Camera",
             "url": "0",
             "group": "Default"
+        },
+        {
+            "loc_id": "s3micro",
+            "name": "S3Micro",
+            "url": "rtsp://admin:Admin.12345@192.168.1.14:554/video/live?channel=1&subtype=0",
+            "group": "Default"
         }
     ],
-    "tcp_port": 4888,
+    "tcp_port": 5080,
     "grafana_url": "http://localhost:3000",
     "enable_grafana": false,
     "thermal_calibration": {
@@ -26,5 +32,27 @@
         "description": "signed=true: interpret as two's complement. Raw values in centi-degrees. Offset is 0 because 27\u00b0C is built into the formula."
     },
     "thermal_use_eeprom": true,
-    "tcp_mode": "async"
+    "tcp_mode": "async",
+    "smoke_threshold_pct": 35.0,
+    "flame_threshold_pct": 25.0,
+    "temp_threshold": 40.0,
+    "gas_ppm_threshold": 400,
+    "vision_threshold": 0.7,
+    "anomaly_threshold": 0.4,
+    "anomaly_max_items": 200,
+    "anomaly_save_enabled": false,
+    "anomaly_save_dir": "",
+    "anomaly_retention_days": 7,
+    "heuristic_threshold": 0.4,
+    "force_yolo_every_n_frames": 30,
+    "yolo_conf_threshold": 0.12,
+    "possible_conf_threshold": 0.6,
+    "confirmed_conf_threshold": 0.8,
+    "rule_min_fusion_conf": 0.15,
+    "rule_min_yolo_conf": 0.12,
+    "vision_confidence_weight": 0.5,
+    "detection_box_mode": "all",
+    "detection_box_classes": [],
+    "detection_selected_preset": "Low Noise",
+    "detection_default_profile": {}
 }

@@ -1,5 +1,6 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QDoubleSpinBox, QSpinBox, QPushButton, QGroupBox, QCheckBox, QTabWidget, QWidget)
+                             QDoubleSpinBox, QSpinBox, QPushButton, QGroupBox, QCheckBox, QTabWidget, QWidget, QMessageBox,
+                             QRadioButton, QListWidget, QListWidgetItem, QStackedWidget, QComboBox)
 from PyQt5.QtCore import Qt, pyqtSignal
 
 
@@ -35,6 +36,22 @@ class SensorConfigDialog(QDialog):
             # Vision detection
             'vision_threshold': 0.7,
             'vision_confidence_weight': 0.5,
+
+            # Hybrid detection tuning
+            'heuristic_threshold': 0.20,
+            'force_yolo_every_n_frames': 10,
+            'yolo_conf_threshold': 0.05,
+            'possible_conf_threshold': 0.60,
+            'confirmed_conf_threshold': 0.80,
+            'rule_min_fusion_conf': 0.30,
+            'rule_min_yolo_conf': 0.60,
+
+            # Detection overlay filter
+            'detection_box_mode': 'all',
+            'detection_box_classes': [],
+            'detection_available_classes': [],
+            'detection_selected_preset': 'Custom',
+            'detection_default_profile': {},
             
             # Anomalies capture
             'anomaly_threshold': 0.4,
@@ -47,6 +64,25 @@ class SensorConfigDialog(QDialog):
         # Override with initial settings if provided
         if initial_settings:
             self.settings.update(initial_settings)
+
+        self._applying_detection_preset = False
+        self._detection_presets = {
+            'High Recall': {
+                'heuristic_threshold': 0.25,
+                'force_yolo_every_n_frames': 8,
+                'yolo_conf_threshold': 0.05,
+            },
+            'Balanced': {
+                'heuristic_threshold': 0.33,
+                'force_yolo_every_n_frames': 12,
+                'yolo_conf_threshold': 0.08,
+            },
+            'Low Noise': {
+                'heuristic_threshold': 0.40,
+                'force_yolo_every_n_frames': 30,
+                'yolo_conf_threshold': 0.12,
+            }
+        }
         
         self.init_ui()
     
@@ -67,7 +103,7 @@ class SensorConfigDialog(QDialog):
         
         # Tab 3: Display Settings
         display_tab = self.create_display_tab()
-        tabs.addTab(display_tab, "Display")
+        tabs.addTab(display_tab, "Detection settings")
         
         # Tab 4: Anomalies
         anomalies_tab = self.create_anomalies_tab()
@@ -383,9 +419,244 @@ class SensorConfigDialog(QDialog):
         return widget
     
     def create_display_tab(self):
-        """Create display settings tab."""
+        """Create detection settings tab (renamed from Display)."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+
+        # Stepper header
+        stepper_header = QHBoxLayout()
+        self.detection_step_label = QLabel()
+        stepper_header.addWidget(self.detection_step_label)
+        stepper_header.addStretch()
+
+        self.detection_prev_btn = QPushButton("Previous")
+        self.detection_prev_btn.clicked.connect(lambda: self._change_detection_step(-1))
+        stepper_header.addWidget(self.detection_prev_btn)
+
+        self.detection_next_btn = QPushButton("Next")
+        self.detection_next_btn.clicked.connect(lambda: self._change_detection_step(1))
+        stepper_header.addWidget(self.detection_next_btn)
+        layout.addLayout(stepper_header)
+
+        self.detection_step_stack = QStackedWidget()
+        layout.addWidget(self.detection_step_stack)
+
+        step_names = [
+            "1/4 • Hybrid Tuning",
+            "2/4 • Box Display",
+            "3/4 • Visual Behavior",
+            "4/4 • Application"
+        ]
+        self._detection_step_names = step_names
+
+        # Step 1: Hybrid tuning
+        step1 = QWidget()
+        step1_layout = QVBoxLayout(step1)
+
+        # Presets
+        preset_group = QGroupBox("Tuning Presets")
+        preset_layout = QVBoxLayout()
+
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Preset:"))
+        self.detection_preset_combo = QComboBox()
+        self.detection_preset_combo.addItems(["Custom", "High Recall", "Balanced", "Low Noise"])
+        self.detection_preset_combo.setToolTip(
+            "High Recall: more sensitive, may increase false alarms.\n"
+            "Balanced: moderate sensitivity and noise.\n"
+            "Low Noise: fewer false alarms, may miss brief events.\n"
+            "Custom: user-defined values."
+        )
+        preset_row.addWidget(self.detection_preset_combo)
+        preset_row.addStretch()
+        preset_layout.addLayout(preset_row)
+
+        preset_btn_row = QHBoxLayout()
+        self.save_default_profile_btn = QPushButton("Save as Default Profile")
+        self.load_default_profile_btn = QPushButton("Load Default Profile")
+        self.save_default_profile_btn.clicked.connect(self._save_default_detection_profile)
+        self.load_default_profile_btn.clicked.connect(self._load_default_detection_profile)
+        preset_btn_row.addWidget(self.save_default_profile_btn)
+        preset_btn_row.addWidget(self.load_default_profile_btn)
+        preset_btn_row.addStretch()
+        preset_layout.addLayout(preset_btn_row)
+
+        preset_info = QLabel("Choose a preset for quick tuning, or use Custom to keep manual values.")
+        preset_info.setWordWrap(True)
+        preset_info.setStyleSheet("color: gray; font-size: 9pt;")
+        preset_layout.addWidget(preset_info)
+
+        preset_hint = QLabel("High Recall = more detections (more noise). Low Noise = fewer false alarms (higher miss risk).")
+        preset_hint.setWordWrap(True)
+        preset_hint.setStyleSheet("color: gray; font-size: 9pt;")
+        preset_layout.addWidget(preset_hint)
+
+        preset_group.setLayout(preset_layout)
+        step1_layout.addWidget(preset_group)
+
+        # Heuristic gate settings
+        heuristic_group = QGroupBox("Heuristic Gate Settings")
+        heuristic_layout = QVBoxLayout()
+
+        heuristic_row = QHBoxLayout()
+        heuristic_row.addWidget(QLabel("Heuristic Threshold:"))
+        self.heuristic_threshold_spin = QDoubleSpinBox()
+        self.heuristic_threshold_spin.setRange(0.0, 1.0)
+        self.heuristic_threshold_spin.setSingleStep(0.01)
+        self.heuristic_threshold_spin.setDecimals(3)
+        self.heuristic_threshold_spin.setValue(float(self.settings.get('heuristic_threshold', 0.20)))
+        heuristic_row.addWidget(self.heuristic_threshold_spin)
+        heuristic_row.addStretch()
+        heuristic_layout.addLayout(heuristic_row)
+
+        sample_row = QHBoxLayout()
+        sample_row.addWidget(QLabel("Force YOLO Every N Frames:"))
+        self.force_yolo_every_n_spin = QSpinBox()
+        self.force_yolo_every_n_spin.setRange(1, 300)
+        self.force_yolo_every_n_spin.setValue(int(self.settings.get('force_yolo_every_n_frames', 10)))
+        sample_row.addWidget(self.force_yolo_every_n_spin)
+        sample_row.addStretch()
+        heuristic_layout.addLayout(sample_row)
+
+        yolo_gate_row = QHBoxLayout()
+        yolo_gate_row.addWidget(QLabel("YOLO Inference Min Confidence:"))
+        self.yolo_conf_threshold_spin = QDoubleSpinBox()
+        self.yolo_conf_threshold_spin.setRange(0.001, 0.9)
+        self.yolo_conf_threshold_spin.setSingleStep(0.01)
+        self.yolo_conf_threshold_spin.setDecimals(3)
+        self.yolo_conf_threshold_spin.setValue(float(self.settings.get('yolo_conf_threshold', 0.05)))
+        yolo_gate_row.addWidget(self.yolo_conf_threshold_spin)
+        yolo_gate_row.addStretch()
+        heuristic_layout.addLayout(yolo_gate_row)
+
+        heuristic_info = QLabel("Frames with heuristic score above threshold are queued to YOLO. YOLO min confidence filters weak detections.")
+        heuristic_info.setWordWrap(True)
+        heuristic_info.setStyleSheet("color: gray; font-size: 9pt;")
+        heuristic_layout.addWidget(heuristic_info)
+        heuristic_group.setLayout(heuristic_layout)
+        step1_layout.addWidget(heuristic_group)
+
+        # Hybrid confidence bands
+        bands_group = QGroupBox("Hybrid Confidence Bands")
+        bands_layout = QVBoxLayout()
+
+        possible_row = QHBoxLayout()
+        possible_row.addWidget(QLabel("POSSIBLE Threshold:"))
+        self.possible_conf_spin = QDoubleSpinBox()
+        self.possible_conf_spin.setRange(0.0, 1.0)
+        self.possible_conf_spin.setSingleStep(0.01)
+        self.possible_conf_spin.setDecimals(3)
+        self.possible_conf_spin.setValue(float(self.settings.get('possible_conf_threshold', 0.60)))
+        possible_row.addWidget(self.possible_conf_spin)
+        possible_row.addStretch()
+        bands_layout.addLayout(possible_row)
+
+        confirmed_row = QHBoxLayout()
+        confirmed_row.addWidget(QLabel("CONFIRMED Threshold:"))
+        self.confirmed_conf_spin = QDoubleSpinBox()
+        self.confirmed_conf_spin.setRange(0.0, 1.0)
+        self.confirmed_conf_spin.setSingleStep(0.01)
+        self.confirmed_conf_spin.setDecimals(3)
+        self.confirmed_conf_spin.setValue(float(self.settings.get('confirmed_conf_threshold', 0.80)))
+        confirmed_row.addWidget(self.confirmed_conf_spin)
+        confirmed_row.addStretch()
+        bands_layout.addLayout(confirmed_row)
+
+        bands_info = QLabel("LOW < POSSIBLE, POSSIBLE ≤ score < CONFIRMED, CONFIRMED ≥ threshold")
+        bands_info.setStyleSheet("color: gray; font-size: 9pt;")
+        bands_layout.addWidget(bands_info)
+        bands_group.setLayout(bands_layout)
+        step1_layout.addWidget(bands_group)
+
+        # Rule alarm gates
+        rule_group = QGroupBox("Rule Alarms")
+        rule_layout = QVBoxLayout()
+
+        rule_yolo_row = QHBoxLayout()
+        rule_yolo_row.addWidget(QLabel("Min YOLO Confidence (HIGH severity):"))
+        self.rule_min_yolo_spin = QDoubleSpinBox()
+        self.rule_min_yolo_spin.setRange(0.0, 1.0)
+        self.rule_min_yolo_spin.setSingleStep(0.01)
+        self.rule_min_yolo_spin.setDecimals(3)
+        self.rule_min_yolo_spin.setValue(float(self.settings.get('rule_min_yolo_conf', 0.60)))
+        rule_yolo_row.addWidget(self.rule_min_yolo_spin)
+        rule_yolo_row.addStretch()
+        rule_layout.addLayout(rule_yolo_row)
+
+        rule_fusion_row = QHBoxLayout()
+        rule_fusion_row.addWidget(QLabel("Min Fusion Confidence (HIGH severity):"))
+        self.rule_min_fusion_spin = QDoubleSpinBox()
+        self.rule_min_fusion_spin.setRange(0.0, 1.0)
+        self.rule_min_fusion_spin.setSingleStep(0.01)
+        self.rule_min_fusion_spin.setDecimals(3)
+        self.rule_min_fusion_spin.setValue(float(self.settings.get('rule_min_fusion_conf', 0.30)))
+        rule_fusion_row.addWidget(self.rule_min_fusion_spin)
+        rule_fusion_row.addStretch()
+        rule_layout.addLayout(rule_fusion_row)
+
+        rule_info = QLabel("Used by rule-based alarms for HIGH severity escalation.")
+        rule_info.setStyleSheet("color: gray; font-size: 9pt;")
+        rule_layout.addWidget(rule_info)
+        rule_group.setLayout(rule_layout)
+        step1_layout.addWidget(rule_group)
+
+        self.detection_preset_combo.currentTextChanged.connect(self._on_detection_preset_changed)
+        self.heuristic_threshold_spin.valueChanged.connect(self._mark_detection_preset_custom)
+        self.force_yolo_every_n_spin.valueChanged.connect(self._mark_detection_preset_custom)
+        self.yolo_conf_threshold_spin.valueChanged.connect(self._mark_detection_preset_custom)
+        self._sync_detection_preset_from_values()
+
+        step1_layout.addStretch()
+        self.detection_step_stack.addWidget(step1)
+
+        # Step 2: Detection box filter
+        step2 = QWidget()
+        step2_layout = QVBoxLayout(step2)
+
+        # Detection box filter
+        box_group = QGroupBox("Detection Box Display")
+        box_layout = QVBoxLayout()
+
+        self.box_mode_all_radio = QRadioButton("Show rectangles for all classes")
+        self.box_mode_specific_radio = QRadioButton("Show rectangles for selected classes")
+
+        box_mode = str(self.settings.get('detection_box_mode', 'all')).strip().lower()
+        if box_mode == 'specific':
+            self.box_mode_specific_radio.setChecked(True)
+        else:
+            self.box_mode_all_radio.setChecked(True)
+
+        box_layout.addWidget(self.box_mode_all_radio)
+        box_layout.addWidget(self.box_mode_specific_radio)
+
+        self.box_class_list = QListWidget()
+        self.box_class_list.setSelectionMode(QListWidget.MultiSelection)
+        available_classes = self.settings.get('detection_available_classes', []) or []
+        selected_classes = set(self.settings.get('detection_box_classes', []) or [])
+        for class_name in available_classes:
+            item = QListWidgetItem(str(class_name))
+            self.box_class_list.addItem(item)
+            if str(class_name) in selected_classes:
+                item.setSelected(True)
+        box_layout.addWidget(self.box_class_list)
+
+        self.box_mode_all_radio.toggled.connect(self._toggle_box_class_selector)
+        self.box_mode_specific_radio.toggled.connect(self._toggle_box_class_selector)
+        self._toggle_box_class_selector()
+
+        box_info = QLabel("Choose whether bounding boxes appear for all detections or only selected classes.")
+        box_info.setWordWrap(True)
+        box_info.setStyleSheet("color: gray; font-size: 9pt;")
+        box_layout.addWidget(box_info)
+
+        box_group.setLayout(box_layout)
+        step2_layout.addWidget(box_group)
+        step2_layout.addStretch()
+        self.detection_step_stack.addWidget(step2)
+
+        # Step 3: Visual behavior
+        step3 = QWidget()
+        step3_layout = QVBoxLayout(step3)
         
         # Hot cell persistence
         persistence_group = QGroupBox("Hot Cell Persistence")
@@ -406,7 +677,7 @@ class SensorConfigDialog(QDialog):
         decay_info.setStyleSheet("color: gray; font-size: 9pt;")
         persistence_layout.addWidget(decay_info)
         persistence_group.setLayout(persistence_layout)
-        layout.addWidget(persistence_group)
+        step3_layout.addWidget(persistence_group)
         
         # Frame freeze
         freeze_group = QGroupBox("Alarm Behavior")
@@ -420,7 +691,7 @@ class SensorConfigDialog(QDialog):
         freeze_info.setStyleSheet("color: gray; font-size: 9pt;")
         freeze_layout.addWidget(freeze_info)
         freeze_group.setLayout(freeze_layout)
-        layout.addWidget(freeze_group)
+        step3_layout.addWidget(freeze_group)
         
         # Fusion overlay
         overlay_group = QGroupBox("Information Overlay")
@@ -434,18 +705,48 @@ class SensorConfigDialog(QDialog):
         overlay_info.setStyleSheet("color: gray; font-size: 9pt;")
         overlay_layout.addWidget(overlay_info)
         overlay_group.setLayout(overlay_layout)
-        layout.addWidget(overlay_group)
-        
-        layout.addStretch()
+        step3_layout.addWidget(overlay_group)
+        step3_layout.addStretch()
+        self.detection_step_stack.addWidget(step3)
+
+        # Step 4: Application behavior
+        step4 = QWidget()
+        step4_layout = QVBoxLayout(step4)
+
+        # Optional app restart
+        restart_group = QGroupBox("Application")
+        restart_layout = QVBoxLayout()
+        self.restart_app_checkbox = QCheckBox("Restart application after applying these settings")
+        self.restart_app_checkbox.setChecked(bool(self.settings.get('restart_app', False)))
+        restart_layout.addWidget(self.restart_app_checkbox)
+        restart_info = QLabel("Not required for most detection parameters; use if any runtime component appears stuck on old values.")
+        restart_info.setWordWrap(True)
+        restart_info.setStyleSheet("color: gray; font-size: 9pt;")
+        restart_layout.addWidget(restart_info)
+
+        step4_hint = QLabel("Reminder: High Recall increases detections (and noise). Low Noise reduces false alarms (and can miss brief events).")
+        step4_hint.setWordWrap(True)
+        step4_hint.setStyleSheet("color: gray; font-size: 9pt;")
+        restart_layout.addWidget(step4_hint)
+        restart_group.setLayout(restart_layout)
+        step4_layout.addWidget(restart_group)
+        step4_layout.addStretch()
+        self.detection_step_stack.addWidget(step4)
+
+        self._update_detection_stepper_ui()
         return widget
     
     def gather_settings(self):
         """Collect current settings from UI controls."""
+        selected_box_classes = [item.text() for item in self.box_class_list.selectedItems()] if hasattr(self, 'box_class_list') else []
+        if hasattr(self, 'detection_preset_combo'):
+            self.settings['detection_selected_preset'] = self.detection_preset_combo.currentText()
         return {
             # Fusion parameters
             'temp_threshold': self.temp_threshold_spin.value(),
             'gas_ppm_threshold': self.gas_threshold_spin.value(),
-            # Digital flame active value no longer configurable; kept internal (default=1)
+            # Digital flame active value no longer configurable; keep and forward current value
+            'flame_active_value': int(self.settings.get('flame_active_value', 1)),
             'smoke_threshold_pct': self.smoke_threshold_spin.value(),
             'flame_threshold_pct': self.flame_threshold_spin.value(),
             'min_sources': self.min_sources_spin.value(),
@@ -463,19 +764,158 @@ class SensorConfigDialog(QDialog):
             # Vision detection
             'vision_threshold': self.vision_threshold_spin.value(),
             'vision_confidence_weight': self.vision_weight_spin.value(),
+
+            # Hybrid detection
+            'heuristic_threshold': self.heuristic_threshold_spin.value(),
+            'force_yolo_every_n_frames': self.force_yolo_every_n_spin.value(),
+            'yolo_conf_threshold': self.yolo_conf_threshold_spin.value(),
+            'possible_conf_threshold': self.possible_conf_spin.value(),
+            'confirmed_conf_threshold': self.confirmed_conf_spin.value(),
+            'rule_min_fusion_conf': self.rule_min_fusion_spin.value(),
+            'rule_min_yolo_conf': self.rule_min_yolo_spin.value(),
+            'detection_selected_preset': self.settings.get('detection_selected_preset', 'Custom'),
+            'detection_default_profile': self.settings.get('detection_default_profile', {}),
+
+            # Detection box display filter
+            'detection_box_mode': 'specific' if self.box_mode_specific_radio.isChecked() else 'all',
+            'detection_box_classes': selected_box_classes,
             
             # Anomalies capture
             'anomaly_threshold': self.anomaly_threshold_spin.value(),
             'anomaly_max_items': self.anomaly_max_items_spin.value(),
             'anomaly_save_enabled': self.save_enabled_checkbox.isChecked(),
             'anomaly_save_dir': self.anomaly_dir_edit.text().strip(),
-            'anomaly_retention_days': self.retention_spin.value()
+            'anomaly_retention_days': self.retention_spin.value(),
+            'restart_app': self.restart_app_checkbox.isChecked()
         }
+
+    def _toggle_box_class_selector(self):
+        if hasattr(self, 'box_class_list'):
+            self.box_class_list.setEnabled(self.box_mode_specific_radio.isChecked())
+
+    def _on_detection_preset_changed(self, preset_name):
+        if self._applying_detection_preset:
+            return
+        self.settings['detection_selected_preset'] = str(preset_name)
+        if preset_name == 'Custom':
+            return
+        self._apply_detection_preset(preset_name)
+
+    def _apply_detection_preset(self, preset_name):
+        preset = self._detection_presets.get(str(preset_name))
+        if not preset:
+            return
+        self._applying_detection_preset = True
+        try:
+            self.heuristic_threshold_spin.setValue(float(preset['heuristic_threshold']))
+            self.force_yolo_every_n_spin.setValue(int(preset['force_yolo_every_n_frames']))
+            self.yolo_conf_threshold_spin.setValue(float(preset['yolo_conf_threshold']))
+        finally:
+            self._applying_detection_preset = False
+
+    def _mark_detection_preset_custom(self, *_):
+        if self._applying_detection_preset or not hasattr(self, 'detection_preset_combo'):
+            return
+        self._sync_detection_preset_from_values()
+
+    def _sync_detection_preset_from_values(self):
+        if not hasattr(self, 'detection_preset_combo'):
+            return
+
+        heuristic = float(self.heuristic_threshold_spin.value())
+        force_n = int(self.force_yolo_every_n_spin.value())
+        yolo_conf = float(self.yolo_conf_threshold_spin.value())
+
+        matched_name = 'Custom'
+        for preset_name, preset_values in self._detection_presets.items():
+            heuristic_match = abs(heuristic - float(preset_values['heuristic_threshold'])) < 1e-6
+            force_match = force_n == int(preset_values['force_yolo_every_n_frames'])
+            yolo_match = abs(yolo_conf - float(preset_values['yolo_conf_threshold'])) < 1e-6
+            if heuristic_match and force_match and yolo_match:
+                matched_name = preset_name
+                break
+
+        self._applying_detection_preset = True
+        try:
+            index = self.detection_preset_combo.findText(matched_name)
+            if index >= 0 and self.detection_preset_combo.currentIndex() != index:
+                self.detection_preset_combo.setCurrentIndex(index)
+            self.settings['detection_selected_preset'] = matched_name
+        finally:
+            self._applying_detection_preset = False
+
+    def _get_current_detection_profile(self):
+        return {
+            'preset': self.detection_preset_combo.currentText() if hasattr(self, 'detection_preset_combo') else 'Custom',
+            'heuristic_threshold': float(self.heuristic_threshold_spin.value()),
+            'force_yolo_every_n_frames': int(self.force_yolo_every_n_spin.value()),
+            'yolo_conf_threshold': float(self.yolo_conf_threshold_spin.value()),
+            'possible_conf_threshold': float(self.possible_conf_spin.value()),
+            'confirmed_conf_threshold': float(self.confirmed_conf_spin.value()),
+            'rule_min_yolo_conf': float(self.rule_min_yolo_spin.value()),
+            'rule_min_fusion_conf': float(self.rule_min_fusion_spin.value()),
+        }
+
+    def _save_default_detection_profile(self):
+        profile = self._get_current_detection_profile()
+        self.settings['detection_default_profile'] = profile
+        QMessageBox.information(self, "Default Profile Saved", "Detection profile saved as default for this site. Click Apply/OK to persist.")
+
+    def _load_default_detection_profile(self):
+        profile = self.settings.get('detection_default_profile', {})
+        if not isinstance(profile, dict) or not profile:
+            QMessageBox.information(self, "No Default Profile", "No default detection profile is saved yet.")
+            return
+
+        self._applying_detection_preset = True
+        try:
+            preset_name = str(profile.get('preset', 'Custom'))
+            index = self.detection_preset_combo.findText(preset_name)
+            if index < 0:
+                index = self.detection_preset_combo.findText('Custom')
+            if index >= 0:
+                self.detection_preset_combo.setCurrentIndex(index)
+
+            self.heuristic_threshold_spin.setValue(float(profile.get('heuristic_threshold', self.heuristic_threshold_spin.value())))
+            self.force_yolo_every_n_spin.setValue(int(profile.get('force_yolo_every_n_frames', self.force_yolo_every_n_spin.value())))
+            self.yolo_conf_threshold_spin.setValue(float(profile.get('yolo_conf_threshold', self.yolo_conf_threshold_spin.value())))
+            self.possible_conf_spin.setValue(float(profile.get('possible_conf_threshold', self.possible_conf_spin.value())))
+            self.confirmed_conf_spin.setValue(float(profile.get('confirmed_conf_threshold', self.confirmed_conf_spin.value())))
+            self.rule_min_yolo_spin.setValue(float(profile.get('rule_min_yolo_conf', self.rule_min_yolo_spin.value())))
+            self.rule_min_fusion_spin.setValue(float(profile.get('rule_min_fusion_conf', self.rule_min_fusion_spin.value())))
+            self.settings['detection_selected_preset'] = self.detection_preset_combo.currentText()
+        finally:
+            self._applying_detection_preset = False
+        QMessageBox.information(self, "Default Profile Loaded", "Default detection profile loaded. Click Apply/OK to use it.")
+
+    def _change_detection_step(self, direction):
+        if not hasattr(self, 'detection_step_stack'):
+            return
+        current_index = self.detection_step_stack.currentIndex()
+        next_index = max(0, min(self.detection_step_stack.count() - 1, current_index + int(direction)))
+        if next_index != current_index:
+            self.detection_step_stack.setCurrentIndex(next_index)
+        self._update_detection_stepper_ui()
+
+    def _update_detection_stepper_ui(self):
+        if not hasattr(self, 'detection_step_stack'):
+            return
+        current_index = self.detection_step_stack.currentIndex()
+        total_steps = self.detection_step_stack.count()
+
+        step_name = ""
+        if hasattr(self, '_detection_step_names') and current_index < len(self._detection_step_names):
+            step_name = self._detection_step_names[current_index]
+        self.detection_step_label.setText(f"Detection Settings Step: {step_name}")
+
+        self.detection_prev_btn.setEnabled(current_index > 0)
+        self.detection_next_btn.setEnabled(current_index < total_steps - 1)
     
     def apply_settings(self):
         """Apply settings without closing dialog."""
         self.settings = self.gather_settings()
         self.settings_changed.emit(self.settings)
+        QMessageBox.information(self, "Settings Applied", "Configuration applied successfully.")
     
     def accept_settings(self):
         """Apply settings and close dialog."""

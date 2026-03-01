@@ -21,9 +21,9 @@ class HybridDetector:
     2. YOLO (async) - validates suspicious frames with ML model
     
     Confidence levels:
-    - >= 0.70: CONFIRMED (red alert)
-    - 0.50-0.70: POSSIBLE (orange warning)
-    - < 0.50: LOW (ignore)
+    - >= 0.80: CONFIRMED (red alert)
+    - 0.60-0.80: POSSIBLE (orange warning)
+    - < 0.60: LOW (ignore)
     """
     
     def __init__(self, model_path: Optional[str] = None, stream_id: str = "default"):
@@ -34,6 +34,15 @@ class HybridDetector:
         self.last_load_error = None
         self.inference_device = "cpu"
         self.central_class_names: List[str] = []
+        conf_env = os.environ.get("EMBEREYE_YOLO_CONF", "0.05")
+        try:
+            self.yolo_conf_threshold = float(conf_env)
+        except Exception:
+            self.yolo_conf_threshold = 0.05
+        if self.yolo_conf_threshold < 0.001:
+            self.yolo_conf_threshold = 0.001
+        if self.yolo_conf_threshold > 0.9:
+            self.yolo_conf_threshold = 0.9
 
         print(f"[HybridDetector-{self.stream_id}] Init with model_path={model_path!r}")
 
@@ -47,9 +56,9 @@ class HybridDetector:
         self.heuristic_threshold = 0.20  # Skip YOLO if heuristic < 0.20
         
         # Confidence level thresholds
-        self.confirmed_threshold = 0.70    # >= 0.70: CONFIRMED
-        self.possible_threshold = 0.50     # 0.50-0.70: POSSIBLE
-        # < 0.50: LOW (ignored)
+        self.confirmed_threshold = 0.80    # >= 0.80: CONFIRMED
+        self.possible_threshold = 0.60     # 0.60-0.80: POSSIBLE
+        # < 0.60: LOW (ignored)
         
         # Detection queue (shared across all streams)
         self.detection_queue = get_detection_queue()
@@ -126,23 +135,33 @@ class HybridDetector:
             candidates.append(Path(sys.executable).parent.parent)
 
             for base_path in candidates:
+                base_candidates = [
+                    base_path,
+                    base_path / "_internal",
+                    base_path / "Lib" / "site-packages",
+                ]
                 torch_lib_candidates = [
                     base_path / "Lib" / "site-packages" / "torch" / "lib",
                     base_path / "torch" / "lib",
+                    base_path / "_internal" / "torch" / "lib",
                 ]
                 torch_lib_path = next((p for p in torch_lib_candidates if p.exists()), None)
                 if torch_lib_path is None:
                     continue
 
-                torch_lib_str = str(torch_lib_path)
-                if torch_lib_str not in os.environ.get("PATH", ""):
-                    os.environ["PATH"] = torch_lib_str + os.pathsep + os.environ.get("PATH", "")
+                dll_dirs = [p for p in (base_candidates + [torch_lib_path]) if p.exists()]
+                path_value = os.environ.get("PATH", "")
+                for dll_dir in dll_dirs:
+                    dll_dir_str = str(dll_dir)
+                    if dll_dir_str not in path_value:
+                        path_value = dll_dir_str + os.pathsep + path_value
+                    if hasattr(os, "add_dll_directory"):
+                        try:
+                            os.add_dll_directory(dll_dir_str)
+                        except Exception:
+                            pass
 
-                if hasattr(os, "add_dll_directory"):
-                    try:
-                        os.add_dll_directory(torch_lib_str)
-                    except Exception:
-                        pass
+                os.environ["PATH"] = path_value
                 break
         except Exception:
             pass
@@ -152,20 +171,50 @@ class HybridDetector:
         self._ensure_torch_dlls()
         try:
             force_cpu = os.environ.get("EMBEREYE_FORCE_CPU", "").strip().lower() in ("1", "true", "yes")
-            if force_cpu:
-                os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
-            import torch
-            from ultralytics import YOLO
+            # In frozen builds treat CUDA_VISIBLE_DEVICES="" / "-1" as force-cpu
+            if getattr(sys, "frozen", False):
+                cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+                if cuda_vis in ("-1", ""):
+                    force_cpu = True
 
             # Normalize path to avoid escape sequence issues
             normalized_path = model_path.replace('\\', '/')
             exists = os.path.exists(normalized_path)
-            device = "cpu" if force_cpu or not torch.cuda.is_available() else "0"
-            self.inference_device = device
-            print(f"[HybridDetector-{self.stream_id}] Loading YOLO from: {normalized_path} (exists={exists}, device={device})")
 
-            self.model = YOLO(normalized_path)
+            def _attempt_load(cpu_only: bool):
+                import torch
+                if cpu_only:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+                    os.environ["USE_CUDA"] = "0"
+                    # Monkey-patch torch.cuda.is_available so neither our
+                    # code nor ultralytics ever attempts a CUDA DLL load.
+                    torch.cuda.is_available = lambda: False
+
+                from ultralytics import YOLO
+                device = "cpu" if cpu_only or not torch.cuda.is_available() else "0"
+                print(f"[HybridDetector-{self.stream_id}] Loading YOLO from: {normalized_path} (exists={exists}, device={device})")
+                # Force map_location='cpu' so torch.load never touches CUDA
+                loaded_model = YOLO(normalized_path, task="detect")
+                if device == "cpu":
+                    loaded_model.to("cpu")
+                return loaded_model, device
+
+            try:
+                loaded_model, device = _attempt_load(force_cpu)
+            except OSError as first_err:
+                err_text = str(first_err).lower()
+                dll_issue = ("dll" in err_text) or ("initialization routine failed" in err_text)
+                if (not force_cpu) and dll_issue:
+                    print(f"[HybridDetector-{self.stream_id}] [WARN] GPU load failed ({first_err!r}); retrying in CPU-only mode")
+                    os.environ["EMBEREYE_FORCE_CPU"] = "1"
+                    # Don't call _ensure_torch_dlls again – DLL paths are already set
+                    loaded_model, device = _attempt_load(True)
+                else:
+                    raise
+
+            self.model = loaded_model
+            self.inference_device = device
             self.model_loaded = True
             self.last_load_error = None
             self.yolo_model_path = normalized_path
@@ -260,18 +309,17 @@ class HybridDetector:
         # For now, we'll leave this for the video_worker to handle
         return None
     
-    @staticmethod
-    def map_to_confidence_level(yolo_confidence: float) -> str:
+    def map_to_confidence_level(self, yolo_confidence: float) -> str:
         """
         Map YOLO confidence to user-friendly level.
         
-        >= 0.70: CONFIRMED (red)
-        0.50-0.70: POSSIBLE (orange)
-        < 0.50: LOW (gray)
+        >= confirmed_threshold: CONFIRMED (red)
+        possible_threshold-confirmed_threshold: POSSIBLE (orange)
+        < possible_threshold: LOW (gray)
         """
-        if yolo_confidence >= 0.70:
+        if yolo_confidence >= self.confirmed_threshold:
             return "CONFIRMED"
-        elif yolo_confidence >= 0.50:
+        elif yolo_confidence >= self.possible_threshold:
             return "POSSIBLE"
         else:
             return "LOW"
@@ -309,7 +357,12 @@ class HybridDetector:
                 )
             
             # Inference
-            results = self.model(frame, verbose=False, conf=0.25, device=self.inference_device)
+            results = self.model(
+                frame,
+                verbose=False,
+                conf=self.yolo_conf_threshold,
+                device=self.inference_device,
+            )
             
             detections = []
             max_confidence = 0.0

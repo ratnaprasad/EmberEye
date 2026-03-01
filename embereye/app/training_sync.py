@@ -550,9 +550,28 @@ def export_annotations_zip(output_zip: str, bases: List[str] = None) -> Dict[str
       manifest.json  (small summary of media bases and counts)
     """
     selected = bases or _scan_annotations_dir()
+    selected = [b for b in selected if os.path.isdir(b) and any(files for _, _, files in os.walk(b))]
+
+    if not selected:
+        train_ann_root = get_data_path(os.path.join("training_data", "annotations"))
+        if os.path.isdir(train_ann_root):
+            selected = [
+                os.path.join(train_ann_root, d)
+                for d in os.listdir(train_ann_root)
+                if os.path.isdir(os.path.join(train_ann_root, d))
+            ]
+            selected = [b for b in selected if any(files for _, _, files in os.walk(b))]
+
+    if not selected:
+        raise ValueError(
+            "No annotation data found to export. Expected files under "
+            "annotations/ or training_data/annotations/."
+        )
+
     os.makedirs(os.path.dirname(output_zip) or ".", exist_ok=True)
     counts = {"media": 0, "files": 0}
     manifest = {"type": "annotations-raw-zip", "version": 1, "bases": []}
+
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for base_dir in selected:
             media_base = os.path.basename(base_dir)
@@ -566,12 +585,17 @@ def export_annotations_zip(output_zip: str, bases: List[str] = None) -> Dict[str
                     base_files.append(rel)
                     counts["files"] += 1
             manifest["bases"].append({"media_base": media_base, "files": len(base_files)})
-        # Write manifest
+
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    if counts["files"] == 0:
+        try:
+            os.remove(output_zip)
+        except Exception:
+            pass
+        raise ValueError("Export produced no files. Please verify annotations/images exist before exporting.")
+
     return {"status": "ok", "written": output_zip, "counts": counts}
-
-
-
 
 
 def import_annotations(input_file: str, mode: str = "merge", dry_run: bool = True, iou_threshold: float = 0.85) -> Dict[str, Any]:
