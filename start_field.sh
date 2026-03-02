@@ -12,6 +12,8 @@ echo "EmberEye Field Application - Full Stack Startup"
 echo "============================================================"
 echo
 
+FIELD_FOREGROUND="${EMBEREYE_FIELD_FOREGROUND:-0}"
+
 PYTHON_BIN="python3"
 if [ -x ".venv/bin/python" ]; then
   PYTHON_BIN=".venv/bin/python"
@@ -90,12 +92,20 @@ fi
 echo
 
 echo "[3/4] Starting EmberEye Field Application..."
-if [ "${EMBEREYE_FORCE_CPU:-0}" = "1" ]; then
-  echo "  Launching field app in CPU-only mode"
-  EMBEREYE_FORCE_CPU=1 CUDA_VISIBLE_DEVICES=-1 "$PYTHON_BIN" embereye-field/main.py >/dev/null 2>&1 &
+if [ "$FIELD_FOREGROUND" = "1" ]; then
+  if [ "${EMBEREYE_FORCE_CPU:-0}" = "1" ]; then
+    echo "  Launching field app in CPU-only mode (foreground)"
+  else
+    echo "  Launching field app in GPU auto-detect mode (foreground)"
+  fi
 else
-  echo "  Launching field app in GPU auto-detect mode"
-  EMBEREYE_FORCE_CPU=0 "$PYTHON_BIN" embereye-field/main.py >/dev/null 2>&1 &
+  if [ "${EMBEREYE_FORCE_CPU:-0}" = "1" ]; then
+    echo "  Launching field app in CPU-only mode"
+    EMBEREYE_FIELD=1 EMBEREYE_FORCE_CPU=1 CUDA_VISIBLE_DEVICES=-1 "$PYTHON_BIN" embereye-field/main.py >/dev/null 2>&1 &
+  else
+    echo "  Launching field app in GPU auto-detect mode"
+    EMBEREYE_FIELD=1 EMBEREYE_FORCE_CPU=0 "$PYTHON_BIN" embereye-field/main.py >/dev/null 2>&1 &
+  fi
 fi
 
 echo
@@ -114,7 +124,11 @@ fi
 
 echo
 echo "============================================================"
-echo "All services started (background mode)"
+if [ "$FIELD_FOREGROUND" = "1" ]; then
+  echo "Services started (UI in foreground mode)"
+else
+  echo "All services started (background mode)"
+fi
 echo "============================================================"
 if [ "$RTSP_ENABLED" = "1" ]; then
   echo "RTSP Stream: rtsp://localhost:8554/camera1"
@@ -136,3 +150,11 @@ fi
 echo "Field App:   embereye-field/main.py"
 echo "Stop stack:  ./stop_field.sh"
 echo
+
+if [ "$FIELD_FOREGROUND" = "1" ]; then
+  if [ "${EMBEREYE_FORCE_CPU:-0}" = "1" ]; then
+    EMBEREYE_FIELD=1 EMBEREYE_FORCE_CPU=1 CUDA_VISIBLE_DEVICES=-1 "$PYTHON_BIN" embereye-field/main.py
+  else
+    EMBEREYE_FIELD=1 EMBEREYE_FORCE_CPU=0 "$PYTHON_BIN" embereye-field/main.py
+  fi
+fi

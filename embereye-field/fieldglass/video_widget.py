@@ -49,6 +49,9 @@ class VideoWidget(QWidget):
         self._last_overlay_size = None  # Track last overlay size for invalidation
         self._last_thermal_update_time = 0
         self._thermal_update_interval = 0.2  # Minimum 200ms between thermal updates
+        self.thermal_render_mode = "fixed_scale_inferno"
+        self.thermal_emissivity = 0.95
+        self._prev_thermal_matrix = None
         
         # Alarm state and frame freeze
         self.alarm_active = False
@@ -72,7 +75,7 @@ class VideoWidget(QWidget):
         # Fusion data display
         self.fusion_data = None
         self.show_fusion_overlay = True
-        # Display mode: default (camera), thermal (heatmap), thermal_screen (enhanced), grid (numeric)
+        # Display mode: default (camera), thermal (heatmap), grid (numeric)
         self.display_mode = "default"
 
         # Expand to fill grid cell
@@ -148,7 +151,8 @@ class VideoWidget(QWidget):
                     self._last_overlay_matrix_hash = None
                 
                 # Extract and display target temperature (max value in grid)
-                target_temp = arr.max()
+                corrected = self._apply_emissivity_compensation(arr)
+                target_temp = corrected.max()
                 self.set_temperature(target_temp)
             except Exception as e:
                 print(f"Temperature extraction error: {e}")
@@ -158,6 +162,50 @@ class VideoWidget(QWidget):
             # No need to call any rendering here, just store the data
         except Exception as e:
             print(f"Thermal handler error: {e}")
+
+    def _sanitize_thermal_mode(self, mode):
+        mode_value = str(mode or "").strip().lower()
+        allowed = {
+            "fixed_scale_inferno",
+            "hot_mask_temporal_delta",
+            "grayscale_valid_hotspots",
+        }
+        return mode_value if mode_value in allowed else "fixed_scale_inferno"
+
+    def _apply_emissivity_compensation(self, arr):
+        try:
+            import numpy as np
+            emissivity = max(0.10, min(1.00, float(getattr(self, 'thermal_emissivity', 0.95))))
+            ambient_c = 25.0
+            corrected = ambient_c + ((np.array(arr, dtype=np.float32) - ambient_c) / emissivity)
+            return corrected
+        except Exception:
+            return arr
+
+    def apply_thermal_runtime_config(self, mode=None, emissivity=None):
+        if mode is not None:
+            self.thermal_render_mode = self._sanitize_thermal_mode(mode)
+        if emissivity is not None:
+            try:
+                self.thermal_emissivity = max(0.10, min(1.00, float(emissivity)))
+            except Exception:
+                self.thermal_emissivity = 0.95
+
+        self._cached_thermal_overlay = None
+        self._last_overlay_matrix_hash = None
+        self._cached_grid_pixmap = None
+
+        try:
+            if self._last_thermal_matrix is not None:
+                if self.display_mode == "thermal":
+                    pix = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
+                    if pix:
+                        self.video_label.setPixmap(pix)
+                    self._redraw_with_grid()
+                elif self.display_mode == "grid":
+                    self._render_temperature_grid(self._last_thermal_matrix)
+        except Exception as e:
+            print(f"Thermal runtime config apply error: {e}")
 
     def set_hot_cells(self, hot_cells):
         """Thermal hot-cell grid overlay has been removed (no-op kept for compatibility)."""
@@ -538,13 +586,54 @@ class VideoWidget(QWidget):
             if arr.ndim != 2:
                 return None
 
-            min_val = float(np.min(arr))
-            max_val = float(np.max(arr))
-            if max_val <= min_val:
-                max_val = min_val + 1.0
-            norm = ((arr - min_val) / (max_val - min_val) * 255.0).astype(np.uint8)
+            arr = self._apply_emissivity_compensation(arr)
+            mode = self._sanitize_thermal_mode(getattr(self, 'thermal_render_mode', 'fixed_scale_inferno'))
 
-            color_bgr = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
+            if mode == "fixed_scale_inferno":
+                fixed_min, fixed_max = 20.0, 120.0
+                norm = np.clip((arr - fixed_min) / (fixed_max - fixed_min) * 255.0, 0, 255).astype(np.uint8)
+                color_bgr = cv2.applyColorMap(norm, cv2.COLORMAP_INFERNO)
+
+            elif mode == "hot_mask_temporal_delta":
+                min_val = float(np.min(arr))
+                max_val = float(np.max(arr))
+                if max_val <= min_val:
+                    max_val = min_val + 1.0
+                base_norm = ((arr - min_val) / (max_val - min_val) * 255.0).astype(np.uint8)
+                color_bgr = cv2.cvtColor(base_norm, cv2.COLOR_GRAY2BGR)
+
+                hot_threshold = max(45.0, float(np.percentile(arr, 90)))
+                hot_mask = arr >= hot_threshold
+                color_bgr[hot_mask] = (0, 0, 255)
+
+                prev = self._prev_thermal_matrix
+                if prev is not None and prev.shape == arr.shape:
+                    delta = np.abs(arr - prev)
+                    delta_mask = delta >= 1.5
+                    color_bgr[delta_mask] = (255, 255, 0)
+
+            else:  # grayscale_valid_hotspots
+                min_val = float(np.min(arr))
+                max_val = float(np.max(arr))
+                if max_val <= min_val:
+                    max_val = min_val + 1.0
+                base_norm = ((arr - min_val) / (max_val - min_val) * 255.0).astype(np.uint8)
+                color_bgr = cv2.cvtColor(base_norm, cv2.COLOR_GRAY2BGR)
+
+                valid_mask = np.isfinite(arr)
+                color_bgr[valid_mask] = np.clip(color_bgr[valid_mask] * 0.75 + np.array([0, 80, 0]), 0, 255).astype(np.uint8)
+
+                flat = arr.flatten()
+                if flat.size > 0:
+                    top_count = min(3, flat.size)
+                    top_idx = np.argpartition(flat, -top_count)[-top_count:]
+                    cols = arr.shape[1]
+                    for idx in top_idx:
+                        row = int(idx // cols)
+                        col = int(idx % cols)
+                        cv2.circle(color_bgr, (col, row), 1, (0, 0, 255), 1)
+
+            self._prev_thermal_matrix = arr.copy()
             color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
 
             h, w = color_rgb.shape[:2]
@@ -634,15 +723,12 @@ class VideoWidget(QWidget):
 
         self.default_view_btn = self.create_control_button("D", "Default (camera + fusion)")
         self.default_view_btn.setCheckable(True)
-        self.thermal_screen_btn = self.create_control_button("S", "Thermal screen + fusion")
-        self.thermal_screen_btn.setCheckable(True)
         self.thermal_view_btn = self.create_control_button("T", "Thermal + fusion")
         self.thermal_view_btn.setCheckable(True)
         self.grid_view_btn = self.create_control_button("#", "Thermal grid + fusion")
         self.grid_view_btn.setCheckable(True)
 
         overlay_layout.addWidget(self.default_view_btn)
-        overlay_layout.addWidget(self.thermal_screen_btn)
         overlay_layout.addWidget(self.thermal_view_btn)
         overlay_layout.addWidget(self.grid_view_btn)
 
@@ -765,7 +851,6 @@ class VideoWidget(QWidget):
             self.right_overlay_controls.layout().setSpacing(spacing)
             for btn in [
                 self.default_view_btn,
-                self.thermal_screen_btn,
                 self.thermal_view_btn,
                 self.grid_view_btn,
             ]:
@@ -881,7 +966,6 @@ class VideoWidget(QWidget):
         self.maximize_btn.clicked.connect(self.toggle_maximize)
         self.minimize_btn.clicked.connect(self.toggle_minimize)
         self.default_view_btn.clicked.connect(self._activate_default_view)
-        self.thermal_screen_btn.clicked.connect(self._activate_thermal_screen_view)
         self.thermal_view_btn.clicked.connect(self._activate_thermal_view)
         self.grid_view_btn.clicked.connect(self._activate_grid_view)
 
@@ -1039,13 +1123,6 @@ class VideoWidget(QWidget):
                 grid_pixmap = self._build_temperature_grid_pixmap(self._last_thermal_matrix)
                 if grid_pixmap:
                     self.video_label.setPixmap(grid_pixmap)
-                    self._redraw_with_grid()
-                else:
-                    self.video_label.setPixmap(scaled_video)
-            elif self.display_mode == "thermal_screen" and self._last_thermal_matrix is not None:
-                screen_pixmap = self._build_thermal_screen_pixmap(self._last_thermal_matrix)
-                if screen_pixmap:
-                    self.video_label.setPixmap(screen_pixmap)
                     self._redraw_with_grid()
                 else:
                     self.video_label.setPixmap(scaled_video)
@@ -1449,9 +1526,9 @@ class VideoWidget(QWidget):
             self.set_display_mode("default")
 
     def set_display_mode(self, mode):
-        """Set display mode: default, thermal, thermal_screen, or grid."""
+        """Set display mode: default, thermal, or grid."""
         mode = (mode or "default").strip().lower()
-        if mode not in ("default", "thermal", "thermal_screen", "grid"):
+        if mode not in ("default", "thermal", "grid"):
             mode = "default"
         self.display_mode = mode
         self.thermal_grid_view_enabled = (mode == "grid")
@@ -1463,11 +1540,6 @@ class VideoWidget(QWidget):
             if self._last_thermal_matrix is not None:
                 if mode == "grid":
                     self._render_temperature_grid(self._last_thermal_matrix)
-                elif mode == "thermal_screen":
-                    pix = self._build_thermal_screen_pixmap(self._last_thermal_matrix)
-                    if pix:
-                        self.video_label.setPixmap(pix)
-                    self._redraw_with_grid()
                 elif mode == "thermal":
                     pix = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
                     if pix:
@@ -1482,11 +1554,10 @@ class VideoWidget(QWidget):
 
     def _sync_overlay_buttons_from_state(self, initial=False):
         """Keep overlay buttons in sync with current display mode."""
-        if not hasattr(self, 'default_view_btn') or not hasattr(self, 'thermal_screen_btn') or not hasattr(self, 'thermal_view_btn') or not hasattr(self, 'grid_view_btn'):
+        if not hasattr(self, 'default_view_btn') or not hasattr(self, 'thermal_view_btn') or not hasattr(self, 'grid_view_btn'):
             return
         for mode, btn in (
             ("default", self.default_view_btn),
-            ("thermal_screen", self.thermal_screen_btn),
             ("thermal", self.thermal_view_btn),
             ("grid", self.grid_view_btn),
         ):
@@ -1503,10 +1574,6 @@ class VideoWidget(QWidget):
     def _activate_thermal_view(self):
         """Select thermal heatmap view with fusion overlay."""
         self.set_display_mode("thermal")
-
-    def _activate_thermal_screen_view(self):
-        """Select enhanced thermal screen view with fusion overlay."""
-        self.set_display_mode("thermal_screen")
 
     def _activate_grid_view(self):
         """Select thermal numeric grid view with fusion overlay."""
@@ -1652,7 +1719,7 @@ class VideoWidget(QWidget):
                 hover_color = "rgba(100, 220, 255, 0.9)"  # Brighter cyan
             
             # Update all control button styles
-            for btn in [self.minimize_btn, self.maximize_btn, self.default_view_btn, self.thermal_screen_btn, self.thermal_view_btn, self.grid_view_btn, self.reload_btn]:
+            for btn in [self.minimize_btn, self.maximize_btn, self.default_view_btn, self.thermal_view_btn, self.grid_view_btn, self.reload_btn]:
                 if btn:
                     btn.setStyleSheet(f"""
                         QPushButton {{

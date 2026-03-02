@@ -13,3 +13,4 @@ wsdiscovery
 Pillow
 packaging
 ultralytics
+adafruit-circuitpython-mlx90640
