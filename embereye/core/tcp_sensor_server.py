@@ -6,6 +6,11 @@ import os
 import sys
 import json as jsonlib
 
+from embereye.core.thermal_decoder_bridge import (
+    decode_frame_to_matrix,
+    parse_eeprom_packet,
+)
+
 
 def safe_flush():
     """Safely flush stdout, handling PyInstaller EXE mode where stdout may be None"""
@@ -27,6 +32,8 @@ class TCPSensorServer:
         self.disconnect_callback = disconnect_callback  # Function to call when client disconnects
         self._client_sockets = {}  # Track active client connections: {ip: socket}
         self._socket_lock = threading.Lock()  # Lock for thread-safe socket access
+        self._client_eeprom_hex = {}  # Track latest valid EEPROM1 payload per client
+        self._client_eeprom_requested = {}  # Track EEPROM1 command sent per client
 
     def _get_config_port(self):
         config_path = os.path.join(os.path.dirname(__file__), 'stream_config.json')
@@ -111,6 +118,14 @@ class TCPSensorServer:
             print(f"✅ PERIOD_ON successfully sent to device IP: {client_ip}", flush=True)
         except Exception as e:
             print(f"⚠️  Failed to auto-send PERIOD_ON to device IP {client_ip}: {e}", flush=True)
+
+        try:
+            print(f"📤 Auto-sending EEPROM1 to device at IP: {client_ip}", flush=True)
+            client_sock.sendall("EEPROM1\n".encode('utf-8'))
+            self._client_eeprom_requested[client_ip] = True
+            print(f"✅ EEPROM1 request sent to device IP: {client_ip}", flush=True)
+        except Exception as e:
+            print(f"⚠️  Failed to auto-send EEPROM1 to device IP {client_ip}: {e}", flush=True)
         
         buffer = ''
         try:
@@ -156,6 +171,8 @@ class TCPSensorServer:
             with self._socket_lock:
                 if client_ip in self._client_sockets:
                     del self._client_sockets[client_ip]
+            self._client_eeprom_hex.pop(client_ip, None)
+            self._client_eeprom_requested.pop(client_ip, None)
             
             # Notify about disconnection
             if self.disconnect_callback:
@@ -199,6 +216,9 @@ class TCPSensorServer:
             print(f"📤 Sending command '{command}' to device IP: {matched_ip} (configured as {ip})")
             client_sock.sendall((command + "\n").encode('utf-8'))
             print(f"✅ Command '{command}' successfully sent to device IP: {matched_ip}")
+            cmd = (command or "").strip().upper()
+            if cmd == "EEPROM1":
+                self._client_eeprom_requested[matched_ip] = True
             return True
         except Exception as e:
             print(f"❌ Failed to send command to {matched_ip}: {e}")
@@ -207,6 +227,12 @@ class TCPSensorServer:
                 if matched_ip in self._client_sockets:
                     del self._client_sockets[matched_ip]
             return False
+
+    def request_eeprom1(self, ip: str) -> bool:
+        return self.send_command_to_client(ip, "EEPROM1")
+
+    def request_one_time_frame(self, ip: str) -> bool:
+        return self.send_command_to_client(ip, "REQUEST1")
 
     def handle_packet(self, line, client_ip=None):
         """Parse incoming sensor packets and invoke callback with structured data.
@@ -245,6 +271,27 @@ class TCPSensorServer:
                     log_error_packet(reason=f"loc_id parse error: {e}", raw=line, loc_id=client_ip)
                 except Exception:
                     pass
+        elif line.startswith('#EEPROM'):
+            try:
+                parsed = parse_eeprom_packet(line)
+                if parsed.get('success'):
+                    self._client_eeprom_hex[client_ip] = parsed['hex']
+                    result = {
+                        'type': 'eeprom',
+                        'frame_id': parsed.get('frame_id'),
+                        'blocks': parsed.get('blocks'),
+                        'client_ip': client_ip,
+                    }
+                    print(f"✅ EEPROM cached for {client_ip}: {parsed.get('blocks')} blocks")
+                else:
+                    print(f"⚠️ EEPROM parse failed from {client_ip}: {parsed.get('error')}")
+            except Exception as e:
+                print(f"EEPROM parse error: {e}")
+                try:
+                    from tcp_logger import log_error_packet
+                    log_error_packet(reason=f"eeprom parse error: {e}", raw=line[:100]+"...", loc_id=client_ip)
+                except Exception:
+                    pass
         elif line.startswith('#frame'):
             # Supports multiple formats:
             # 1. #frame1234:FFCCFFC7...! (loc_id embedded: frame1234)
@@ -276,73 +323,41 @@ class TCPSensorServer:
                     if not loc_id:
                         loc_id = client_ip
                     
-                    # Parse frame data using thermal_frame_parser
-                    # Expected: 834 word blocks (4 chars each) = 3336 chars total
-                    # Grid: 768 blocks (24x32) = 3072 chars
-                    # EEPROM: 66 blocks = 264 chars
-                    try:
-                        from embereye.core.thermal_frame_parser import ThermalFrameParser
-                        
-                        # Remove any spaces/whitespace
-                        frame_data_clean = frame_data.replace(" ", "").replace("\n", "").strip()
-                        
-                        if len(frame_data_clean) == ThermalFrameParser.FRAME_TOTAL_SIZE:
-                            # Parse using thermal frame parser
-                            parsed = ThermalFrameParser.parse_frame(frame_data_clean)
-                        elif len(frame_data_clean) == ThermalFrameParser.GRID_DATA_SIZE:
-                            # Some devices/logs send grid-only frames (no EEPROM segment).
-                            # Pad with zero EEPROM data to satisfy parser expectations.
-                            padded = frame_data_clean + ("0" * ThermalFrameParser.FRAME_EEPROM_DATA_SIZE)
-                            parsed = ThermalFrameParser.parse_frame(padded)
-                            
-                        if 'parsed' in locals():
-                            # Convert numpy grid to list for JSON serialization
-                            matrix = parsed['grid'].tolist()
-                            
-                            result = {
-                                'type': 'frame',
-                                'matrix': matrix,
-                                'loc_id': loc_id,
-                                'rows': parsed['rows'],
-                                'cols': parsed['cols'],
-                                'eeprom': parsed['eeprom']  # Keep EEPROM data for diagnostics
-                            }
+                    frame_data_clean = frame_data.replace(" ", "").replace("\n", "").strip()
+
+                    decoded = decode_frame_to_matrix(
+                        frame_data_clean,
+                        eeprom_hex=self._client_eeprom_hex.get(client_ip),
+                    )
+
+                    if decoded.get('success'):
+                        result = {
+                            'type': 'frame',
+                            'matrix': decoded['matrix'],
+                            'loc_id': loc_id,
+                            'rows': decoded.get('rows', 24),
+                            'cols': decoded.get('cols', 32),
+                            'eeprom_source': decoded.get('eeprom_source', 'unknown'),
+                        }
+                        if client_ip:
+                            result['client_ip'] = client_ip
+                    else:
+                        # Fallback for grid-only/legacy packets
+                        if ' ' in frame_data:
+                            hex_values = frame_data.split()
+                            if len(hex_values) == 32 * 24:
+                                matrix = [[int(hex_values[row * 32 + col], 16) for col in range(32)] for row in range(24)]
+                                result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id}
+                                if client_ip:
+                                    result['client_ip'] = client_ip
+                        elif len(frame_data_clean) == 32 * 24 * 4:
+                            hex_values = [frame_data_clean[i:i + 4] for i in range(0, len(frame_data_clean), 4)]
+                            matrix = [[int(hex_values[row * 32 + col], 16) for col in range(32)] for row in range(24)]
+                            result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id}
                             if client_ip:
                                 result['client_ip'] = client_ip
                         else:
-                            print(f"Frame parse error: expected {ThermalFrameParser.FRAME_TOTAL_SIZE} or {ThermalFrameParser.GRID_DATA_SIZE} chars, got {len(frame_data_clean)}")
-                            try:
-                                from tcp_logger import log_error_packet
-                                log_error_packet(
-                                    reason=f"frame length {len(frame_data_clean)} (expected {ThermalFrameParser.FRAME_TOTAL_SIZE} or {ThermalFrameParser.GRID_DATA_SIZE})",
-                                    loc_id=loc_id or client_ip,
-                                    raw=line[:100]+"..."
-                                )
-                            except Exception:
-                                pass
-                    except ImportError:
-                        # Fallback to old parsing if thermal_frame_parser not available
-                        print("Warning: thermal_frame_parser not found, using legacy parsing")
-                        # Parse frame data - supports both space-separated hex (0102 0103) and continuous hex (FFCCFFC7)
-                        if ' ' in frame_data:
-                            # Space-separated format
-                            hex_values = frame_data.split()
-                            if len(hex_values) == 32*24:
-                                matrix = [[int(hex_values[row*32+col], 16) for col in range(32)] for row in range(24)]
-                                result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id}
-                                if client_ip:
-                                    result['client_ip'] = client_ip
-                            else:
-                                print(f"Frame parse error: expected 768 values, got {len(hex_values)}")
-                        else:
-                            # Continuous hex format - assume 3072 chars (24x32 grid only)
-                            expected_chars = 32 * 24 * 4  # 3072 hex characters
-                            if len(frame_data) == expected_chars:
-                                hex_values = [frame_data[i:i+4] for i in range(0, len(frame_data), 4)]
-                                matrix = [[int(hex_values[row*32+col], 16) for col in range(32)] for row in range(24)]
-                                result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id}
-                                if client_ip:
-                                    result['client_ip'] = client_ip
+                            print(f"Frame decode failed ({decoded.get('error')}); length={len(frame_data_clean)}")
                 else:
                     print(f"Frame parse error: no colon separator")
                     try:

@@ -89,8 +89,18 @@ def run_smoke_test(model_path=None, skip_detection_check=False, verbose=False):
                 if verbose:
                     print(f"No trained model found, using base {model_path}")
         
-        model_path = Path(model_path)
-        if not model_path.exists():
+        model_path = str(model_path)
+        model_file = Path(model_path)
+
+        # Allow Ultralytics model aliases (e.g. "yolov8n.pt") in CI.
+        # Only enforce existence for explicit local filesystem paths.
+        looks_like_local_path = (
+            model_file.is_absolute()
+            or model_path.startswith('.')
+            or '/' in model_path
+            or '\\' in model_path
+        )
+        if looks_like_local_path and not model_file.exists():
             results['error'] = f"Model not found: {model_path}"
             return results
         
@@ -98,7 +108,7 @@ def run_smoke_test(model_path=None, skip_detection_check=False, verbose=False):
             print(f"Loading model: {model_path}")
         
         # Load model
-        model = YOLO(str(model_path))
+        model = YOLO(model_path)
         
         if verbose:
             print(f"Model loaded successfully")
@@ -196,8 +206,7 @@ def main():
             print("\n✓ Smoke test passed")
         sys.exit(0)
     else:
-        if not args.verbose:
-            print(f"✗ Smoke test failed: {results['error']}")
+        print(f"✗ Smoke test failed: {results['error']}")
         sys.exit(1)
 
 

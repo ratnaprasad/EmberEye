@@ -6,6 +6,7 @@ from typing import Callable, Dict, Any
 from tcp_logger import log_raw_packet, log_error_packet
 from tcp_server_logger import log_info, log_debug, log_warning, log_error as log_server_error
 from metrics import get_metrics
+from embereye.core.thermal_decoder_bridge import decode_frame_to_matrix, parse_eeprom_packet
 
 class TCPAsyncSensorServer:
     """High-performance asyncio-based TCP sensor server with queue-based packet processing.
@@ -32,6 +33,8 @@ class TCPAsyncSensorServer:
         self._client_period_on_sent: Dict[str, bool] = {}  # Track PERIOD_ON sent per client IP (one-time)
         self._client_writers: Dict[str, asyncio.StreamWriter] = {}  # Active client connections for command sending
         self._loop: asyncio.AbstractEventLoop | None = None  # Store event loop reference
+        self._client_eeprom_hex: Dict[str, str] = {}  # Latest valid EEPROM1 payload per client
+        self._client_eeprom_requested: Dict[str, bool] = {}  # Track one-time EEPROM1 request per client
 
     def _get_config_port(self) -> int:
         config_path = os.path.join(os.path.dirname(__file__), 'stream_config.json')
@@ -88,10 +91,18 @@ class TCPAsyncSensorServer:
                 self._send_command_async(writer, command, ip),
                 self._loop
             )
+            if (command or "").strip().upper() == "EEPROM1":
+                self._client_eeprom_requested[ip] = True
             return True
         except Exception as e:
             log_server_error(f"Failed to schedule command {command} to {ip}: {e}")
             return False
+
+    def request_eeprom1(self, ip: str) -> bool:
+        return self.send_command_to_client(ip, "EEPROM1")
+
+    def request_one_time_frame(self, ip: str) -> bool:
+        return self.send_command_to_client(ip, "REQUEST1")
     
     async def _send_command_async(self, writer: asyncio.StreamWriter, command: str, ip: str):
         """Actually send the command asynchronously."""
@@ -112,18 +123,18 @@ class TCPAsyncSensorServer:
         
         # Send PERIODIC_ON ONCE on connection establishment (gate to prevent re-sends)
         try:
-            from embereye.core.thermal_frame_parser import ThermalFrameParser
-            ThermalFrameParser.reset_eeprom_state()  # Reset for new connection
-            
             if not self._client_period_on_sent.get(client_ip, False):
                 # Start continuous streaming (one-time per connection)
                 writer.write(b"PERIODIC_ON")
                 await writer.drain()
                 self._client_period_on_sent[client_ip] = True
                 log_debug(f"Sent PERIOD_ON command to {client_ip} for continuous streaming [ONE-TIME]")
-            
-            # DO NOT send EEPROM1 automatically - wait for parser to validate raw EEPROM
-            # Parser will trigger EEPROM1 request if raw EEPROM is corrupted
+
+            if not self._client_eeprom_requested.get(client_ip, False):
+                writer.write(b"EEPROM1\n")
+                await writer.drain()
+                self._client_eeprom_requested[client_ip] = True
+                log_debug(f"Sent EEPROM1 command to {client_ip} [ONE-TIME]")
         except Exception as e:
             log_warning(f"Failed to send PERIOD_ON to {client_ip}: {e}")
             self._client_period_on_sent[client_ip] = False
@@ -173,6 +184,10 @@ class TCPAsyncSensorServer:
             # Clean up client PERIOD_ON gate state
             if client_ip in self._client_period_on_sent:
                 del self._client_period_on_sent[client_ip]
+            if client_ip in self._client_eeprom_hex:
+                del self._client_eeprom_hex[client_ip]
+            if client_ip in self._client_eeprom_requested:
+                del self._client_eeprom_requested[client_ip]
             # Remove writer from active connections
             if client_ip in self._client_writers:
                 del self._client_writers[client_ip]
@@ -220,10 +235,9 @@ class TCPAsyncSensorServer:
                 loc_id = line.split(':', 1)[1].rstrip('!').strip()
                 result = {'type': 'locid', 'loc_id': loc_id, 'client_ip': client_ip}
             elif line.startswith('#EEPROM'):
-                # Handle EEPROM response packet
-                from embereye.core.thermal_frame_parser import ThermalFrameParser
-                eeprom_result = ThermalFrameParser.parse_eeprom_packet(line)
+                eeprom_result = parse_eeprom_packet(line)
                 if eeprom_result.get('success'):
+                    self._client_eeprom_hex[client_ip] = eeprom_result.get('hex')
                     result = {
                         'type': 'eeprom',
                         'frame_id': eeprom_result.get('frame_id'),
@@ -266,25 +280,23 @@ class TCPAsyncSensorServer:
                             matrix = [[int(hex_values[r*32+c], 16) for c in range(32)] for r in range(24)]
                             result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id, 'client_ip': client_ip}
                         elif len(frame_data) == total_with_eeprom:
-                            # New format: grid + embedded EEPROM (3336 chars)
-                            try:
-                                from embereye.core.thermal_frame_parser import ThermalFrameParser
-                                parsed = ThermalFrameParser.parse_frame(frame_data)
-                                grid = parsed.get('grid')
-                                # Provide both 'grid' (numpy) and legacy 'matrix' (list of lists)
-                                matrix = grid.tolist() if hasattr(grid, 'tolist') else grid
+                            decoded = decode_frame_to_matrix(
+                                frame_data,
+                                eeprom_hex=self._client_eeprom_hex.get(client_ip),
+                            )
+                            if decoded.get('success'):
+                                matrix = decoded.get('matrix')
                                 result = {
                                     'type': 'frame',
-                                    'grid': grid,
                                     'matrix': matrix,
-                                    'rows': parsed.get('rows'),
-                                    'cols': parsed.get('cols'),
-                                    'eeprom': parsed.get('eeprom'),
+                                    'rows': decoded.get('rows', 24),
+                                    'cols': decoded.get('cols', 32),
+                                    'eeprom_source': decoded.get('eeprom_source', 'unknown'),
                                     'loc_id': loc_id,
                                     'client_ip': client_ip
                                 }
-                            except Exception as e:
-                                log_error_packet(reason=f"frame parse error {e}", raw=line[:80], loc_id=loc_id or client_ip)
+                            else:
+                                log_error_packet(reason=f"frame decode error {decoded.get('error')}", raw=line[:80], loc_id=loc_id or client_ip)
                         else:
                             log_error_packet(reason=f"frame length {len(frame_data)}", raw=line[:80], loc_id=loc_id or client_ip)
             elif line.startswith('#Sensor'):

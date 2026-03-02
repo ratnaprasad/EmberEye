@@ -44,10 +44,10 @@ echo.
 echo [3/4] Starting EmberEye Field Application...
 if "%EMBEREYE_FORCE_CPU%"=="1" (
 	echo   Launching field app using active imported model - CPU-only mode...
-	start "EmberEye Field" cmd /k "cd /d %~dp0 && set EMBEREYE_FORCE_CPU=1 && set CUDA_VISIBLE_DEVICES=-1 && .venv\Scripts\python.exe embereye-field\main.py"
+	start "EmberEye Field" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=1 && set CUDA_VISIBLE_DEVICES=-1 && .venv\Scripts\python.exe embereye-field\main.py"
 ) else (
 	echo   Launching field app using active imported model - GPU auto-detect mode...
-	start "EmberEye Field" cmd /k "cd /d %~dp0 && set EMBEREYE_FORCE_CPU=0 && .venv\Scripts\python.exe embereye-field\main.py"
+	start "EmberEye Field" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=0 && .venv\Scripts\python.exe embereye-field\main.py"
 )
 
 echo.

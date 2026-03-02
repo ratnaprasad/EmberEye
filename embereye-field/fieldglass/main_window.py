@@ -2869,6 +2869,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def show_sensor_config(self):
         """Show sensor configuration dialog."""
         from sensor_config_dialog import SensorConfigDialog
+
+        available_pfds = sorted({str(getattr(widget, 'loc_id', '')).strip() for widget in self.get_video_widgets() if str(getattr(widget, 'loc_id', '')).strip()})
+        saved_target_pfds = str(self.config.get('thermal_target_pfds', self.config.get('thermal_target_room', ''))).strip()
+        if saved_target_pfds and saved_target_pfds not in available_pfds:
+            available_pfds.append(saved_target_pfds)
+            available_pfds = sorted(set(available_pfds))
         
         # Get current settings
         current_settings = {
@@ -2891,6 +2897,13 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             'show_fusion_overlay': True,
             'vision_threshold': float(getattr(self.sensor_fusion, 'vision_threshold', self.config.get('vision_threshold', getattr(self, 'vision_threshold', 0.7)))),
             'vision_confidence_weight': float(getattr(self.sensor_fusion, 'vision_confidence_weight', self.config.get('vision_confidence_weight', 0.5))),
+            'thermal_render_mode': str(self.config.get('thermal_render_mode', 'fixed_scale_inferno')),
+            'thermal_emissivity': float(self.config.get('thermal_emissivity', 0.95)),
+            'thermal_apply_scope': str(self.config.get('thermal_apply_scope', 'all')),
+            'thermal_target_pfds': saved_target_pfds,
+            'thermal_available_pfds': available_pfds,
+            'thermal_target_room': saved_target_pfds,
+            'thermal_available_rooms': available_pfds,
 
             # Hybrid detection
             'heuristic_threshold': float(self.config.get('heuristic_threshold', getattr(self, 'heuristic_threshold', 0.20))),
@@ -2927,6 +2940,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         if dialog.exec_():
             applied = dialog.get_settings()
+            applied_scope = str(applied.get('thermal_apply_scope', 'all'))
+            applied_pfds = str(applied.get('thermal_target_pfds', applied.get('thermal_target_room', ''))).strip()
+            target_text = f"PFDS Device: {applied_pfds}" if applied_scope in ('per_pfds', 'per_camera') and applied_pfds else "All PFDS"
             if applied.get('restart_app', False):
                 confirm = QMessageBox.question(
                     self,
@@ -2938,7 +2954,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if confirm == QMessageBox.Yes:
                     self._restart_application()
                     return
-            QMessageBox.information(self, "Settings Applied", "Sensor configuration has been updated (no restart required).")
+            QMessageBox.information(self, "Settings Applied", f"Sensor configuration updated for {target_text} (no restart required).")
 
     def _restart_application(self):
         """Restart current application process."""
@@ -2953,6 +2969,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     
     def apply_sensor_config(self, settings):
         """Apply sensor configuration settings."""
+        self._last_sensor_apply_warning_shown = False
         # Update sensor fusion
         self.sensor_fusion.temp_threshold = settings['temp_threshold']
         self.sensor_fusion.gas_ppm_threshold = settings['gas_ppm_threshold']
@@ -3032,6 +3049,35 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             widget.freeze_on_alarm = settings['freeze_on_alarm']
             widget.show_fusion_overlay = settings['show_fusion_overlay']
 
+        thermal_mode = str(settings.get('thermal_render_mode', self.config.get('thermal_render_mode', 'fixed_scale_inferno')))
+        thermal_emissivity = float(settings.get('thermal_emissivity', self.config.get('thermal_emissivity', 0.95)))
+        thermal_scope = str(settings.get('thermal_apply_scope', self.config.get('thermal_apply_scope', 'all')))
+        thermal_target_pfds = str(settings.get('thermal_target_pfds', settings.get('thermal_target_room', self.config.get('thermal_target_pfds', self.config.get('thermal_target_room', ''))))).strip()
+
+        if thermal_scope in ('per_pfds', 'per_camera') and thermal_target_pfds:
+            target_widgets = [widget for widget in self.get_video_widgets() if str(getattr(widget, 'loc_id', '')).strip() == thermal_target_pfds]
+        else:
+            target_widgets = list(self.get_video_widgets())
+
+        if thermal_scope in ('per_pfds', 'per_camera') and thermal_target_pfds and not target_widgets:
+            QMessageBox.warning(
+                self,
+                "PFDS Not Active",
+                f"No active camera tile found for PFDS Device: {thermal_target_pfds}.\n"
+                "Settings were saved and will apply when this PFDS becomes active.",
+            )
+            self._last_sensor_apply_warning_shown = True
+
+        for widget in target_widgets:
+            if hasattr(widget, 'apply_thermal_runtime_config'):
+                widget.apply_thermal_runtime_config(mode=thermal_mode, emissivity=thermal_emissivity)
+
+        try:
+            target_text = f"PFDS Device: {thermal_target_pfds}" if thermal_scope in ('per_pfds', 'per_camera') and thermal_target_pfds else "All PFDS"
+            self.statusBar().showMessage(f"Thermal settings applied to {target_text}", 5000)
+        except Exception:
+            pass
+
         # Debug logging toggle
         set_debug_enabled(bool(settings.get('debug_enabled', False)))
         
@@ -3064,6 +3110,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.config['detection_box_mode'] = self.detection_box_mode
         self.config['detection_box_classes'] = list(self.detection_box_classes)
         self.config['detection_selected_preset'] = str(settings.get('detection_selected_preset', self.config.get('detection_selected_preset', 'Custom')))
+        self.config['thermal_render_mode'] = thermal_mode
+        self.config['thermal_emissivity'] = thermal_emissivity
+        self.config['thermal_apply_scope'] = thermal_scope
+        self.config['thermal_target_pfds'] = thermal_target_pfds
+        self.config['thermal_target_room'] = thermal_target_pfds
         profile_value = settings.get('detection_default_profile', self.config.get('detection_default_profile', {}))
         self.config['detection_default_profile'] = profile_value if isinstance(profile_value, dict) else {}
         try:
@@ -3079,7 +3130,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             f"Heuristic={self.heuristic_threshold}, ForceEveryN={self.force_yolo_every_n_frames}, YOLOConf={self.yolo_conf_threshold}, "
             f"Bands=({self.possible_conf_threshold}/{self.confirmed_conf_threshold}), "
             f"Rule(yolo/fusion)=({self._rule_min_yolo_conf}/{self._rule_min_fusion_conf}), "
-            f"BoxMode={self.detection_box_mode}, BoxClasses={len(self.detection_box_classes)}"
+            f"BoxMode={self.detection_box_mode}, BoxClasses={len(self.detection_box_classes)}, "
+            f"ThermalMode={thermal_mode}, Emissivity={thermal_emissivity}, Scope={thermal_scope}, PFDS={thermal_target_pfds or 'ALL'}"
         )
 
     def show_master_class_config(self):
