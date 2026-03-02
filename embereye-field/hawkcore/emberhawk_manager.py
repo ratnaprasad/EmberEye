@@ -93,6 +93,7 @@ class EmberHawkManager:
         last_sent: Dict[int, float] = {}
         device_init_done: Dict[int, bool] = {}
         device_last_retry: Dict[int, float] = {}
+        device_last_retry_log: Dict[int, float] = {}
         device_last_eeprom: Dict[int, float] = {}
         
         print("EmberHawk Scheduler started")
@@ -108,18 +109,23 @@ class EmberHawkManager:
                     # Send PERIOD_ON for Continuous mode
                     if mode == "Continuous":
                         if not device_init_done.get(did):
-                            if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                            # Retry every 5 seconds when connection is not ready
+                            if now - device_last_retry.get(did, 0) < 5:
+                                continue
+
+                            if did not in device_last_retry_log or now - device_last_retry_log.get(did, 0) >= 30:
                                 print(f"EmberHawk: Sending PERIOD_ON to device {d['name']} ({d['ip']})")
                             
                             if self._dispatcher:
                                 success = self._dispatcher({"command": "PERIOD_ON", **d})
+                                device_last_retry[did] = now
                                 if success:
                                     device_init_done[did] = True
                                     print(f"✅ PERIOD_ON sent successfully to {d['ip']}")
                                 else:
-                                    if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                                    if did not in device_last_retry_log or now - device_last_retry_log.get(did, 0) >= 30:
                                         print(f"⚠️  PERIOD_ON failed for {d['ip']}, retrying...")
-                                    device_last_retry[did] = now
+                                        device_last_retry_log[did] = now
                         
                         # Send EEPROM1 every hour for calibration
                         if now - device_last_eeprom.get(did, 0) >= 3600:

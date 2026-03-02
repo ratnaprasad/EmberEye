@@ -1,6 +1,8 @@
 
 import socket
 import threading
+import time
+from time import time as now_time
 import json
 import os
 import sys
@@ -10,6 +12,7 @@ from embereye.core.thermal_decoder_bridge import (
     decode_frame_to_matrix,
     parse_eeprom_packet,
 )
+from embereye.core.thermal_frame_parser import ThermalFrameParser
 
 
 def safe_flush():
@@ -22,7 +25,9 @@ def safe_flush():
 
 
 class TCPSensorServer:
-    def __init__(self, host='0.0.0.0', port=None, packet_callback=None, disconnect_callback=None):
+    def __init__(self, host='0.0.0.0', port=None, packet_callback=None, disconnect_callback=None,
+                 auto_request_eeprom_on_connect=True, collect_eeprom_until_received=True,
+                 eeprom_retry_interval_seconds=8.0):
         self.host = host
         self.port = port if port is not None else self._get_config_port()
         self.server_socket = None
@@ -34,6 +39,10 @@ class TCPSensorServer:
         self._socket_lock = threading.Lock()  # Lock for thread-safe socket access
         self._client_eeprom_hex = {}  # Track latest valid EEPROM1 payload per client
         self._client_eeprom_requested = {}  # Track EEPROM1 command sent per client
+        self._client_last_eeprom_request = {}  # Track latest EEPROM1 command timestamp per client
+        self.auto_request_eeprom_on_connect = bool(auto_request_eeprom_on_connect)
+        self.collect_eeprom_until_received = bool(collect_eeprom_until_received)
+        self.eeprom_retry_interval_seconds = max(2.0, float(eeprom_retry_interval_seconds))
 
     def _get_config_port(self):
         config_path = os.path.join(os.path.dirname(__file__), 'stream_config.json')
@@ -119,13 +128,25 @@ class TCPSensorServer:
         except Exception as e:
             print(f"⚠️  Failed to auto-send PERIOD_ON to device IP {client_ip}: {e}", flush=True)
 
-        try:
-            print(f"📤 Auto-sending EEPROM1 to device at IP: {client_ip}", flush=True)
-            client_sock.sendall("EEPROM1\n".encode('utf-8'))
-            self._client_eeprom_requested[client_ip] = True
-            print(f"✅ EEPROM1 request sent to device IP: {client_ip}", flush=True)
-        except Exception as e:
-            print(f"⚠️  Failed to auto-send EEPROM1 to device IP {client_ip}: {e}", flush=True)
+        if self.auto_request_eeprom_on_connect:
+            try:
+                print(f"📤 Auto-sending EEPROM1 to device at IP: {client_ip}", flush=True)
+                client_sock.sendall("EEPROM1\n".encode('utf-8'))
+                self._client_eeprom_requested[client_ip] = True
+                self._client_last_eeprom_request[client_ip] = now_time()
+                print(f"✅ EEPROM1 request sent to device IP: {client_ip}", flush=True)
+            except Exception as e:
+                print(f"⚠️  Failed to auto-send EEPROM1 to device IP {client_ip}: {e}", flush=True)
+
+        eeprom_collector_stop = threading.Event()
+        eeprom_collector_thread = None
+        if self.collect_eeprom_until_received:
+            eeprom_collector_thread = threading.Thread(
+                target=self._eeprom_collect_loop,
+                args=(client_sock, client_ip, eeprom_collector_stop),
+                daemon=True,
+            )
+            eeprom_collector_thread.start()
         
         buffer = ''
         try:
@@ -167,12 +188,16 @@ class TCPSensorServer:
                     print(f"Client recv error: {e}")
                     break
         finally:
+            eeprom_collector_stop.set()
+            if eeprom_collector_thread and eeprom_collector_thread.is_alive():
+                eeprom_collector_thread.join(timeout=1.0)
             # Unregister client socket
             with self._socket_lock:
                 if client_ip in self._client_sockets:
                     del self._client_sockets[client_ip]
             self._client_eeprom_hex.pop(client_ip, None)
             self._client_eeprom_requested.pop(client_ip, None)
+            self._client_last_eeprom_request.pop(client_ip, None)
             
             # Notify about disconnection
             if self.disconnect_callback:
@@ -209,7 +234,14 @@ class TCPSensorServer:
                     client_sock = self._client_sockets[matched_ip]
                     print(f"🔄 IP mismatch: configured={ip}, actual={matched_ip}. Using actual IP (single client).")
                 else:
-                    print(f"❌ No active connection for IP {ip}. Connected clients: {list(self._client_sockets.keys())}")
+                    now = now_time()
+                    if not hasattr(self, '_no_connection_warn_ts'):
+                        self._no_connection_warn_ts = {}
+                    warn_key = str(ip).strip()
+                    last_warn = float(self._no_connection_warn_ts.get(warn_key, 0.0))
+                    if now - last_warn >= 30.0:
+                        print(f"❌ No active connection for IP {ip}. Connected clients: {list(self._client_sockets.keys())} (repeated logs suppressed)")
+                        self._no_connection_warn_ts[warn_key] = now
                     return False
         
         try:
@@ -230,6 +262,22 @@ class TCPSensorServer:
 
     def request_eeprom1(self, ip: str) -> bool:
         return self.send_command_to_client(ip, "EEPROM1")
+
+    def _eeprom_collect_loop(self, client_sock, client_ip: str, stop_event: threading.Event):
+        while self.running and not stop_event.is_set():
+            if client_ip in self._client_eeprom_hex:
+                return
+
+            last_sent = float(self._client_last_eeprom_request.get(client_ip, 0.0))
+            if now_time() - last_sent >= self.eeprom_retry_interval_seconds:
+                try:
+                    client_sock.sendall("EEPROM1\n".encode('utf-8'))
+                    self._client_eeprom_requested[client_ip] = True
+                    self._client_last_eeprom_request[client_ip] = now_time()
+                except Exception:
+                    return
+
+            stop_event.wait(timeout=1.0)
 
     def request_one_time_frame(self, ip: str) -> bool:
         return self.send_command_to_client(ip, "REQUEST1")
@@ -356,6 +404,25 @@ class TCPSensorServer:
                             result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id}
                             if client_ip:
                                 result['client_ip'] = client_ip
+                        elif len(frame_data_clean) >= 32 * 24 * 4 + 66 * 4:
+                            # Fallback: parse 834-word raw frame without EEPROM1 (best-effort rendering)
+                            try:
+                                frame_payload = frame_data_clean[: (32 * 24 * 4 + 66 * 4)]
+                                parsed = ThermalFrameParser.parse_frame(frame_payload)
+                                matrix = parsed.get('grid')
+                                if matrix is not None:
+                                    result = {
+                                        'type': 'frame',
+                                        'matrix': matrix.tolist() if hasattr(matrix, 'tolist') else matrix,
+                                        'loc_id': loc_id,
+                                        'rows': parsed.get('rows', 24),
+                                        'cols': parsed.get('cols', 32),
+                                        'eeprom_source': 'fallback_parser',
+                                    }
+                                    if client_ip:
+                                        result['client_ip'] = client_ip
+                            except Exception as parse_exc:
+                                print(f"Frame fallback parse error: {parse_exc}")
                         else:
                             print(f"Frame decode failed ({decoded.get('error')}); length={len(frame_data_clean)}")
                 else:

@@ -63,6 +63,9 @@ class SensorConfigDialog(QDialog):
             # Thermal rendering runtime controls
             'thermal_render_mode': 'fixed_scale_inferno',
             'thermal_emissivity': 0.95,
+            'thermal_auto_window': True,
+            'thermal_window_min': 20.0,
+            'thermal_window_max': 120.0,
             'thermal_apply_scope': 'all',
             'thermal_target_pfds': '',
             'thermal_available_pfds': []
@@ -104,15 +107,19 @@ class SensorConfigDialog(QDialog):
         fusion_tab = self.create_fusion_tab()
         tabs.addTab(fusion_tab, "Fusion Thresholds")
         
-        # Tab 2: Gas Sensor Calibration
+        # Tab 2: Thermal Sensor
+        thermal_sensor_tab = self.create_thermal_sensor_tab()
+        tabs.addTab(thermal_sensor_tab, "Thermal Sensor")
+
+        # Tab 3: Gas Sensor Calibration
         gas_tab = self.create_gas_sensor_tab()
         tabs.addTab(gas_tab, "Gas Sensor")
         
-        # Tab 3: Display Settings
+        # Tab 4: Detection settings
         display_tab = self.create_display_tab()
         tabs.addTab(display_tab, "Detection settings")
         
-        # Tab 4: Anomalies
+        # Tab 5: Anomalies
         anomalies_tab = self.create_anomalies_tab()
         tabs.addTab(anomalies_tab, "Anomalies")
         
@@ -160,73 +167,6 @@ class SensorConfigDialog(QDialog):
         temp_layout.addWidget(temp_info)
         temp_group.setLayout(temp_layout)
         layout.addWidget(temp_group)
-
-        # Thermal rendering controls (runtime, no restart)
-        thermal_render_group = QGroupBox("Thermal Rendering")
-        thermal_render_layout = QVBoxLayout()
-
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("TBA Thermal Sensor Mode:"))
-        self.thermal_mode_combo = QComboBox()
-        self.thermal_mode_combo.addItem("fixed-scale radiometric + inferno false-color", "fixed_scale_inferno")
-        self.thermal_mode_combo.addItem("hot-mask + temporal delta", "hot_mask_temporal_delta")
-        self.thermal_mode_combo.addItem("grayscale + valid-map + hotspot markers", "grayscale_valid_hotspots")
-        mode_idx = self.thermal_mode_combo.findData(str(self.settings.get('thermal_render_mode', 'fixed_scale_inferno')))
-        self.thermal_mode_combo.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
-        mode_row.addWidget(self.thermal_mode_combo)
-        thermal_render_layout.addLayout(mode_row)
-
-        emissivity_row = QHBoxLayout()
-        emissivity_row.addWidget(QLabel("Emissivity:"))
-        self.thermal_emissivity_spin = QDoubleSpinBox()
-        self.thermal_emissivity_spin.setRange(0.10, 1.00)
-        self.thermal_emissivity_spin.setDecimals(2)
-        self.thermal_emissivity_spin.setSingleStep(0.01)
-        self.thermal_emissivity_spin.setValue(float(self.settings.get('thermal_emissivity', 0.95)))
-        emissivity_row.addWidget(self.thermal_emissivity_spin)
-        thermal_render_layout.addLayout(emissivity_row)
-
-        scope_row = QHBoxLayout()
-        scope_row.addWidget(QLabel("Apply Scope:"))
-        self.thermal_scope_combo = QComboBox()
-        self.thermal_scope_combo.addItem("All PFDS", "all")
-        self.thermal_scope_combo.addItem("Per PFDS", "per_pfds")
-        scope_idx = self.thermal_scope_combo.findData(str(self.settings.get('thermal_apply_scope', 'all')))
-        if scope_idx < 0 and str(self.settings.get('thermal_apply_scope', '')) == 'per_camera':
-            scope_idx = self.thermal_scope_combo.findData('per_pfds')
-        self.thermal_scope_combo.setCurrentIndex(scope_idx if scope_idx >= 0 else 0)
-        scope_row.addWidget(self.thermal_scope_combo)
-        thermal_render_layout.addLayout(scope_row)
-
-        pfds_row = QHBoxLayout()
-        pfds_row.addWidget(QLabel("PFDS Device:"))
-        self.thermal_pfds_combo = QComboBox()
-        available_pfds = self.settings.get('thermal_available_pfds', self.settings.get('thermal_available_rooms', []))
-        if not isinstance(available_pfds, list):
-            available_pfds = []
-        pfds_items = [str(device).strip() for device in available_pfds if str(device).strip()]
-        if pfds_items:
-            self.thermal_pfds_combo.addItems(pfds_items)
-            pfds_value = str(self.settings.get('thermal_target_pfds', self.settings.get('thermal_target_room', ''))).strip()
-            pfds_idx = self.thermal_pfds_combo.findText(pfds_value)
-            if pfds_idx >= 0:
-                self.thermal_pfds_combo.setCurrentIndex(pfds_idx)
-        else:
-            self.thermal_pfds_combo.addItem("(no PFDS devices available)")
-            self.thermal_pfds_combo.setEnabled(False)
-        pfds_row.addWidget(self.thermal_pfds_combo)
-        thermal_render_layout.addLayout(pfds_row)
-
-        self.thermal_scope_combo.currentIndexChanged.connect(self._toggle_thermal_pfds_selector)
-        self._toggle_thermal_pfds_selector()
-
-        thermal_render_info = QLabel("These controls update thermal rendering immediately on Apply (no restart).")
-        thermal_render_info.setWordWrap(True)
-        thermal_render_info.setStyleSheet("color: gray; font-size: 9pt;")
-        thermal_render_layout.addWidget(thermal_render_info)
-
-        thermal_render_group.setLayout(thermal_render_layout)
-        layout.addWidget(thermal_render_group)
         
         # Gas threshold
         gas_group = QGroupBox("Gas Sensor (MQ-135)")
@@ -339,6 +279,117 @@ class SensorConfigDialog(QDialog):
         min_sources_group.setLayout(min_sources_layout)
         layout.addWidget(min_sources_group)
         
+        layout.addStretch()
+        return widget
+
+    def create_thermal_sensor_tab(self):
+        """Create thermal sensor runtime controls tab."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        thermal_render_group = QGroupBox("Thermal Rendering")
+        thermal_render_layout = QVBoxLayout()
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("TBA Thermal Sensor Mode:"))
+        self.thermal_mode_combo = QComboBox()
+        self.thermal_mode_combo.addItem("fixed-scale radiometric + inferno false-color", "fixed_scale_inferno")
+        self.thermal_mode_combo.addItem("hot-mask + temporal delta", "hot_mask_temporal_delta")
+        self.thermal_mode_combo.addItem("grayscale + valid-map + hotspot markers", "grayscale_valid_hotspots")
+        mode_idx = self.thermal_mode_combo.findData(str(self.settings.get('thermal_render_mode', 'fixed_scale_inferno')))
+        self.thermal_mode_combo.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+        mode_row.addWidget(self.thermal_mode_combo)
+        thermal_render_layout.addLayout(mode_row)
+
+        emissivity_row = QHBoxLayout()
+        emissivity_row.addWidget(QLabel("Emissivity:"))
+        self.thermal_emissivity_spin = QDoubleSpinBox()
+        self.thermal_emissivity_spin.setRange(0.10, 1.00)
+        self.thermal_emissivity_spin.setDecimals(2)
+        self.thermal_emissivity_spin.setSingleStep(0.01)
+        self.thermal_emissivity_spin.setValue(float(self.settings.get('thermal_emissivity', 0.95)))
+        emissivity_row.addWidget(self.thermal_emissivity_spin)
+        thermal_render_layout.addLayout(emissivity_row)
+
+        window_group = QGroupBox("Thermal Contrast Window")
+        window_layout = QVBoxLayout()
+
+        self.thermal_auto_window_checkbox = QCheckBox("Auto window (recommended)")
+        self.thermal_auto_window_checkbox.setChecked(bool(self.settings.get('thermal_auto_window', True)))
+        window_layout.addWidget(self.thermal_auto_window_checkbox)
+
+        min_row = QHBoxLayout()
+        min_row.addWidget(QLabel("Manual Min (°C):"))
+        self.thermal_window_min_spin = QDoubleSpinBox()
+        self.thermal_window_min_spin.setRange(-40.0, 200.0)
+        self.thermal_window_min_spin.setDecimals(1)
+        self.thermal_window_min_spin.setSingleStep(0.5)
+        self.thermal_window_min_spin.setValue(float(self.settings.get('thermal_window_min', 20.0)))
+        min_row.addWidget(self.thermal_window_min_spin)
+        window_layout.addLayout(min_row)
+
+        max_row = QHBoxLayout()
+        max_row.addWidget(QLabel("Manual Max (°C):"))
+        self.thermal_window_max_spin = QDoubleSpinBox()
+        self.thermal_window_max_spin.setRange(-40.0, 250.0)
+        self.thermal_window_max_spin.setDecimals(1)
+        self.thermal_window_max_spin.setSingleStep(0.5)
+        self.thermal_window_max_spin.setValue(float(self.settings.get('thermal_window_max', 120.0)))
+        max_row.addWidget(self.thermal_window_max_spin)
+        window_layout.addLayout(max_row)
+
+        window_info = QLabel("Use manual window only when Auto window is OFF.")
+        window_info.setWordWrap(True)
+        window_info.setStyleSheet("color: gray; font-size: 9pt;")
+        window_layout.addWidget(window_info)
+
+        window_group.setLayout(window_layout)
+        thermal_render_layout.addWidget(window_group)
+
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel("Apply Scope:"))
+        self.thermal_scope_combo = QComboBox()
+        self.thermal_scope_combo.addItem("All PFDS", "all")
+        self.thermal_scope_combo.addItem("Per PFDS", "per_pfds")
+        scope_idx = self.thermal_scope_combo.findData(str(self.settings.get('thermal_apply_scope', 'all')))
+        if scope_idx < 0 and str(self.settings.get('thermal_apply_scope', '')) == 'per_camera':
+            scope_idx = self.thermal_scope_combo.findData('per_pfds')
+        self.thermal_scope_combo.setCurrentIndex(scope_idx if scope_idx >= 0 else 0)
+        scope_row.addWidget(self.thermal_scope_combo)
+        thermal_render_layout.addLayout(scope_row)
+
+        pfds_row = QHBoxLayout()
+        pfds_row.addWidget(QLabel("PFDS Device:"))
+        self.thermal_pfds_combo = QComboBox()
+        available_pfds = self.settings.get('thermal_available_pfds', self.settings.get('thermal_available_rooms', []))
+        if not isinstance(available_pfds, list):
+            available_pfds = []
+        pfds_items = [str(device).strip() for device in available_pfds if str(device).strip()]
+        if pfds_items:
+            self.thermal_pfds_combo.addItems(pfds_items)
+            pfds_value = str(self.settings.get('thermal_target_pfds', self.settings.get('thermal_target_room', ''))).strip()
+            pfds_idx = self.thermal_pfds_combo.findText(pfds_value)
+            if pfds_idx >= 0:
+                self.thermal_pfds_combo.setCurrentIndex(pfds_idx)
+        else:
+            self.thermal_pfds_combo.addItem("(no PFDS devices available)")
+            self.thermal_pfds_combo.setEnabled(False)
+        pfds_row.addWidget(self.thermal_pfds_combo)
+        thermal_render_layout.addLayout(pfds_row)
+
+        self.thermal_scope_combo.currentIndexChanged.connect(self._toggle_thermal_pfds_selector)
+        self.thermal_auto_window_checkbox.toggled.connect(self._toggle_thermal_window_controls)
+        self._toggle_thermal_pfds_selector()
+        self._toggle_thermal_window_controls()
+
+        thermal_render_info = QLabel("These controls update thermal rendering immediately on Apply (no restart).")
+        thermal_render_info.setWordWrap(True)
+        thermal_render_info.setStyleSheet("color: gray; font-size: 9pt;")
+        thermal_render_layout.addWidget(thermal_render_info)
+
+        thermal_render_group.setLayout(thermal_render_layout)
+        layout.addWidget(thermal_render_group)
+
         layout.addStretch()
         return widget
 
@@ -862,6 +913,9 @@ class SensorConfigDialog(QDialog):
             'anomaly_retention_days': self.retention_spin.value(),
             'thermal_render_mode': self.thermal_mode_combo.currentData(),
             'thermal_emissivity': self.thermal_emissivity_spin.value(),
+            'thermal_auto_window': self.thermal_auto_window_checkbox.isChecked(),
+            'thermal_window_min': self.thermal_window_min_spin.value(),
+            'thermal_window_max': self.thermal_window_max_spin.value(),
             'thermal_apply_scope': self.thermal_scope_combo.currentData(),
             'thermal_target_pfds': '' if not self.thermal_pfds_combo.isEnabled() else self.thermal_pfds_combo.currentText().strip(),
             'thermal_available_pfds': [self.thermal_pfds_combo.itemText(i) for i in range(self.thermal_pfds_combo.count()) if self.thermal_pfds_combo.itemText(i) != "(no PFDS devices available)"],
@@ -876,6 +930,15 @@ class SensorConfigDialog(QDialog):
         per_pfds = self.thermal_scope_combo.currentData() in ('per_pfds', 'per_camera')
         has_pfds = self.thermal_pfds_combo.count() > 0 and self.thermal_pfds_combo.itemText(0) != "(no PFDS devices available)"
         self.thermal_pfds_combo.setEnabled(per_pfds and has_pfds)
+
+    def _toggle_thermal_window_controls(self):
+        if not hasattr(self, 'thermal_auto_window_checkbox'):
+            return
+        manual_enabled = not self.thermal_auto_window_checkbox.isChecked()
+        if hasattr(self, 'thermal_window_min_spin'):
+            self.thermal_window_min_spin.setEnabled(manual_enabled)
+        if hasattr(self, 'thermal_window_max_spin'):
+            self.thermal_window_max_spin.setEnabled(manual_enabled)
 
     def _toggle_box_class_selector(self):
         if hasattr(self, 'box_class_list'):

@@ -9,7 +9,13 @@ THERMAL_DIR = Path(__file__).resolve().parent / "thermal"
 if str(THERMAL_DIR) not in sys.path:
     sys.path.insert(0, str(THERMAL_DIR))
 
-from mlx90640_fogleman_offline import MLX90640FoglemanOffline
+try:
+    # Preferred runtime wiring: process_rawdata exposes MLX90640Direct alias
+    # which points to MLX90640FoglemanOffline in thermal package.
+    from process_rawdata import MLX90640Direct as ThermalRuntimeProcessor
+except Exception:
+    # Fallback to direct class import if process_rawdata module is unavailable.
+    from mlx90640_fogleman_offline import MLX90640FoglemanOffline as ThermalRuntimeProcessor
 
 
 EEPROM_WORDS = 832
@@ -20,7 +26,7 @@ GRID_WORDS = 768
 GRID_HEX_LEN = GRID_WORDS * 4
 
 _DEFAULT_EEPROM_HEX: Optional[str] = None
-_PROCESSOR_CACHE: Dict[str, MLX90640FoglemanOffline] = {}
+_PROCESSOR_CACHE: Dict[str, Any] = {}
 
 
 def _clean_hex(text: str) -> str:
@@ -81,11 +87,11 @@ def parse_eeprom_packet(packet: str) -> Dict[str, Any]:
     }
 
 
-def _get_processor(eeprom_hex: str) -> MLX90640FoglemanOffline:
+def _get_processor(eeprom_hex: str):
     cached = _PROCESSOR_CACHE.get(eeprom_hex)
     if cached is not None:
         return cached
-    processor = MLX90640FoglemanOffline(bytes.fromhex(eeprom_hex))
+    processor = ThermalRuntimeProcessor(bytes.fromhex(eeprom_hex))
     _PROCESSOR_CACHE[eeprom_hex] = processor
     return processor
 

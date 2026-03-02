@@ -7,6 +7,7 @@ from tcp_logger import log_raw_packet, log_error_packet
 from tcp_server_logger import log_info, log_debug, log_warning, log_error as log_server_error
 from metrics import get_metrics
 from embereye.core.thermal_decoder_bridge import decode_frame_to_matrix, parse_eeprom_packet
+from embereye.core.thermal_frame_parser import ThermalFrameParser
 
 class TCPAsyncSensorServer:
     """High-performance asyncio-based TCP sensor server with queue-based packet processing.
@@ -19,7 +20,10 @@ class TCPAsyncSensorServer:
     """
 
     def __init__(self, host: str = '0.0.0.0', port: int | None = None, packet_callback: Callable[[Dict[str, Any]], None] | None = None,
-                 max_queue: int = 10000, batch_interval_ms: int = 50):
+                 max_queue: int = 10000, batch_interval_ms: int = 50,
+                 auto_request_eeprom_on_connect: bool = True,
+                 collect_eeprom_until_received: bool = True,
+                 eeprom_retry_interval_seconds: float = 8.0):
         self.host = host
         self.port = port if port is not None else self._get_config_port()
         self.packet_callback = packet_callback
@@ -35,6 +39,10 @@ class TCPAsyncSensorServer:
         self._loop: asyncio.AbstractEventLoop | None = None  # Store event loop reference
         self._client_eeprom_hex: Dict[str, str] = {}  # Latest valid EEPROM1 payload per client
         self._client_eeprom_requested: Dict[str, bool] = {}  # Track one-time EEPROM1 request per client
+        self._client_last_eeprom_request: Dict[str, float] = {}  # Last EEPROM1 request send time per client
+        self.auto_request_eeprom_on_connect = bool(auto_request_eeprom_on_connect)
+        self.collect_eeprom_until_received = bool(collect_eeprom_until_received)
+        self.eeprom_retry_interval_seconds = max(2.0, float(eeprom_retry_interval_seconds))
 
     def _get_config_port(self) -> int:
         config_path = os.path.join(os.path.dirname(__file__), 'stream_config.json')
@@ -130,14 +138,19 @@ class TCPAsyncSensorServer:
                 self._client_period_on_sent[client_ip] = True
                 log_debug(f"Sent PERIOD_ON command to {client_ip} for continuous streaming [ONE-TIME]")
 
-            if not self._client_eeprom_requested.get(client_ip, False):
+            if self.auto_request_eeprom_on_connect and not self._client_eeprom_requested.get(client_ip, False):
                 writer.write(b"EEPROM1\n")
                 await writer.drain()
                 self._client_eeprom_requested[client_ip] = True
+                self._client_last_eeprom_request[client_ip] = asyncio.get_running_loop().time()
                 log_debug(f"Sent EEPROM1 command to {client_ip} [ONE-TIME]")
         except Exception as e:
             log_warning(f"Failed to send PERIOD_ON to {client_ip}: {e}")
             self._client_period_on_sent[client_ip] = False
+
+        eeprom_collect_task: asyncio.Task | None = None
+        if self.collect_eeprom_until_received:
+            eeprom_collect_task = asyncio.create_task(self._eeprom_collect_loop(writer, client_ip))
         
         try:
             first_frame_received = False
@@ -179,6 +192,14 @@ class TCPAsyncSensorServer:
             log_error_packet(reason=f"client error {e}", raw='(stream)', loc_id=client_ip)
             self.metrics.record_tcp_error(client_ip)
         finally:
+            if eeprom_collect_task:
+                eeprom_collect_task.cancel()
+                try:
+                    await eeprom_collect_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
             self._active_connections -= 1
             self.metrics.update_tcp_connections(self._active_connections)
             # Clean up client PERIOD_ON gate state
@@ -188,6 +209,8 @@ class TCPAsyncSensorServer:
                 del self._client_eeprom_hex[client_ip]
             if client_ip in self._client_eeprom_requested:
                 del self._client_eeprom_requested[client_ip]
+            if client_ip in self._client_last_eeprom_request:
+                del self._client_last_eeprom_request[client_ip]
             # Remove writer from active connections
             if client_ip in self._client_writers:
                 del self._client_writers[client_ip]
@@ -197,6 +220,25 @@ class TCPAsyncSensorServer:
             except Exception:
                 pass
             log_info(f"Client disconnected: {client_ip}")
+
+    async def _eeprom_collect_loop(self, writer: asyncio.StreamWriter, client_ip: str):
+        loop = asyncio.get_running_loop()
+        while self.running and client_ip in self._client_writers:
+            if client_ip in self._client_eeprom_hex:
+                return
+
+            last_sent = float(self._client_last_eeprom_request.get(client_ip, 0.0))
+            if loop.time() - last_sent >= self.eeprom_retry_interval_seconds:
+                try:
+                    writer.write(b"EEPROM1\n")
+                    await writer.drain()
+                    self._client_eeprom_requested[client_ip] = True
+                    self._client_last_eeprom_request[client_ip] = loop.time()
+                    log_debug(f"Sent EEPROM1 command to {client_ip} [RETRY]")
+                except Exception:
+                    return
+
+            await asyncio.sleep(1.0)
 
     async def _batch_processor(self):
         """Periodically drain queue and process packets in batches for efficiency."""
@@ -264,7 +306,8 @@ class TCPAsyncSensorServer:
                             loc_id = None; frame_data = data.strip()
                     if not loc_id and client_ip:
                         loc_id = client_ip
-                    if ' ' in frame_data:
+                    frame_data_clean = frame_data.replace(" ", "").replace("\n", "").strip()
+                    if ' ' in frame_data and len(frame_data_clean) == 0:
                         hex_values = frame_data.split()
                         if len(hex_values) == 32*24:
                             matrix = [[int(hex_values[r*32+c], 16) for c in range(32)] for r in range(24)]
@@ -274,14 +317,16 @@ class TCPAsyncSensorServer:
                     else:
                         expected_grid_chars = 32*24*4  # 3072
                         total_with_eeprom = expected_grid_chars + 66*4  # 3336
-                        if len(frame_data) == expected_grid_chars:
+                        if len(frame_data_clean) >= expected_grid_chars and len(frame_data_clean) < total_with_eeprom:
                             # Legacy format: only grid (no embedded EEPROM)
-                            hex_values = [frame_data[i:i+4] for i in range(0, len(frame_data), 4)]
+                            frame_grid = frame_data_clean[:expected_grid_chars]
+                            hex_values = [frame_grid[i:i+4] for i in range(0, len(frame_grid), 4)]
                             matrix = [[int(hex_values[r*32+c], 16) for c in range(32)] for r in range(24)]
                             result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id, 'client_ip': client_ip}
-                        elif len(frame_data) == total_with_eeprom:
+                        elif len(frame_data_clean) >= total_with_eeprom:
+                            frame_payload = frame_data_clean[:total_with_eeprom]
                             decoded = decode_frame_to_matrix(
-                                frame_data,
+                                frame_payload,
                                 eeprom_hex=self._client_eeprom_hex.get(client_ip),
                             )
                             if decoded.get('success'):
@@ -296,9 +341,26 @@ class TCPAsyncSensorServer:
                                     'client_ip': client_ip
                                 }
                             else:
-                                log_error_packet(reason=f"frame decode error {decoded.get('error')}", raw=line[:80], loc_id=loc_id or client_ip)
+                                # Fallback to parser that can handle raw 834-word frame without EEPROM1
+                                try:
+                                    parsed = ThermalFrameParser.parse_frame(frame_payload)
+                                    matrix = parsed.get('grid')
+                                    if matrix is not None:
+                                        result = {
+                                            'type': 'frame',
+                                            'matrix': matrix.tolist() if hasattr(matrix, 'tolist') else matrix,
+                                            'rows': parsed.get('rows', 24),
+                                            'cols': parsed.get('cols', 32),
+                                            'eeprom_source': 'fallback_parser',
+                                            'loc_id': loc_id,
+                                            'client_ip': client_ip
+                                        }
+                                    else:
+                                        log_error_packet(reason=f"frame decode error {decoded.get('error')}", raw=line[:80], loc_id=loc_id or client_ip)
+                                except Exception as parse_exc:
+                                    log_error_packet(reason=f"frame decode error {decoded.get('error')} | fallback {parse_exc}", raw=line[:80], loc_id=loc_id or client_ip)
                         else:
-                            log_error_packet(reason=f"frame length {len(frame_data)}", raw=line[:80], loc_id=loc_id or client_ip)
+                            log_error_packet(reason=f"frame length {len(frame_data_clean)}", raw=line[:80], loc_id=loc_id or client_ip)
             elif line.startswith('#Sensor'):
                 content = line[1:].rstrip('!')
                 if ':' not in content:

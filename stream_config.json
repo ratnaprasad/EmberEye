@@ -54,5 +54,13 @@
     "detection_box_mode": "all",
     "detection_box_classes": [],
     "detection_selected_preset": "Low Noise",
-    "detection_default_profile": {}
+    "detection_default_profile": {},
+    "thermal_render_mode": "fixed_scale_inferno",
+    "thermal_emissivity": 0.5,
+    "thermal_apply_scope": "all",
+    "thermal_target_pfds": "",
+    "thermal_target_room": "",
+    "thermal_auto_window": true,
+    "thermal_window_min": 20.0,
+    "thermal_window_max": 120.0
 }

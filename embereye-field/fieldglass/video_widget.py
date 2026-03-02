@@ -51,7 +51,11 @@ class VideoWidget(QWidget):
         self._thermal_update_interval = 0.2  # Minimum 200ms between thermal updates
         self.thermal_render_mode = "fixed_scale_inferno"
         self.thermal_emissivity = 0.95
+        self.thermal_auto_window = True
+        self.thermal_window_min = 20.0
+        self.thermal_window_max = 120.0
         self._prev_thermal_matrix = None
+        self._thermal_debug_line = "Thermal: waiting for data"
         
         # Alarm state and frame freeze
         self.alarm_active = False
@@ -182,7 +186,51 @@ class VideoWidget(QWidget):
         except Exception:
             return arr
 
-    def apply_thermal_runtime_config(self, mode=None, emissivity=None):
+    def _compute_thermal_window(self, arr, mode):
+        import numpy as np
+
+        scene_min = float(np.percentile(arr, 2))
+        scene_max = float(np.percentile(arr, 98))
+        scene_span = scene_max - scene_min
+
+        if mode == "fixed_scale_inferno":
+            fixed_min = float(getattr(self, 'thermal_window_min', 20.0))
+            fixed_max = float(getattr(self, 'thermal_window_max', 120.0))
+            if fixed_max <= fixed_min:
+                fixed_max = fixed_min + 1.0
+            auto_window = bool(getattr(self, 'thermal_auto_window', True))
+            if not auto_window:
+                return fixed_min, fixed_max, "manual"
+            if scene_span < 12.0:
+                window_min = scene_min - 1.0
+                window_max = scene_max + 1.0
+                if window_max - window_min < 4.0:
+                    center = float(np.mean(arr))
+                    window_min = center - 2.0
+                    window_max = center + 2.0
+                return window_min, window_max, "adaptive"
+            return fixed_min, fixed_max, "fixed"
+
+        min_val = float(np.min(arr))
+        max_val = float(np.max(arr))
+        if max_val <= min_val:
+            max_val = min_val + 1.0
+        return min_val, max_val, "dynamic"
+
+    def _update_thermal_debug_line(self, arr, mode):
+        import numpy as np
+
+        arr_min = float(np.min(arr))
+        arr_max = float(np.max(arr))
+        arr_span = arr_max - arr_min
+        window_min, window_max, window_kind = self._compute_thermal_window(arr, mode)
+        mode_short = str(mode).replace("_", "")[:10]
+        self._thermal_debug_line = (
+            f"Tdbg {mode_short} | val {arr_min:.1f}-{arr_max:.1f}C Δ{arr_span:.1f} | "
+            f"win {window_min:.1f}-{window_max:.1f} ({window_kind})"
+        )
+
+    def apply_thermal_runtime_config(self, mode=None, emissivity=None, auto_window=None, window_min=None, window_max=None):
         if mode is not None:
             self.thermal_render_mode = self._sanitize_thermal_mode(mode)
         if emissivity is not None:
@@ -190,6 +238,20 @@ class VideoWidget(QWidget):
                 self.thermal_emissivity = max(0.10, min(1.00, float(emissivity)))
             except Exception:
                 self.thermal_emissivity = 0.95
+        if auto_window is not None:
+            self.thermal_auto_window = bool(auto_window)
+        if window_min is not None:
+            try:
+                self.thermal_window_min = float(window_min)
+            except Exception:
+                self.thermal_window_min = 20.0
+        if window_max is not None:
+            try:
+                self.thermal_window_max = float(window_max)
+            except Exception:
+                self.thermal_window_max = 120.0
+        if self.thermal_window_max <= self.thermal_window_min:
+            self.thermal_window_max = self.thermal_window_min + 1.0
 
         self._cached_thermal_overlay = None
         self._last_overlay_matrix_hash = None
@@ -588,10 +650,11 @@ class VideoWidget(QWidget):
 
             arr = self._apply_emissivity_compensation(arr)
             mode = self._sanitize_thermal_mode(getattr(self, 'thermal_render_mode', 'fixed_scale_inferno'))
+            self._update_thermal_debug_line(arr, mode)
 
             if mode == "fixed_scale_inferno":
-                fixed_min, fixed_max = 20.0, 120.0
-                norm = np.clip((arr - fixed_min) / (fixed_max - fixed_min) * 255.0, 0, 255).astype(np.uint8)
+                window_min, window_max, _ = self._compute_thermal_window(arr, mode)
+                norm = np.clip((arr - window_min) / (window_max - window_min) * 255.0, 0, 255).astype(np.uint8)
                 color_bgr = cv2.applyColorMap(norm, cv2.COLORMAP_INFERNO)
 
             elif mode == "hot_mask_temporal_delta":
@@ -613,11 +676,8 @@ class VideoWidget(QWidget):
                     color_bgr[delta_mask] = (255, 255, 0)
 
             else:  # grayscale_valid_hotspots
-                min_val = float(np.min(arr))
-                max_val = float(np.max(arr))
-                if max_val <= min_val:
-                    max_val = min_val + 1.0
-                base_norm = ((arr - min_val) / (max_val - min_val) * 255.0).astype(np.uint8)
+                window_min, window_max, _ = self._compute_thermal_window(arr, mode)
+                base_norm = ((arr - window_min) / (window_max - window_min) * 255.0).astype(np.uint8)
                 color_bgr = cv2.cvtColor(base_norm, cv2.COLOR_GRAY2BGR)
 
                 valid_mask = np.isfinite(arr)
@@ -1441,6 +1501,13 @@ class VideoWidget(QWidget):
                 flame_text = "FLAME!" if flame_active else "No Flame"
                 painter.drawText(right_col_x, reading_y, flame_text)
                 reading_y += reading_spacing
+
+            # Thermal render diagnostics
+            debug_font_size = max(6, int(8 * scale_factor))
+            painter.setFont(QFont("Arial", debug_font_size))
+            painter.setPen(QColor(120, 255, 255))
+            debug_y = panel_rect.y() + panel_rect.height() - max(6, int(8 * scale_factor))
+            painter.drawText(panel_rect.x() + int(8 * scale_factor), debug_y, str(getattr(self, '_thermal_debug_line', '')))
             
         except Exception as e:
             print(f"Fusion overlay draw error: {e}")

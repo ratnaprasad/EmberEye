@@ -87,7 +87,8 @@ class PFDSManager:
         """
         last_sent: Dict[int, float] = {}
         device_init_done: Dict[int, bool] = {}  # Track per-device init to gate PERIOD_ON
-        device_last_retry: Dict[int, float] = {}  # Track last retry attempt for failed PERIOD_ON
+        device_last_retry: Dict[int, float] = {}  # Track last retry attempt timestamp
+        device_last_retry_log: Dict[int, float] = {}  # Track last retry warning log timestamp
         device_last_eeprom: Dict[int, float] = {}  # Track last EEPROM1 request (every 3600s)
         print("PFDS Scheduler started")
         while not self._stop_event.is_set():
@@ -102,26 +103,31 @@ class PFDSManager:
                     # Send PERIOD_ON for Continuous mode (once per device, with retry on failure)
                     if mode == "Continuous":
                         if not device_init_done.get(did):
+                            # Retry every 5s while connection is not ready
+                            if now - device_last_retry.get(did, 0) < 5:
+                                continue
+
                             # Only log once per initialization attempt
-                            if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                            if did not in device_last_retry_log or now - device_last_retry_log.get(did, 0) >= 30:
                                 print(f"PFDS: Sending PERIOD_ON to device {d['name']} ({d['ip']}) [ONE-TIME INIT]")
                             
                             if self._dispatcher:
                                 # Start continuous streaming (PERIOD_ON is one-time per device boot)
                                 success = self._dispatcher({"command": "PERIOD_ON", **d})
+                                device_last_retry[did] = now
                                 # Only mark as done if command was successfully sent
                                 if success:
                                     device_init_done[did] = True
                                     print(f"✅ PERIOD_ON sent successfully to {d['ip']}")
                                 else:
-                                    # Retry after 5 seconds if send failed (connection not ready)
                                     # Only log failure once every 30 seconds to avoid spam
-                                    if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                                    if did not in device_last_retry_log or now - device_last_retry_log.get(did, 0) >= 30:
                                         print(f"⚠️  PERIOD_ON failed for {d['ip']}, retrying every 5s (logging suppressed)")
-                                    device_last_retry[did] = now
+                                        device_last_retry_log[did] = now
                             else:
-                                if did not in device_last_retry or now - device_last_retry.get(did, 0) >= 30:
+                                if did not in device_last_retry_log or now - device_last_retry_log.get(did, 0) >= 30:
                                     print("PFDS: WARNING - No dispatcher set!")
+                                    device_last_retry_log[did] = now
                         elif now - device_last_retry.get(did, 0) >= 5:
                             # Retry PERIOD_ON if it was marked as sent but device might have disconnected
                             # This handles reconnection scenarios (silent retries)

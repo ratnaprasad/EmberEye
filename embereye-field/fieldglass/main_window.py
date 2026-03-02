@@ -2899,6 +2899,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             'vision_confidence_weight': float(getattr(self.sensor_fusion, 'vision_confidence_weight', self.config.get('vision_confidence_weight', 0.5))),
             'thermal_render_mode': str(self.config.get('thermal_render_mode', 'fixed_scale_inferno')),
             'thermal_emissivity': float(self.config.get('thermal_emissivity', 0.95)),
+            'thermal_auto_window': bool(self.config.get('thermal_auto_window', True)),
+            'thermal_window_min': float(self.config.get('thermal_window_min', 20.0)),
+            'thermal_window_max': float(self.config.get('thermal_window_max', 120.0)),
             'thermal_apply_scope': str(self.config.get('thermal_apply_scope', 'all')),
             'thermal_target_pfds': saved_target_pfds,
             'thermal_available_pfds': available_pfds,
@@ -3051,6 +3054,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         thermal_mode = str(settings.get('thermal_render_mode', self.config.get('thermal_render_mode', 'fixed_scale_inferno')))
         thermal_emissivity = float(settings.get('thermal_emissivity', self.config.get('thermal_emissivity', 0.95)))
+        thermal_auto_window = bool(settings.get('thermal_auto_window', self.config.get('thermal_auto_window', True)))
+        thermal_window_min = float(settings.get('thermal_window_min', self.config.get('thermal_window_min', 20.0)))
+        thermal_window_max = float(settings.get('thermal_window_max', self.config.get('thermal_window_max', 120.0)))
+        if thermal_window_max <= thermal_window_min:
+            thermal_window_max = thermal_window_min + 1.0
         thermal_scope = str(settings.get('thermal_apply_scope', self.config.get('thermal_apply_scope', 'all')))
         thermal_target_pfds = str(settings.get('thermal_target_pfds', settings.get('thermal_target_room', self.config.get('thermal_target_pfds', self.config.get('thermal_target_room', ''))))).strip()
 
@@ -3070,7 +3078,13 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         for widget in target_widgets:
             if hasattr(widget, 'apply_thermal_runtime_config'):
-                widget.apply_thermal_runtime_config(mode=thermal_mode, emissivity=thermal_emissivity)
+                widget.apply_thermal_runtime_config(
+                    mode=thermal_mode,
+                    emissivity=thermal_emissivity,
+                    auto_window=thermal_auto_window,
+                    window_min=thermal_window_min,
+                    window_max=thermal_window_max,
+                )
 
         try:
             target_text = f"PFDS Device: {thermal_target_pfds}" if thermal_scope in ('per_pfds', 'per_camera') and thermal_target_pfds else "All PFDS"
@@ -3112,6 +3126,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.config['detection_selected_preset'] = str(settings.get('detection_selected_preset', self.config.get('detection_selected_preset', 'Custom')))
         self.config['thermal_render_mode'] = thermal_mode
         self.config['thermal_emissivity'] = thermal_emissivity
+        self.config['thermal_auto_window'] = thermal_auto_window
+        self.config['thermal_window_min'] = thermal_window_min
+        self.config['thermal_window_max'] = thermal_window_max
         self.config['thermal_apply_scope'] = thermal_scope
         self.config['thermal_target_pfds'] = thermal_target_pfds
         self.config['thermal_target_room'] = thermal_target_pfds
@@ -3131,7 +3148,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             f"Bands=({self.possible_conf_threshold}/{self.confirmed_conf_threshold}), "
             f"Rule(yolo/fusion)=({self._rule_min_yolo_conf}/{self._rule_min_fusion_conf}), "
             f"BoxMode={self.detection_box_mode}, BoxClasses={len(self.detection_box_classes)}, "
-            f"ThermalMode={thermal_mode}, Emissivity={thermal_emissivity}, Scope={thermal_scope}, PFDS={thermal_target_pfds or 'ALL'}"
+            f"ThermalMode={thermal_mode}, Emissivity={thermal_emissivity}, AutoWindow={thermal_auto_window}, "
+            f"Window=({thermal_window_min}-{thermal_window_max}), Scope={thermal_scope}, PFDS={thermal_target_pfds or 'ALL'}"
         )
 
     def show_master_class_config(self):
@@ -4149,14 +4167,20 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             # Map EmberHawk commands to PFDS format
             # PFDS expects raw command strings like "PERIOD_ON", "EEPROM1", "REQUEST1", "PERIOD_OFF"
             if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
-                print(f"🔲 [dispatch_emberhawk_command] Sending '{command}' to IP={target_ip} via tcp_sensor_server")
                 success = self.tcp_sensor_server.send_command_to_client(target_ip, command)
                 
                 if success:
                     print(f"✅ dispatch_emberhawk_command: '{command}' sent to {target_ip}")
                     return True
                 else:
-                    print(f"⚠️  dispatch_emberhawk_command: '{command}' failed for {target_ip} (no active connection)")
+                    now = time.time()
+                    if not hasattr(self, '_dispatch_no_conn_warn_ts'):
+                        self._dispatch_no_conn_warn_ts = {}
+                    warn_key = f"{target_ip}|{command}"
+                    last_warn = float(self._dispatch_no_conn_warn_ts.get(warn_key, 0.0))
+                    if now - last_warn >= 30.0:
+                        print(f"⚠️  dispatch_emberhawk_command: '{command}' failed for {target_ip} (no active connection, repeated logs suppressed)")
+                        self._dispatch_no_conn_warn_ts[warn_key] = now
                     return False
             else:
                 print(f"❌ dispatch_emberhawk_command: TCP server unavailable, cannot send '{command}'")
