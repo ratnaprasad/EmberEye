@@ -206,8 +206,7 @@ def main():
             print("\n✓ Smoke test passed")
         sys.exit(0)
     else:
-        if not args.verbose:
-            print(f"✗ Smoke test failed: {results['error']}")
+        print(f"✗ Smoke test failed: {results['error']}")
         sys.exit(1)
 
 
