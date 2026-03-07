@@ -17,7 +17,7 @@ from PyQt5.QtGui import (
 from datetime import datetime
 from streamconfig_dialog import StreamConfigDialog
 from video_widget import VideoWidget
-from sensor_fusion import SensorFusion
+from embereye.core.fusion import FusionOrchestrator, DetectionSource
 from baseline_manager import BaselineManager
 from pfds_manager import PFDSManager, is_valid_ip
 
@@ -157,13 +157,81 @@ class BEMainWindow(QMainWindow):
         self.approve_baseline_candidate(loc_id)
         self.show_pending_baseline_changes()
 
+    def _current_fusion_config(self):
+        return {
+            'temp_threshold': float(getattr(self, 'fusion_temp_threshold', 40.0)),
+            'gas_ppm_threshold': float(getattr(self, 'fusion_gas_ppm_threshold', 400.0)),
+            'flame_active_value': int(getattr(self, 'fusion_flame_active_value', 1)),
+            'min_sources': int(getattr(self, 'fusion_min_sources', 2)),
+            'critical_temp_threshold': float(getattr(self, 'fusion_critical_temp_threshold', 60.0)),
+            'smoke_threshold_pct': float(getattr(self, 'fusion_smoke_threshold_pct', 25.0)),
+            'flame_threshold_pct': float(getattr(self, 'fusion_flame_threshold_pct', 25.0)),
+            'vision_threshold': float(getattr(self, 'fusion_vision_threshold', 0.7)),
+            'vision_confidence_weight': float(getattr(self, 'fusion_vision_confidence_weight', 0.5)),
+            'enable_temporal_fusion': False,
+        }
+
+    def _update_fusion_engine_config(self):
+        if hasattr(self, 'fusion_orchestrator') and self.fusion_orchestrator is not None:
+            self.fusion_orchestrator.update_config(self._current_fusion_config())
+
+    def _run_fusion(self, thermal_matrix=None, gas_ppm=None, flame=None, vision_score=None, **kwargs):
+        self._update_fusion_engine_config()
+        frame_data = {}
+        if thermal_matrix is not None:
+            frame_data['thermal'] = thermal_matrix
+        if gas_ppm is not None:
+            frame_data['gas_ppm'] = gas_ppm
+        if flame is not None:
+            frame_data['flame_digital'] = flame
+        if vision_score is not None:
+            frame_data['vision_score'] = vision_score
+
+        if 'smoke_pct' in kwargs:
+            frame_data['smoke_pct'] = kwargs.get('smoke_pct')
+        elif 'smoke_level' in kwargs:
+            frame_data['smoke_pct'] = kwargs.get('smoke_level')
+
+        if 'flame_analog_pct' in kwargs:
+            frame_data['flame_analog_pct'] = kwargs.get('flame_analog_pct')
+        if 'flame_digital' in kwargs:
+            frame_data['flame_digital'] = kwargs.get('flame_digital')
+
+        fusion_result = self.fusion_orchestrator.process_frame(frame_data)
+        source_names = []
+        for detection in fusion_result.detections:
+            if detection.source in (DetectionSource.FLAME_ANALOG, DetectionSource.FLAME_DIGITAL):
+                source_names.append('flame')
+            else:
+                source_names.append(detection.source.name.lower())
+
+        thermal_detection = next((item for item in fusion_result.detections if item.source == DetectionSource.THERMAL), None)
+        hot_cells = thermal_detection.metadata.get('hot_cells', []) if thermal_detection else []
+        thermal_max = float(thermal_detection.metadata.get('max_temp', 0.0)) if thermal_detection else 0.0
+
+        result = {
+            'alarm': bool(fusion_result.alarm),
+            'alarm_reason': fusion_result.metadata.get('reason'),
+            'confidence': float(fusion_result.confidence),
+            'sources': source_names,
+            'hot_cells': hot_cells,
+            'thermal_max': thermal_max,
+            'gas_ppm': float(gas_ppm) if gas_ppm is not None else 0.0,
+            'smoke_pct': float(frame_data.get('smoke_pct', 0.0) or 0.0),
+            'flame_analog_pct': float(frame_data.get('flame_analog_pct', 0.0) or 0.0),
+            'flame_digital': int(frame_data.get('flame_digital', 0) or 0),
+            'severity': fusion_result.severity.name,
+        }
+        result.update(kwargs)
+        return result
+
     def handle_vision_score_from_widget(self, loc_id, score):
         """Run fusion for this loc_id with vision score and update alarm indicator."""
         # Find widget for loc_id
         for widget in self.get_video_widgets():
             if getattr(widget, 'loc_id', None) == loc_id:
                 # Run fusion with only vision score (other sources can be cached for full fusion)
-                fusion_result = self.sensor_fusion.fuse(vision_score=score)
+                fusion_result = self._run_fusion(vision_score=score)
                 if hasattr(widget, 'update_fire_alarm'):
                     try:
                         widget.update_fire_alarm(fusion_result['alarm'])
@@ -189,7 +257,16 @@ class BEMainWindow(QMainWindow):
         self.ws_client.start()
 
         # --- Sensor Fusion ---
-        self.sensor_fusion = SensorFusion()
+        self.fusion_temp_threshold = float(self.config.get('temp_threshold', 40.0))
+        self.fusion_gas_ppm_threshold = float(self.config.get('gas_ppm_threshold', 400.0))
+        self.fusion_flame_active_value = int(self.config.get('flame_active_value', 1))
+        self.fusion_min_sources = int(self.config.get('min_sources', 2))
+        self.fusion_critical_temp_threshold = float(self.config.get('critical_temp_threshold', 60.0))
+        self.fusion_smoke_threshold_pct = float(self.config.get('smoke_threshold_pct', 25.0))
+        self.fusion_flame_threshold_pct = float(self.config.get('flame_threshold_pct', 25.0))
+        self.fusion_vision_threshold = float(self.config.get('vision_threshold', 0.7))
+        self.fusion_vision_confidence_weight = float(self.config.get('vision_confidence_weight', 0.5))
+        self.fusion_orchestrator = FusionOrchestrator(self._current_fusion_config())
         self.baseline_manager = BaselineManager()
         self.baseline_manager.load_from_disk()
         
@@ -295,7 +372,7 @@ class BEMainWindow(QMainWindow):
             
             # Run fusion if any relevant data
             if fusion_args:
-                fusion_result = self.sensor_fusion.fuse(**fusion_args)
+                fusion_result = self._run_fusion(**fusion_args)
                 
                 # Update alarm status and hot cells on target widget(s)
                 target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
@@ -575,7 +652,7 @@ class BEMainWindow(QMainWindow):
                 'cell_color': first_widget.thermal_grid_color,
                 'border_color': first_widget.thermal_grid_border,
                 'border_width': 2,  # Add border width to VideoWidget if needed
-                'temp_threshold': self.sensor_fusion.temp_threshold
+                'temp_threshold': self.fusion_temp_threshold
             }
         
         dialog = ThermalGridConfigDialog(self, current_settings)
@@ -588,7 +665,8 @@ class BEMainWindow(QMainWindow):
     def apply_thermal_grid_settings(self, settings):
         """Apply thermal grid settings to all video widgets."""
         # Update sensor fusion threshold
-        self.sensor_fusion.temp_threshold = settings['temp_threshold']
+        self.fusion_temp_threshold = float(settings['temp_threshold'])
+        self._update_fusion_engine_config()
         
         # Update all video widgets
         for widget in self.video_widgets.values():
@@ -608,10 +686,10 @@ class BEMainWindow(QMainWindow):
         # Get current settings
         current_settings = {
             # Fusion parameters
-            'temp_threshold': self.sensor_fusion.temp_threshold,
-            'gas_ppm_threshold': self.sensor_fusion.gas_ppm_threshold,
-            'flame_active_value': self.sensor_fusion.flame_active_value,
-            'min_sources': self.sensor_fusion.min_sources,
+            'temp_threshold': self.fusion_temp_threshold,
+            'gas_ppm_threshold': self.fusion_gas_ppm_threshold,
+            'flame_active_value': self.fusion_flame_active_value,
+            'min_sources': self.fusion_min_sources,
             
             # Gas sensor calibration
             'gas_r0': getattr(self.gas_sensor, 'r0', 76.63),
@@ -622,8 +700,8 @@ class BEMainWindow(QMainWindow):
             'hot_cell_decay_time': 5.0,
             'freeze_on_alarm': True,
             'show_fusion_overlay': True,
-            'vision_threshold': 0.7,
-            'vision_confidence_weight': 0.5
+            'vision_threshold': self.fusion_vision_threshold,
+            'vision_confidence_weight': self.fusion_vision_confidence_weight
         }
         
         # Get display settings from first widget if available
@@ -642,10 +720,13 @@ class BEMainWindow(QMainWindow):
     def apply_sensor_config(self, settings):
         """Apply sensor configuration settings."""
         # Update sensor fusion
-        self.sensor_fusion.temp_threshold = settings['temp_threshold']
-        self.sensor_fusion.gas_ppm_threshold = settings['gas_ppm_threshold']
-        self.sensor_fusion.flame_active_value = settings['flame_active_value']
-        self.sensor_fusion.min_sources = settings['min_sources']
+        self.fusion_temp_threshold = float(settings['temp_threshold'])
+        self.fusion_gas_ppm_threshold = float(settings['gas_ppm_threshold'])
+        self.fusion_flame_active_value = int(settings['flame_active_value'])
+        self.fusion_min_sources = int(settings['min_sources'])
+        self.fusion_vision_threshold = float(settings.get('vision_threshold', self.fusion_vision_threshold))
+        self.fusion_vision_confidence_weight = float(settings.get('vision_confidence_weight', self.fusion_vision_confidence_weight))
+        self._update_fusion_engine_config()
         
         # Update gas sensor calibration
         if hasattr(self.gas_sensor, 'set_calibration'):
