@@ -1453,7 +1453,7 @@ class VideoWidget(QWidget):
             
             # Thermal
             if 'thermal_max' in self.fusion_data:
-                # thermal_max is already in Celsius (from sensor_fusion)
+                # thermal_max is already in Celsius (from fusion orchestrator)
                 temp_c = float(self.fusion_data['thermal_max'])
                 painter.setPen(QColor(255, 200, 0))
                 painter.drawText(right_col_x, reading_y, f"Thermal: {temp_c:.1f}°C")

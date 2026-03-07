@@ -6,7 +6,7 @@ import os, zipfile, datetime, sys
 
 CORE_FILES = [
     "main.py", "main_window.py", "video_widget.py", "video_worker.py",
-    "sensor_server.py", "tcp_sensor_server.py", "sensor_fusion.py",
+    "sensor_server.py", "tcp_sensor_server.py",
     "baseline_manager.py", "pfds_manager.py", "database_manager.py",
     "stream_config.py", "streamconfig_dialog.py", "streamconfig_editdialog.py",
     "ee_loginwindow.py", "user_creation.py", "password_reset.py",
@@ -19,6 +19,16 @@ CORE_FILES = [
     "test_client.py",
     # Vision & adaptive modules
     "vision_detector.py", "adaptive_fps.py", "metrics.py",
+    # Modular fusion engine
+    "embereye/core/fusion/fusion_engine.py",
+    "embereye/core/fusion/fusion_orchestrator.py",
+    "embereye/core/fusion/detectors/base_detector.py",
+    "embereye/core/fusion/detectors/smoke_detector.py",
+    "embereye/core/fusion/detectors/flame_analog_detector.py",
+    "embereye/core/fusion/detectors/flame_digital_detector.py",
+    "embereye/core/fusion/detectors/thermal_detector.py",
+    "embereye/core/fusion/detectors/vision_detector.py",
+    "embereye/core/fusion/detectors/gas_detector.py",
     # Gas sensor module
     "gas_sensor.py"
 ]

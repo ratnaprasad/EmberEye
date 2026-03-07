@@ -35,7 +35,7 @@ def test_tcp_packet_parsing():
     print("\n=== Testing TCP Packet Parsing ===")
     
     try:
-        from tcp_sensor_server import TCPSensorServer
+        from embereye.core.tcp_sensor_server import TCPSensorServer
         
         # Test data collector
         received_packets = []
@@ -294,7 +294,7 @@ def test_thermal_frame_parsing():
     print("\n=== Testing Thermal Frame Parsing ===")
     
     try:
-        from thermal_frame_parser import ThermalFrameParser
+        from embereye.core.thermal_frame_parser import ThermalFrameParser
         import numpy as np
         
         # Generate test frame with known temperatures
@@ -355,15 +355,25 @@ def test_thermal_frame_parsing():
     except Exception as e:
         log_test("Thermal Frame Parsing", False, str(e))
 
-def test_sensor_fusion_hot_cells():
-    """Test sensor fusion hot cell identification"""
-    print("\n=== Testing Sensor Fusion Hot Cells ===")
+def test_fusion_orchestrator_hot_cells():
+    """Test fusion orchestrator hot cell identification"""
+    print("\n=== Testing Fusion Orchestrator Hot Cells ===")
     
     try:
-        from sensor_fusion import SensorFusion
+        from embereye.core.fusion import FusionOrchestrator
         import numpy as np
-        
-        fusion = SensorFusion(temp_threshold=50.0)
+
+        fusion = FusionOrchestrator({
+            'temp_threshold': 50.0,
+            'critical_temp_threshold': 90.0,
+            'gas_ppm_threshold': 400.0,
+            'smoke_threshold_pct': 25.0,
+            'flame_threshold_pct': 25.0,
+            'flame_active_value': 1,
+            'vision_threshold': 0.7,
+            'vision_confidence_weight': 0.5,
+            'enable_temporal_fusion': False,
+        })
         
         # Create test thermal matrix with known hot spots
         matrix = np.ones((24, 32)) * 25.0  # Room temp
@@ -374,7 +384,13 @@ def test_sensor_fusion_hot_cells():
         matrix[15, 10] = 55.0  # Hot spot 3
         
         # Run fusion
-        result = fusion.fuse(thermal_matrix=matrix.tolist())
+        fusion_result = fusion.process_frame({'thermal': matrix.tolist()})
+        thermal_detection = next((d for d in fusion_result.detections if d.source.name == 'THERMAL'), None)
+        result = {
+            'alarm': fusion_result.alarm,
+            'hot_cells': thermal_detection.metadata.get('hot_cells', []) if thermal_detection else [],
+            'thermal_max': float(thermal_detection.metadata.get('max_temp', 0.0)) if thermal_detection else 0.0,
+        }
         
         # Test 1: Alarm triggered
         log_test("Fusion triggers alarm on hot spots", result['alarm'],
@@ -395,14 +411,14 @@ def test_sensor_fusion_hot_cells():
                 None if max_correct else f"Expected {expected_max}, got {thermal_max}")
         
     except Exception as e:
-        log_test("Sensor Fusion Hot Cells", False, str(e))
+        log_test("Fusion Orchestrator Hot Cells", False, str(e))
 
 def test_integration_tcp_server():
     """Integration test: Start TCP server and send packets"""
     print("\n=== Integration Test: TCP Server ===")
     
     try:
-        from tcp_sensor_server import TCPSensorServer
+        from embereye.core.tcp_sensor_server import TCPSensorServer
         import threading
         
         received = []
@@ -501,7 +517,7 @@ def run_all_tests():
     test_database_manager()
     test_stream_config()
     test_thermal_frame_parsing()
-    test_sensor_fusion_hot_cells()
+    test_fusion_orchestrator_hot_cells()
     
     # Integration tests
     test_integration_tcp_server()

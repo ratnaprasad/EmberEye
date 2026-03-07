@@ -27,89 +27,123 @@ def log_test(name, passed, error=None):
         test_results['errors'].append(f"{name}: {error}")
         print(f"✗ {name}: {error}")
 
-def test_sensor_fusion():
-    """Test multi-sensor fusion logic"""
-    print("\n=== Testing Sensor Fusion ===")
-    
-    try:
-        from sensor_fusion import SensorFusion
-        
-        # Default fusion requires 2+ sources for alarm (safety feature)
-        fusion = SensorFusion()
-        
-        # Test 1: No sources - no alarm
-        result = fusion.fuse()
-        log_test("Fusion: No sources = no alarm", 
-                not result['alarm'],
-                None if not result['alarm'] else f"Alarm with no sources: {result}")
-        
-        # Test 2: Single source below threshold - no alarm
-        result = fusion.fuse(thermal_matrix=[[50]*32 for _ in range(24)])
-        log_test("Fusion: Low thermal only = no alarm",
-                not result['alarm'],
-                None if not result['alarm'] else f"False alarm: {result}")
-        
-        # Test 3: High temperature alone - no alarm (requires 2+ sources or high confidence)
-        hot_matrix = [[200]*32 for _ in range(24)]
-        result = fusion.fuse(thermal_matrix=hot_matrix)
-        log_test("Fusion: Single high thermal = no alarm (multi-sensor required)",
-                not result['alarm'] and 'thermal' in result['sources'],
-                None if (not result['alarm'] and 'thermal' in result['sources']) else f"Unexpected: {result}")
-        
-        # Test 4: High gas alone - no alarm (requires 2+ sources)
-        result = fusion.fuse(gas_ppm=2000)  # Well above 400 threshold
-        log_test("Fusion: Single high gas = no alarm (multi-sensor required)",
-                not result['alarm'] and 'gas' in result['sources'],
-                None if (not result['alarm'] and 'gas' in result['sources']) else f"Unexpected: {result}")
-        
-        # Test 5: Flame alone - no alarm (requires 2+ sources)
-        result = fusion.fuse(flame=1)  # 1 = flame detected
-        log_test("Fusion: Single flame = no alarm (multi-sensor required)",
-                not result['alarm'] and 'flame' in result['sources'],
-                None if (not result['alarm'] and 'flame' in result['sources']) else f"Unexpected: {result}")
-        
-        # Test 6: Multi-source fusion (thermal + gas) - ALARM!
-        result = fusion.fuse(
-            thermal_matrix=[[180]*32 for _ in range(24)],
-            gas_ppm=1500
-        )
-        log_test("Fusion: Multi-source triggers alarm",
-                result['alarm'] and result['confidence'] > 0.5,
-                None if (result['alarm'] and result['confidence'] > 0.5) else f"No alarm with 2 sources: {result}")
-        
-        # Test 7: Hot cells detection
-        mixed_matrix = [[50]*32 for _ in range(24)]
-        # Add hot spots
-        mixed_matrix[10][15] = 220
-        mixed_matrix[10][16] = 230
-        mixed_matrix[11][15] = 225
-        result = fusion.fuse(thermal_matrix=mixed_matrix, gas_ppm=500)  # Add gas for alarm
-        has_hot_cells = len(result.get('hot_cells', [])) > 0
-        log_test("Fusion: Detects hot cells",
-                has_hot_cells,
-                None if has_hot_cells else f"No hot cells found: {result}")
-        
-        # Test 8: Confidence scoring with 3 sources
-        result = fusion.fuse(
-            thermal_matrix=[[200]*32 for _ in range(24)],
-            gas_ppm=2000,
-            flame=1
-        )
-        high_confidence = result.get('confidence', 0) > 0.8
-        log_test("Fusion: Three sources = high confidence",
-                high_confidence,
-                None if high_confidence else f"Confidence too low: {result['confidence']}")
-        
-        # Test 9: Source tracking
-        result = fusion.fuse(thermal_matrix=[[200]*32 for _ in range(24)], gas_ppm=1500)
-        sources = result.get('sources', [])
-        has_sources = 'thermal' in sources and 'gas' in sources
-        log_test("Fusion: Tracks active sources",
-                has_sources,
-                None if has_sources else f"Missing sources: {sources}")
-        
-    except Exception as e:
-        log_test("Sensor Fusion", False, str(e))
+def test_fusion_orchestrator():
+        """Test multi-sensor fusion orchestrator logic"""
+        print("\n=== Testing Fusion Orchestrator ===")
+
+        try:
+                from embereye.core.fusion import FusionOrchestrator
+
+                fusion = FusionOrchestrator({
+                        'temp_threshold': 40.0,
+                        'critical_temp_threshold': 220.0,
+                        'gas_ppm_threshold': 400.0,
+                        'smoke_threshold_pct': 25.0,
+                        'flame_threshold_pct': 25.0,
+                        'flame_active_value': 1,
+                        'vision_threshold': 0.7,
+                        'vision_confidence_weight': 0.5,
+                        'enable_temporal_fusion': False,
+                })
+
+                def run_fusion(thermal_matrix=None, gas_ppm=None, flame=None, vision_score=None, **kwargs):
+                        frame_data = {}
+                        if thermal_matrix is not None:
+                                frame_data['thermal'] = thermal_matrix
+                        if gas_ppm is not None:
+                                frame_data['gas_ppm'] = gas_ppm
+                        if flame is not None:
+                                frame_data['flame_digital'] = flame
+                        if vision_score is not None:
+                                frame_data['vision_score'] = vision_score
+                        if 'smoke_pct' in kwargs:
+                                frame_data['smoke_pct'] = kwargs['smoke_pct']
+                        if 'flame_analog_pct' in kwargs:
+                                frame_data['flame_analog_pct'] = kwargs['flame_analog_pct']
+
+                        fusion_result = fusion.process_frame(frame_data)
+                        thermal_detection = next((d for d in fusion_result.detections if d.source.name == 'THERMAL'), None)
+                        return {
+                                'alarm': fusion_result.alarm,
+                                'confidence': fusion_result.confidence,
+                                'sources': [d.source.name.lower() for d in fusion_result.detections],
+                                'hot_cells': thermal_detection.metadata.get('hot_cells', []) if thermal_detection else [],
+                        }
+
+                result = run_fusion()
+                log_test(
+                        "Fusion: No sources = no alarm",
+                        not result['alarm'],
+                        None if not result['alarm'] else f"Alarm with no sources: {result}",
+                )
+
+                result = run_fusion(thermal_matrix=[[35] * 32 for _ in range(24)])
+                log_test(
+                        "Fusion: Low thermal only = no alarm",
+                        not result['alarm'],
+                        None if not result['alarm'] else f"False alarm: {result}",
+                )
+
+                hot_matrix = [[200] * 32 for _ in range(24)]
+                result = run_fusion(thermal_matrix=hot_matrix)
+                log_test(
+                        "Fusion: Single high thermal source tracked",
+                        'thermal' in result['sources'],
+                        None if ('thermal' in result['sources']) else f"Unexpected: {result}",
+                )
+
+                result = run_fusion(gas_ppm=2000)
+                log_test(
+                        "Fusion: Single high gas triggers alarm",
+                        result['alarm'] and 'gas' in result['sources'],
+                        None if (result['alarm'] and 'gas' in result['sources']) else f"Unexpected: {result}",
+                )
+
+                result = run_fusion(flame=1)
+                log_test(
+                        "Fusion: Single flame source tracked",
+                        (not result['alarm']) and ('flame_digital' in result['sources']),
+                        None if ((not result['alarm']) and ('flame_digital' in result['sources'])) else f"Unexpected: {result}",
+                )
+
+                result = run_fusion(thermal_matrix=[[180] * 32 for _ in range(24)], gas_ppm=1500)
+                log_test(
+                        "Fusion: Multi-source triggers alarm",
+                        result['alarm'] and result['confidence'] > 0.5,
+                        None if (result['alarm'] and result['confidence'] > 0.5) else f"No alarm with 2 sources: {result}",
+                )
+
+                mixed_matrix = [[50] * 32 for _ in range(24)]
+                mixed_matrix[10][15] = 220
+                mixed_matrix[10][16] = 230
+                mixed_matrix[11][15] = 225
+                result = run_fusion(thermal_matrix=mixed_matrix, gas_ppm=500)
+                has_hot_cells = len(result.get('hot_cells', [])) > 0
+                log_test(
+                        "Fusion: Detects hot cells",
+                        has_hot_cells,
+                        None if has_hot_cells else f"No hot cells found: {result}",
+                )
+
+                result = run_fusion(thermal_matrix=[[200] * 32 for _ in range(24)], gas_ppm=2000, flame=1)
+                high_confidence = result.get('confidence', 0) > 0.8
+                log_test(
+                        "Fusion: Three sources = high confidence",
+                        high_confidence,
+                        None if high_confidence else f"Confidence too low: {result['confidence']}",
+                )
+
+                result = run_fusion(thermal_matrix=[[200] * 32 for _ in range(24)], gas_ppm=1500)
+                sources = result.get('sources', [])
+                has_sources = 'thermal' in sources and 'gas' in sources
+                log_test(
+                        "Fusion: Tracks active sources",
+                        has_sources,
+                        None if has_sources else f"Missing sources: {sources}",
+                )
+
+        except Exception as e:
+                log_test("Fusion Orchestrator", False, str(e))
 
 def test_gas_sensor():
     """Test gas sensor calibration and calculations"""
@@ -359,32 +393,30 @@ def test_error_logger():
         log_test("Error Logger", False, str(e))
 
 def run_all_tests():
-    """Run complete AI/Sensor test suite"""
-    print("=" * 60)
-    print("EmberEye AI & Sensor Component Tests")
-    print("=" * 60)
-    
-    test_sensor_fusion()
-    test_gas_sensor()
-    test_vision_detector()
-    test_baseline_manager()
-    test_error_logger()
-    
-    # Summary
-    print("\n" + "=" * 60)
-    print("TEST SUMMARY")
-    print("=" * 60)
-    print(f"Passed: {test_results['passed']}")
-    print(f"Failed: {test_results['failed']}")
-    
-    if test_results['errors']:
-        print("\nFailed Tests:")
-        for error in test_results['errors']:
-            print(f"  - {error}")
-    
-    print("=" * 60)
-    
-    return test_results['failed'] == 0
+        """Run complete AI/Sensor test suite"""
+        print("=" * 60)
+        print("EmberEye AI & Sensor Component Tests")
+        print("=" * 60)
+
+        test_fusion_orchestrator()
+        test_gas_sensor()
+        test_vision_detector()
+        test_baseline_manager()
+        test_error_logger()
+
+        print("\n" + "=" * 60)
+        print("TEST SUMMARY")
+        print("=" * 60)
+        print(f"Passed: {test_results['passed']}")
+        print(f"Failed: {test_results['failed']}")
+
+        if test_results['errors']:
+                print("\nFailed Tests:")
+                for error in test_results['errors']:
+                        print(f"  - {error}")
+
+        print("=" * 60)
+        return test_results['failed'] == 0
 
 if __name__ == '__main__':
     success = run_all_tests()

@@ -1,20 +1,11 @@
 import time
 import numpy as np
 
+from embereye.core.fusion import FusionOrchestrator, DetectionSource
+
+
 class SensorFusion:
     def __init__(self, temp_threshold=40.0, gas_ppm_threshold=400, flame_active_value=1, min_sources=2, critical_temp_threshold=60.0, smoke_threshold_pct=25.0, flame_threshold_pct=25.0, vision_threshold=0.7, vision_confidence_weight=0.4):
-        """
-        Initialize sensor fusion with thresholds.
-        temp_threshold: Temperature threshold in Celsius (e.g., 40.0°C for fire detection)
-        gas_ppm_threshold: Gas concentration threshold in PPM
-        flame_active_value: Value indicating flame sensor activation
-        min_sources: Minimum number of sensor sources required for alarm
-        critical_temp_threshold: Critical temperature threshold for immediate alarm (bypasses multi-source requirement)
-        smoke_threshold_pct: Smoke sensor threshold percentage (0-100)
-        flame_threshold_pct: Flame analog sensor threshold percentage (0-100)
-        vision_threshold: Vision score threshold (0-1) used for fusion vision gating
-        vision_confidence_weight: Confidence contribution weight from vision source
-        """
         self.temp_threshold = temp_threshold
         self.gas_ppm_threshold = gas_ppm_threshold
         self.flame_active_value = flame_active_value
@@ -25,131 +16,91 @@ class SensorFusion:
         self.vision_threshold = vision_threshold
         self.vision_confidence_weight = vision_confidence_weight
         self.event_log = []
-        # Metrics integration
+
         try:
             from metrics import get_metrics
             self.metrics = get_metrics()
         except Exception:
             self.metrics = None
 
+        self._orchestrator = FusionOrchestrator(self._build_config())
+
+    def _build_config(self) -> dict:
+        return {
+            'temp_threshold': float(self.temp_threshold),
+            'gas_ppm_threshold': float(self.gas_ppm_threshold),
+            'flame_active_value': int(self.flame_active_value),
+            'min_sources': int(self.min_sources),
+            'critical_temp_threshold': float(self.critical_temp_threshold),
+            'smoke_threshold_pct': float(self.smoke_threshold_pct),
+            'flame_threshold_pct': float(self.flame_threshold_pct),
+            'vision_threshold': float(self.vision_threshold),
+            'vision_confidence_weight': float(self.vision_confidence_weight),
+        }
+
+    def _sync_orchestrator(self) -> None:
+        self._orchestrator.update_config(self._build_config())
+
     def fuse(self, thermal_matrix=None, gas_ppm=None, flame=None, vision_score=None, **kwargs):
-        """
-        Priority-based fusion logic:
-        1. Smoke (ADC1) crosses threshold → ALARM
-        2. Flame (ADC2) crosses threshold → correlate with thermal
-        3. Camera detects fire → correlate with sensors (priority: Flame > Thermal > Smoke)
-        4. Hazardous gas detection → ALARM
-        
-        Accepts:
-            thermal_matrix: 2D list (24x32) or None
-            gas_ppm: float or None
-            flame: int/bool or None (digital flame sensor)
-            vision_score: float (0-1) or None
-            **kwargs: smoke_pct, flame_analog_pct, adc1_raw, adc2_raw, etc.
-        Returns:
-            dict with alarm status, confidence, sources, and all sensor data
-        """
-        sources = []
-        confidence = 0.0
-        hot_cells = []
-        thermal_max = 0.0
-        alarm = False
-        alarm_reason = None
-        
-        # Extract percentage values from kwargs
-        smoke_pct = kwargs.get('smoke_pct', 0.0)
-        flame_analog_pct = kwargs.get('flame_analog_pct', 0.0)
-        flame_digital = kwargs.get('flame_digital', 0)
-        
-        # Thermal check with per-cell analysis
-        thermal_detected = False
+        self._sync_orchestrator()
+        fusion_start = time.time() if self.metrics else None
+
+        frame_data = {}
         if thermal_matrix is not None:
-            arr = np.array(thermal_matrix)
-            max_temp = arr.max()
-            thermal_max = float(max_temp)
-            if max_temp >= self.temp_threshold:
-                thermal_detected = True
-                sources.append('thermal')
-                confidence += 0.4
-                hot_cells = [(int(r), int(c)) for r, c in zip(*np.where(arr >= self.temp_threshold))]
-        
-        # PRIORITY 1: Smoke (ADC1) crosses threshold → IMMEDIATE ALARM
-        if smoke_pct >= self.smoke_threshold_pct:
-            alarm = True
-            alarm_reason = f"Smoke threshold exceeded: {smoke_pct:.1f}% >= {self.smoke_threshold_pct}%"
-            sources.append('smoke')
-            confidence += 0.5
-        
-        # PRIORITY 2: Flame (ADC2 analog) + Thermal correlation
-        flame_detected = flame_analog_pct >= self.flame_threshold_pct or (flame_digital == self.flame_active_value)
-        if flame_detected:
-            sources.append('flame')
-            confidence += 0.3
-            # Correlate with thermal
-            if thermal_detected:
-                alarm = True
-                alarm_reason = f"Flame + Thermal correlation: Flame={flame_analog_pct:.1f}%, Thermal={thermal_max:.1f}°C"
-                confidence += 0.3
-        
-        # PRIORITY 3: Camera vision detection → correlate with sensors
-        if vision_score is not None and vision_score >= self.vision_threshold:
-            sources.append('vision')
-            confidence += float(self.vision_confidence_weight)
-            # Correlate with sensors (priority: Flame > Thermal > Smoke)
-            if flame_detected or thermal_detected or smoke_pct >= self.smoke_threshold_pct:
-                alarm = True
-                if not alarm_reason:
-                    alarm_reason = f"Vision + Sensor correlation: Vision={vision_score:.2f}"
-        
-        # PRIORITY 4: Hazardous gas detection → IMMEDIATE ALARM
-        if gas_ppm is not None and gas_ppm >= self.gas_ppm_threshold:
-            alarm = True
-            alarm_reason = f"Hazardous gas detected: {gas_ppm:.1f}ppm >= {self.gas_ppm_threshold}ppm"
-            sources.append('gas')
-            confidence += 0.5
-        
-        # Critical temperature override
-        if thermal_max >= self.critical_temp_threshold:
-            alarm = True
-            alarm_reason = f"Critical temperature: {thermal_max:.1f}°C >= {self.critical_temp_threshold}°C"
-            confidence = 1.0
-        
-        # Record metrics
-        if self.metrics:
-            fusion_start = time.time()
-        
-        # Log event
-        self.event_log.append({
-            'timestamp': time.time(),
-            'alarm': alarm,
-            'confidence': confidence,
-            'sources': sources,
-            'hot_cells': len(hot_cells),
-            'reason': alarm_reason
-        })
-        
-        # Build result with all sensor data
+            frame_data['thermal'] = thermal_matrix
+        if gas_ppm is not None:
+            frame_data['gas_ppm'] = gas_ppm
+        if flame is not None:
+            frame_data['flame_digital'] = flame
+        if vision_score is not None:
+            frame_data['vision_score'] = vision_score
+
+        if 'vision_detections' in kwargs:
+            frame_data['vision_detections'] = kwargs.get('vision_detections')
+        if 'smoke_pct' in kwargs:
+            frame_data['smoke_pct'] = kwargs.get('smoke_pct')
+        if 'flame_analog_pct' in kwargs:
+            frame_data['flame_analog_pct'] = kwargs.get('flame_analog_pct')
+        if 'flame_digital' in kwargs:
+            frame_data['flame_digital'] = kwargs.get('flame_digital')
+        if 'mpy30' in kwargs:
+            frame_data['flame_digital'] = kwargs.get('mpy30')
+
+        fusion_result = self._orchestrator.process_frame(frame_data)
+
+        thermal_detection = next((d for d in fusion_result.detections if d.source == DetectionSource.THERMAL), None)
+        hot_cells = thermal_detection.metadata.get('hot_cells', []) if thermal_detection else []
+        thermal_max = float(thermal_detection.metadata.get('max_temp', 0.0)) if thermal_detection else 0.0
+
         result = {
-            'alarm': alarm,
-            'alarm_reason': alarm_reason,
-            'confidence': confidence, 
-            'sources': sources,
+            'alarm': bool(fusion_result.alarm),
+            'alarm_reason': fusion_result.metadata.get('reason'),
+            'confidence': float(fusion_result.confidence),
+            'sources': [d.source.name.lower() for d in fusion_result.detections],
             'hot_cells': hot_cells,
             'thermal_max': thermal_max,
-            'gas_ppm': gas_ppm if gas_ppm is not None else 0.0,
-            'smoke_pct': smoke_pct,
-            'flame_analog_pct': flame_analog_pct,
-            'flame_digital': flame_digital
+            'gas_ppm': float(gas_ppm) if gas_ppm is not None else 0.0,
+            'smoke_pct': float(kwargs.get('smoke_pct', 0.0) or 0.0),
+            'flame_analog_pct': float(kwargs.get('flame_analog_pct', 0.0) or 0.0),
+            'flame_digital': int(kwargs.get('flame_digital', frame_data.get('flame_digital', 0)) or 0),
+            'severity': fusion_result.severity.name,
         }
-        
-        # Include any additional sensor data passed via kwargs
+
         result.update(kwargs)
-        
-        # Record fusion metrics
-        if self.metrics:
+
+        self.event_log.append({
+            'timestamp': time.time(),
+            'alarm': result['alarm'],
+            'confidence': result['confidence'],
+            'sources': result['sources'],
+            'hot_cells': len(result['hot_cells']),
+            'reason': result['alarm_reason'],
+        })
+
+        if self.metrics and fusion_start is not None:
             fusion_latency = (time.time() - fusion_start) * 1000
-            self.metrics.record_fusion(alarm, fusion_latency)
-        
+            self.metrics.record_fusion(result['alarm'], fusion_latency)
+
         return result
 
     def get_event_log(self):
