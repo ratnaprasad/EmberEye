@@ -12,10 +12,16 @@ if str(THERMAL_DIR) not in sys.path:
 try:
     # Preferred runtime wiring: process_rawdata exposes MLX90640Direct alias
     # which points to MLX90640FoglemanOffline in thermal package.
-    from process_rawdata import MLX90640Direct as ThermalRuntimeProcessor
+    from embereye.core.thermal.process_rawdata import MLX90640Direct as ThermalRuntimeProcessor
 except Exception:
-    # Fallback to direct class import if process_rawdata module is unavailable.
-    from mlx90640_fogleman_offline import MLX90640FoglemanOffline as ThermalRuntimeProcessor
+    try:
+        from process_rawdata import MLX90640Direct as ThermalRuntimeProcessor
+    except Exception:
+        # Fallback to direct class import if process_rawdata module is unavailable.
+        try:
+            from embereye.core.thermal.mlx90640_fogleman_offline import MLX90640FoglemanOffline as ThermalRuntimeProcessor
+        except Exception:
+            from mlx90640_fogleman_offline import MLX90640FoglemanOffline as ThermalRuntimeProcessor
 
 
 EEPROM_WORDS = 832

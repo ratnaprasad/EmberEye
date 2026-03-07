@@ -2,7 +2,10 @@ import numpy as np
 from pathlib import Path
 import sys
 # Add the folder to path if needed, or just import the downloaded file
-import MLX90640 as fogleman  # assumes the file is named MLX90640.py
+try:
+    import embereye.core.thermal.MLX90640 as fogleman
+except Exception:
+    import MLX90640 as fogleman  # assumes the file is named MLX90640.py
 
 class MLX90640FoglemanProcessor:
     """

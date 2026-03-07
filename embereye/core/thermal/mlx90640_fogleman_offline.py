@@ -1,5 +1,9 @@
 import numpy as np
-import MLX90640 as fogleman  # your downloaded file
+
+try:
+    import embereye.core.thermal.MLX90640 as fogleman
+except Exception:
+    import MLX90640 as fogleman  # fallback for direct script execution
 
 class MLX90640FoglemanOffline:
     """

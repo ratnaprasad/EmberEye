@@ -13,6 +13,7 @@ Complete version with all features from field edition including:
 import sys
 import os
 import shutil
+import zipfile
 from pathlib import Path
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -2844,8 +2845,8 @@ class SettingsTab(QWidget):
         models_label = QLabel("Import and Manage YOLO Models:")
         models_layout.addWidget(models_label)
 
-        import_model_btn = QPushButton("📥 Import Model (.pt)")
-        import_model_btn.setToolTip("Import a YOLO .pt model file into the workspace")
+        import_model_btn = QPushButton("📥 Import Model (.pt/.zip)")
+        import_model_btn.setToolTip("Import a YOLO .pt model or Studio-exported .zip package into the workspace")
         import_model_btn.clicked.connect(self._import_model)
         models_layout.addWidget(import_model_btn)
 
@@ -2974,13 +2975,13 @@ class SettingsTab(QWidget):
         return item
 
     def _import_model(self):
-        """Import a YOLO .pt model file"""
+        """Import a YOLO .pt model file or Studio-exported .zip package"""
         try:
             file_path, _ = QFileDialog.getOpenFileName(
                 self, 
                 "Import Model",
                 os.path.expanduser("~"),
-                "PyTorch Models (*.pt);;All Files (*)"
+                "Model Files (*.pt *.zip);;PyTorch Models (*.pt);;Model Packages (*.zip);;All Files (*)"
             )
             if not file_path:
                 return
@@ -2989,8 +2990,53 @@ class SettingsTab(QWidget):
             models_dir = Path("./workspace_data/models")
             models_dir.mkdir(parents=True, exist_ok=True)
             
-            # Copy model file to workspace
-            model_name = Path(file_path).name
+            source_path = Path(file_path)
+
+            if source_path.suffix.lower() == ".zip":
+                with zipfile.ZipFile(str(source_path), "r") as zipf:
+                    names = zipf.namelist()
+                    pt_candidates = [name for name in names if name.lower().endswith(".pt")]
+
+                    if not pt_candidates:
+                        raise ValueError("Selected ZIP does not contain any .pt model file")
+
+                    preferred_name = next((name for name in pt_candidates if Path(name).name.lower() == "best.pt"), pt_candidates[0])
+                    extracted_model_name = Path(preferred_name).name
+                    if extracted_model_name.lower() == "best.pt":
+                        extracted_model_name = f"{source_path.stem}.pt"
+
+                    dest_path = models_dir / extracted_model_name
+
+                    if dest_path.exists():
+                        reply = QMessageBox.question(
+                            self,
+                            "File Exists",
+                            f"Model '{dest_path.name}' already exists. Overwrite?",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.No
+                        )
+                        if reply != QMessageBox.Yes:
+                            return
+
+                    with zipf.open(preferred_name, "r") as src, dest_path.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+                registered_version = self._register_imported_model_version(dest_path)
+
+                QMessageBox.information(
+                    self,
+                    "Model Imported",
+                    f"Model package '{source_path.name}' imported successfully.\n\n"
+                    f"Extracted model: {dest_path.name}\n"
+                    f"Location: {dest_path}\n"
+                    f"Registered for Training/Sandbox as: {registered_version}"
+                )
+                self._refresh_models_list()
+                self._refresh_main_window_model_views()
+                return
+
+            # Copy .pt model file to workspace
+            model_name = source_path.name
             dest_path = models_dir / model_name
             
             # Check if file already exists
@@ -3006,14 +3052,54 @@ class SettingsTab(QWidget):
                     return
             
             shutil.copy2(file_path, dest_path)
+            registered_version = self._register_imported_model_version(dest_path)
             QMessageBox.information(
                 self,
                 "Model Imported",
-                f"Model '{model_name}' has been imported successfully.\n\nLocation: {dest_path}"
+                f"Model '{model_name}' has been imported successfully.\n\n"
+                f"Location: {dest_path}\n"
+                f"Registered for Training/Sandbox as: {registered_version}"
             )
             self._refresh_models_list()
+            self._refresh_main_window_model_views()
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import model:\n{e}")
+
+    def _refresh_main_window_model_views(self):
+        """Refresh model-dependent views owned by StudioMainWindow."""
+        try:
+            main_window = self.window()
+            if hasattr(main_window, "_refresh_model_versions"):
+                main_window._refresh_model_versions()
+            if hasattr(main_window, "_refresh_sandbox_models"):
+                main_window._refresh_sandbox_models()
+        except Exception:
+            pass
+
+    def _register_imported_model_version(self, model_pt_path: Path) -> str:
+        """Register imported model into yolo_versions so Training/Sandbox can use it."""
+        models_root = Path(get_data_path("models"))
+        versions_dir = models_root / "yolo_versions"
+        versions_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_version = f"v{timestamp}_import"
+        version_name = base_version
+        version_dir = versions_dir / version_name
+
+        suffix = 1
+        while version_dir.exists():
+            version_name = f"{base_version}_{suffix}"
+            version_dir = versions_dir / version_name
+            suffix += 1
+
+        version_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(model_pt_path, version_dir / "best.pt")
+
+        source_info = version_dir / "source_model.txt"
+        source_info.write_text(str(model_pt_path), encoding="utf-8")
+
+        return version_name
 
     def _refresh_models_list(self):
         """Refresh the list of available models"""
@@ -3026,7 +3112,7 @@ class SettingsTab(QWidget):
             model_files = list(models_dir.glob("*.pt"))
             
             if not model_files:
-                self.models_list.setText("No models imported yet.\n\nClick 'Import Model (.pt)' to add your first model.")
+                self.models_list.setText("No models imported yet.\n\nClick 'Import Model (.pt/.zip)' to add your first model.")
                 return
             
             # Display model information

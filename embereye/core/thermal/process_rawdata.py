@@ -3,7 +3,11 @@ from pathlib import Path
 from datetime import datetime
 import uuid
 from PIL import Image
-from mlx90640_fogleman_offline import MLX90640FoglemanOffline as MLX90640Direct
+
+try:
+    from embereye.core.thermal.mlx90640_fogleman_offline import MLX90640FoglemanOffline as MLX90640Direct
+except Exception:
+    from mlx90640_fogleman_offline import MLX90640FoglemanOffline as MLX90640Direct
 
 
 def _normalize_to_u8(temperatures, valid_mask):
