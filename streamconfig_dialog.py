@@ -19,6 +19,33 @@ class StreamConfigDialog(QDialog):
     def initUI(self):
         self.setWindowTitle("Stream Configuration")
         self.setMinimumSize(600, 400)
+        self.setStyleSheet("""
+            QDialog { background-color: #0f1722; color: #e7c75f; border: 1px solid #d7aa1a; }
+            QLabel { color: #e7c75f; font-size: 12px; font-weight: 600; }
+            QTreeWidget, QListWidget {
+                background-color: #141d2a;
+                color: #ffe7a0;
+                border: 1px solid #75602a;
+                border-radius: 6px;
+            }
+            QHeaderView::section {
+                background-color: #1b2533;
+                color: #f3cc6c;
+                border: 1px solid #5f4f26;
+                padding: 4px 6px;
+                font-weight: 700;
+            }
+            QPushButton {
+                background-color: #273448;
+                color: #f0d17c;
+                border: 1px solid #7a6633;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: 700;
+            }
+            QPushButton:hover { background-color: #344a67; border-color: #d7aa1a; color: #ffe9a6; }
+            QDialogButtonBox QPushButton { min-width: 90px; }
+        """)
         layout = QHBoxLayout()
         
         # Group Management

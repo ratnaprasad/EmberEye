@@ -14,7 +14,71 @@ class SensorConfigDialog(QDialog):
         self.setWindowTitle("Sensor Configuration")
         self.setModal(True)
         self.setMinimumWidth(500)
-        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0f1722;
+                color: #e7c75f;
+            }
+            QGroupBox {
+                color: #e7c75f;
+                border: 1px solid #75602a;
+                border-radius: 6px;
+                margin-top: 8px;
+                font-weight: 700;
+                font-size: 11px;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: #f0d17c;
+            }
+            QLabel {
+                color: #e7c75f;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit {
+                background-color: #141d2a;
+                color: #ffe7a0;
+                border: 1px solid #75602a;
+                border-radius: 4px;
+                padding: 4px 6px;
+                selection-background-color: rgba(226, 184, 58, 0.30);
+            }
+            QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QLineEdit:focus {
+                border: 1px solid #e2b83a;
+            }
+            QCheckBox, QRadioButton {
+                color: #e7c75f;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QPushButton {
+                background-color: #273448;
+                color: #f0d17c;
+                border: 1px solid #7a6633;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: 700;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QPushButton:hover { background-color: #344a67; border-color: #d7aa1a; color: #ffe9a6; }
+            QPushButton:pressed { background-color: #1e2a3a; }
+            QTabWidget::pane { border: 1px solid #5f4f26; background-color: #0f1722; }
+            QTabBar::tab {
+                background-color: #1a2432; color: #c9a95a;
+                border: 1px solid #5f4f26; padding: 6px 14px; margin-right: 2px;
+            }
+            QTabBar::tab:selected { background-color: #2b3a50; color: #ffe38a; border-color: #d7aa1a; }
+            QListWidget {
+                background-color: #141d2a; color: #ffe7a0;
+                border: 1px solid #75602a; border-radius: 4px;
+                selection-background-color: rgba(226,184,58,0.28);
+            }
+            QScrollBar:vertical { background: #141d2a; width: 8px; }
+            QScrollBar::handle:vertical { background: #4a3c1a; border-radius: 4px; }
+        """)
+
         # Default settings
         self.settings = {
             # Fusion parameters
@@ -162,7 +226,7 @@ class SensorConfigDialog(QDialog):
         temp_row.addWidget(self.temp_threshold_spin)
         
         temp_info = QLabel("Temperature in Celsius. 40°C = fire detection, 30°C = warm objects")
-        temp_info.setStyleSheet("color: gray; font-size: 9pt;")
+        temp_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         temp_layout.addLayout(temp_row)
         temp_layout.addWidget(temp_info)
         temp_group.setLayout(temp_layout)
@@ -181,7 +245,7 @@ class SensorConfigDialog(QDialog):
         gas_row.addWidget(self.gas_threshold_spin)
         
         gas_info = QLabel("Gas concentration in parts per million. 400 PPM = normal air")
-        gas_info.setStyleSheet("color: gray; font-size: 9pt;")
+        gas_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         gas_layout.addLayout(gas_row)
         gas_layout.addWidget(gas_info)
         gas_group.setLayout(gas_layout)
@@ -193,7 +257,7 @@ class SensorConfigDialog(QDialog):
         flame_layout = QVBoxLayout()
         flame_info = QLabel("Digital flame input (MPY30) is hardware driven (0/1). Thresholds are based on analog percentage only.")
         flame_info.setWordWrap(True)
-        flame_info.setStyleSheet("color: gray; font-size: 9pt;")
+        flame_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         flame_layout.addWidget(flame_info)
         flame_group.setLayout(flame_layout)
         layout.addWidget(flame_group)
@@ -227,7 +291,7 @@ class SensorConfigDialog(QDialog):
         adc_layout.addLayout(flamea_row)
 
         adc_info = QLabel("12-bit ADC (0-4095) mapped to %: value × 100 / 4095. Configure thresholds used by fusion.")
-        adc_info.setStyleSheet("color: gray; font-size: 9pt;")
+        adc_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         adc_layout.addWidget(adc_info)
 
         adc_group.setLayout(adc_layout)
@@ -254,7 +318,7 @@ class SensorConfigDialog(QDialog):
         vision_weight_row.addWidget(self.vision_weight_spin)
         
         vision_info = QLabel("AI model fire detection threshold and weight in fusion")
-        vision_info.setStyleSheet("color: gray; font-size: 9pt;")
+        vision_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         vision_layout.addLayout(vision_row)
         vision_layout.addLayout(vision_weight_row)
         vision_layout.addWidget(vision_info)
@@ -273,7 +337,7 @@ class SensorConfigDialog(QDialog):
         min_sources_row.addWidget(self.min_sources_spin)
         
         min_sources_info = QLabel("Minimum number of sensors required to trigger alarm")
-        min_sources_info.setStyleSheet("color: gray; font-size: 9pt;")
+        min_sources_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         min_sources_layout.addLayout(min_sources_row)
         min_sources_layout.addWidget(min_sources_info)
         min_sources_group.setLayout(min_sources_layout)
@@ -340,7 +404,7 @@ class SensorConfigDialog(QDialog):
 
         window_info = QLabel("Use manual window only when Auto window is OFF.")
         window_info.setWordWrap(True)
-        window_info.setStyleSheet("color: gray; font-size: 9pt;")
+        window_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         window_layout.addWidget(window_info)
 
         window_group.setLayout(window_layout)
@@ -384,7 +448,7 @@ class SensorConfigDialog(QDialog):
 
         thermal_render_info = QLabel("These controls update thermal rendering immediately on Apply (no restart).")
         thermal_render_info.setWordWrap(True)
-        thermal_render_info.setStyleSheet("color: gray; font-size: 9pt;")
+        thermal_render_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         thermal_render_layout.addWidget(thermal_render_info)
 
         thermal_render_group.setLayout(thermal_render_layout)
@@ -411,7 +475,7 @@ class SensorConfigDialog(QDialog):
         thr_row.addWidget(self.anomaly_threshold_spin)
         thr_layout.addLayout(thr_row)
         thr_info = QLabel("Frames with score ≥ threshold are captured")
-        thr_info.setStyleSheet("color: gray; font-size: 9pt;")
+        thr_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         thr_layout.addWidget(thr_info)
         thr_group.setLayout(thr_layout)
         layout.addWidget(thr_group)
@@ -485,7 +549,7 @@ class SensorConfigDialog(QDialog):
         calib_layout.addLayout(r0_row)
         
         r0_info = QLabel("Sensor resistance in clean air (calibrate in known environment)")
-        r0_info.setStyleSheet("color: gray; font-size: 9pt;")
+        r0_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         calib_layout.addWidget(r0_info)
         
         # Load resistance
@@ -501,7 +565,7 @@ class SensorConfigDialog(QDialog):
         calib_layout.addLayout(rl_row)
         
         rl_info = QLabel("Load resistor value in circuit (check hardware)")
-        rl_info.setStyleSheet("color: gray; font-size: 9pt;")
+        rl_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         calib_layout.addWidget(rl_info)
         
         # Supply voltage
@@ -517,7 +581,7 @@ class SensorConfigDialog(QDialog):
         calib_layout.addLayout(vcc_row)
         
         vcc_info = QLabel("Circuit supply voltage (typically 5V)")
-        vcc_info.setStyleSheet("color: gray; font-size: 9pt;")
+        vcc_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         calib_layout.addWidget(vcc_info)
         
         calib_group.setLayout(calib_layout)
@@ -535,7 +599,7 @@ class SensorConfigDialog(QDialog):
             "Typical R0 values: 30-100 kΩ in clean air"
         )
         guide_text.setWordWrap(True)
-        guide_text.setStyleSheet("color: #e0e0e0; padding: 10px; background-color: #2a2a2a; border-radius: 5px;")
+        guide_text.setStyleSheet("color: #ffe7a0; padding: 10px; background-color: #141d2a; border: 1px solid #5f4f26; border-radius: 5px;")
         guide_layout.addWidget(guide_text)
         guide_group.setLayout(guide_layout)
         layout.addWidget(guide_group)
@@ -608,12 +672,12 @@ class SensorConfigDialog(QDialog):
 
         preset_info = QLabel("Choose a preset for quick tuning, or use Custom to keep manual values.")
         preset_info.setWordWrap(True)
-        preset_info.setStyleSheet("color: gray; font-size: 9pt;")
+        preset_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         preset_layout.addWidget(preset_info)
 
         preset_hint = QLabel("High Recall = more detections (more noise). Low Noise = fewer false alarms (higher miss risk).")
         preset_hint.setWordWrap(True)
-        preset_hint.setStyleSheet("color: gray; font-size: 9pt;")
+        preset_hint.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         preset_layout.addWidget(preset_hint)
 
         preset_group.setLayout(preset_layout)
@@ -656,7 +720,7 @@ class SensorConfigDialog(QDialog):
 
         heuristic_info = QLabel("Frames with heuristic score above threshold are queued to YOLO. YOLO min confidence filters weak detections.")
         heuristic_info.setWordWrap(True)
-        heuristic_info.setStyleSheet("color: gray; font-size: 9pt;")
+        heuristic_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         heuristic_layout.addWidget(heuristic_info)
         heuristic_group.setLayout(heuristic_layout)
         step1_layout.addWidget(heuristic_group)
@@ -688,7 +752,7 @@ class SensorConfigDialog(QDialog):
         bands_layout.addLayout(confirmed_row)
 
         bands_info = QLabel("LOW < POSSIBLE, POSSIBLE ≤ score < CONFIRMED, CONFIRMED ≥ threshold")
-        bands_info.setStyleSheet("color: gray; font-size: 9pt;")
+        bands_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         bands_layout.addWidget(bands_info)
         bands_group.setLayout(bands_layout)
         step1_layout.addWidget(bands_group)
@@ -720,7 +784,7 @@ class SensorConfigDialog(QDialog):
         rule_layout.addLayout(rule_fusion_row)
 
         rule_info = QLabel("Used by rule-based alarms for HIGH severity escalation.")
-        rule_info.setStyleSheet("color: gray; font-size: 9pt;")
+        rule_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         rule_layout.addWidget(rule_info)
         rule_group.setLayout(rule_layout)
         step1_layout.addWidget(rule_group)
@@ -771,7 +835,7 @@ class SensorConfigDialog(QDialog):
 
         box_info = QLabel("Choose whether bounding boxes appear for all detections or only selected classes.")
         box_info.setWordWrap(True)
-        box_info.setStyleSheet("color: gray; font-size: 9pt;")
+        box_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         box_layout.addWidget(box_info)
 
         box_group.setLayout(box_layout)
@@ -799,7 +863,7 @@ class SensorConfigDialog(QDialog):
         persistence_layout.addLayout(decay_row)
         
         decay_info = QLabel("How long hot cells remain visible after detection")
-        decay_info.setStyleSheet("color: gray; font-size: 9pt;")
+        decay_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         persistence_layout.addWidget(decay_info)
         persistence_group.setLayout(persistence_layout)
         step3_layout.addWidget(persistence_group)
@@ -813,7 +877,7 @@ class SensorConfigDialog(QDialog):
         freeze_layout.addWidget(self.freeze_checkbox)
         
         freeze_info = QLabel("Stop video updates when alarm is active to preserve evidence")
-        freeze_info.setStyleSheet("color: gray; font-size: 9pt;")
+        freeze_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         freeze_layout.addWidget(freeze_info)
         freeze_group.setLayout(freeze_layout)
         step3_layout.addWidget(freeze_group)
@@ -827,7 +891,7 @@ class SensorConfigDialog(QDialog):
         overlay_layout.addWidget(self.overlay_checkbox)
         
         overlay_info = QLabel("Display sensor readings, accuracy, and active sensors on video")
-        overlay_info.setStyleSheet("color: gray; font-size: 9pt;")
+        overlay_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         overlay_layout.addWidget(overlay_info)
         overlay_group.setLayout(overlay_layout)
         step3_layout.addWidget(overlay_group)
@@ -846,12 +910,12 @@ class SensorConfigDialog(QDialog):
         restart_layout.addWidget(self.restart_app_checkbox)
         restart_info = QLabel("Not required for most detection parameters; use if any runtime component appears stuck on old values.")
         restart_info.setWordWrap(True)
-        restart_info.setStyleSheet("color: gray; font-size: 9pt;")
+        restart_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         restart_layout.addWidget(restart_info)
 
         step4_hint = QLabel("Reminder: High Recall increases detections (and noise). Low Noise reduces false alarms (and can miss brief events).")
         step4_hint.setWordWrap(True)
-        step4_hint.setStyleSheet("color: gray; font-size: 9pt;")
+        step4_hint.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         restart_layout.addWidget(step4_hint)
         restart_group.setLayout(restart_layout)
         step4_layout.addWidget(restart_group)

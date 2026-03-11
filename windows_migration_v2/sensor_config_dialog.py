@@ -100,7 +100,7 @@ class SensorConfigDialog(QDialog):
         temp_row.addWidget(self.temp_threshold_spin)
         
         temp_info = QLabel("Raw sensor value (0-255). 160 ≈ 40°C, 200 ≈ 50°C")
-        temp_info.setStyleSheet("color: gray; font-size: 9pt;")
+        temp_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         temp_layout.addLayout(temp_row)
         temp_layout.addWidget(temp_info)
         temp_group.setLayout(temp_layout)
@@ -119,7 +119,7 @@ class SensorConfigDialog(QDialog):
         gas_row.addWidget(self.gas_threshold_spin)
         
         gas_info = QLabel("Gas concentration in parts per million. 400 PPM = normal air")
-        gas_info.setStyleSheet("color: gray; font-size: 9pt;")
+        gas_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         gas_layout.addLayout(gas_row)
         gas_layout.addWidget(gas_info)
         gas_group.setLayout(gas_layout)
@@ -137,7 +137,7 @@ class SensorConfigDialog(QDialog):
         flame_row.addWidget(self.flame_value_spin)
         
         flame_info = QLabel("Digital value indicating flame detection (0 or 1)")
-        flame_info.setStyleSheet("color: gray; font-size: 9pt;")
+        flame_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         flame_layout.addLayout(flame_row)
         flame_layout.addWidget(flame_info)
         flame_group.setLayout(flame_layout)
@@ -164,7 +164,7 @@ class SensorConfigDialog(QDialog):
         vision_weight_row.addWidget(self.vision_weight_spin)
         
         vision_info = QLabel("AI model fire detection threshold and weight in fusion")
-        vision_info.setStyleSheet("color: gray; font-size: 9pt;")
+        vision_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         vision_layout.addLayout(vision_row)
         vision_layout.addLayout(vision_weight_row)
         vision_layout.addWidget(vision_info)
@@ -183,7 +183,7 @@ class SensorConfigDialog(QDialog):
         min_sources_row.addWidget(self.min_sources_spin)
         
         min_sources_info = QLabel("Minimum number of sensors required to trigger alarm")
-        min_sources_info.setStyleSheet("color: gray; font-size: 9pt;")
+        min_sources_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         min_sources_layout.addLayout(min_sources_row)
         min_sources_layout.addWidget(min_sources_info)
         min_sources_group.setLayout(min_sources_layout)
@@ -214,7 +214,7 @@ class SensorConfigDialog(QDialog):
         calib_layout.addLayout(r0_row)
         
         r0_info = QLabel("Sensor resistance in clean air (calibrate in known environment)")
-        r0_info.setStyleSheet("color: gray; font-size: 9pt;")
+        r0_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         calib_layout.addWidget(r0_info)
         
         # Load resistance
@@ -230,7 +230,7 @@ class SensorConfigDialog(QDialog):
         calib_layout.addLayout(rl_row)
         
         rl_info = QLabel("Load resistor value in circuit (check hardware)")
-        rl_info.setStyleSheet("color: gray; font-size: 9pt;")
+        rl_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         calib_layout.addWidget(rl_info)
         
         # Supply voltage
@@ -246,7 +246,7 @@ class SensorConfigDialog(QDialog):
         calib_layout.addLayout(vcc_row)
         
         vcc_info = QLabel("Circuit supply voltage (typically 5V)")
-        vcc_info.setStyleSheet("color: gray; font-size: 9pt;")
+        vcc_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         calib_layout.addWidget(vcc_info)
         
         calib_group.setLayout(calib_layout)
@@ -293,7 +293,7 @@ class SensorConfigDialog(QDialog):
         persistence_layout.addLayout(decay_row)
         
         decay_info = QLabel("How long hot cells remain visible after detection")
-        decay_info.setStyleSheet("color: gray; font-size: 9pt;")
+        decay_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         persistence_layout.addWidget(decay_info)
         persistence_group.setLayout(persistence_layout)
         layout.addWidget(persistence_group)
@@ -307,7 +307,7 @@ class SensorConfigDialog(QDialog):
         freeze_layout.addWidget(self.freeze_checkbox)
         
         freeze_info = QLabel("Stop video updates when alarm is active to preserve evidence")
-        freeze_info.setStyleSheet("color: gray; font-size: 9pt;")
+        freeze_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         freeze_layout.addWidget(freeze_info)
         freeze_group.setLayout(freeze_layout)
         layout.addWidget(freeze_group)
@@ -321,7 +321,7 @@ class SensorConfigDialog(QDialog):
         overlay_layout.addWidget(self.overlay_checkbox)
         
         overlay_info = QLabel("Display sensor readings, accuracy, and active sensors on video")
-        overlay_info.setStyleSheet("color: gray; font-size: 9pt;")
+        overlay_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         overlay_layout.addWidget(overlay_info)
         overlay_group.setLayout(overlay_layout)
         layout.addWidget(overlay_group)

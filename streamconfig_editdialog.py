@@ -20,6 +20,27 @@ class StreamEditDialog(QDialog):
 
     def initUI(self):
         self.setWindowTitle("Edit Stream" if self.existing else "Add Stream")
+        self.setStyleSheet("""
+            QDialog { background-color: #0f1722; color: #e7c75f; border: 1px solid #d7aa1a; }
+            QLineEdit, QComboBox {
+                background-color: #141d2a;
+                color: #ffe7a0;
+                border: 1px solid #75602a;
+                border-radius: 6px;
+                padding: 6px 8px;
+            }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #e2b83a; }
+            QPushButton {
+                background-color: #273448;
+                color: #f0d17c;
+                border: 1px solid #7a6633;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: 700;
+            }
+            QPushButton:hover { background-color: #344a67; border-color: #d7aa1a; color: #ffe9a6; }
+            QDialogButtonBox QPushButton { min-width: 90px; }
+        """)
         layout = QVBoxLayout()
 
         self.loc_id = QLineEdit()

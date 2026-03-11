@@ -181,6 +181,28 @@ class CameraDiscoveryDialog(QDialog):
     def initUI(self):
         self.setWindowTitle("Discover IP Cameras (RTSP)")
         self.setMinimumWidth(500)
+        self.setStyleSheet("""
+            QDialog { background-color: #0f1722; color: #e7c75f; border: 1px solid #d7aa1a; }
+            QLabel { color: #e7c75f; font-size: 12px; font-weight: 600; }
+            QLineEdit, QListWidget {
+                background-color: #141d2a;
+                color: #ffe7a0;
+                border: 1px solid #75602a;
+                border-radius: 6px;
+                padding: 6px 8px;
+            }
+            QLineEdit:focus { border: 1px solid #e2b83a; }
+            QPushButton {
+                background-color: #273448;
+                color: #f0d17c;
+                border: 1px solid #7a6633;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: 700;
+            }
+            QPushButton:hover { background-color: #344a67; border-color: #d7aa1a; color: #ffe9a6; }
+            QPushButton:disabled { color: #7f6a35; border-color: #5a4b27; background-color: #182233; }
+        """)
         layout = QVBoxLayout(self)
 
         # Subnet

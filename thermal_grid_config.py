@@ -36,8 +36,55 @@ class ThermalGridConfigDialog(QDialog):
     def init_ui(self):
         """Initialize the UI components."""
         layout = QVBoxLayout(self)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0f1722;
+                color: #e7c75f;
+            }
+            QGroupBox {
+                color: #e7c75f;
+                border: 1px solid #75602a;
+                border-radius: 6px;
+                margin-top: 8px;
+                font-weight: 700;
+                font-size: 11px;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: #f0d17c;
+            }
+            QLabel {
+                color: #e7c75f;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QSpinBox {
+                background-color: #141d2a;
+                color: #ffe7a0;
+                border: 1px solid #75602a;
+                border-radius: 4px;
+                padding: 4px 6px;
+            }
+            QSpinBox:focus { border: 1px solid #e2b83a; }
+            QCheckBox {
+                color: #e7c75f;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QPushButton {
+                background-color: #273448;
+                color: #f0d17c;
+                border: 1px solid #7a6633;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: 700;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QPushButton:hover { background-color: #344a67; border-color: #d7aa1a; color: #ffe9a6; }
+            QPushButton:pressed { background-color: #1e2a3a; }
+        """)
         
-        # Enable/Disable thermal grid
         self.enable_checkbox = QCheckBox("Enable Thermal Grid Overlay")
         self.enable_checkbox.setChecked(self.settings['enabled'])
         layout.addWidget(self.enable_checkbox)

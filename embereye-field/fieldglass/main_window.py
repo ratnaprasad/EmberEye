@@ -1823,7 +1823,7 @@ class BEMainWindow(QMainWindow):
                     brand.setStyleSheet("""
                         font-size: 14px;
                         font-weight: 700;
-                        color: #00bcd4;
+                        color: #FFDC00;
                         letter-spacing: 2px;
                         background: transparent;
                     """)
@@ -2247,7 +2247,7 @@ class BEMainWindow(QMainWindow):
         
         # Compact header
         header = QLabel("🧪 Sandbox - Test models safely")
-        header.setStyleSheet("font-weight: bold; padding: 5px;")
+        header.setStyleSheet("font-weight: bold; padding: 5px; color: #e7c75f;")
         sandbox_layout.addWidget(header)
         
         # Horizontal layout for compact space usage
@@ -2271,7 +2271,7 @@ class BEMainWindow(QMainWindow):
         
         # Model info display
         self.sandbox_model_info = QLabel("No model")
-        self.sandbox_model_info.setStyleSheet("font-size: 10px; color: #666;")
+        self.sandbox_model_info.setStyleSheet("font-size: 10px; color: rgba(200,175,90,0.65);")
         self.sandbox_model_info.setWordWrap(True)
         model_layout.addWidget(self.sandbox_model_info)
 
@@ -2369,7 +2369,7 @@ class BEMainWindow(QMainWindow):
         input_layout.setSpacing(3)
         self.sandbox_input_label = QLabel("No input")
         self.sandbox_input_label.setAlignment(Qt.AlignCenter)
-        self.sandbox_input_label.setStyleSheet("border: 1px dashed #ccc; background: #f9f9f9;")
+        self.sandbox_input_label.setStyleSheet("border: 1px dashed #75602a; background: #141d2a; color: #c9a95a;")
         self.sandbox_input_label.setScaledContents(False)
         self.sandbox_input_label.setFixedHeight(350)
         input_layout.addWidget(self.sandbox_input_label)
@@ -2420,7 +2420,7 @@ class BEMainWindow(QMainWindow):
 
         # Stats and detections below previews (more compact)
         self.sandbox_stats_label = QLabel("Detections: - | Time: -")
-        self.sandbox_stats_label.setStyleSheet("font-size: 10px; font-family: monospace; padding: 2px 0; color: #ccc;")
+        self.sandbox_stats_label.setStyleSheet("font-size: 10px; font-family: monospace; padding: 2px 0; color: #c9a95a;")
         previews_column.addWidget(self.sandbox_stats_label)
         self.sandbox_detections_list = QListWidget()
         self.sandbox_detections_list.setMaximumHeight(70)
@@ -4432,29 +4432,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """)
         
         profile_menu = QMenu()
-        profile_menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d2d;
-                border: 1px solid #00bcd4;
-                border-radius: 8px;
-                padding: 8px 0;
-            }
-            QMenu::item {
-                padding: 8px 20px;
-                color: #e0e0e0;
-                font-size: 12px;
-                font-weight: 500;
-            }
-            QMenu::item:selected {
-                background-color: rgba(0, 188, 212, 0.2);
-                color: #00bcd4;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #404040;
-                margin: 4px 12px;
-            }
-        """)
+        self._style_tactical_settings_menu(profile_menu)
         profile_menu.addAction("👤 My Profile", self.show_profile)
         profile_menu.addSeparator()
         profile_menu.addAction("🚪 Logout", self.logout)
@@ -4508,6 +4486,78 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         action = menu.addAction(str(title).upper())
         action.setEnabled(False)
         return action
+
+    def _style_tactical_dialog(self, dialog):
+        if dialog is None:
+            return
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #0f1722;
+                color: #e7c75f;
+                border: 1px solid #d7aa1a;
+            }
+            QLabel {
+                color: #e7c75f;
+                font-size: 12px;
+                font-weight: 600;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QListWidget, QTableWidget, QTreeWidget {
+                background-color: #141d2a;
+                color: #ffe7a0;
+                border: 1px solid #75602a;
+                border-radius: 6px;
+                padding: 6px 8px;
+                selection-background-color: rgba(226, 184, 58, 0.30);
+            }
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus {
+                border: 1px solid #e2b83a;
+            }
+            QPushButton {
+                background-color: #273448;
+                color: #f0d17c;
+                border: 1px solid #7a6633;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 700;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #344a67;
+                border-color: #d7aa1a;
+                color: #ffe9a6;
+            }
+            QPushButton:pressed {
+                background-color: #1e2a3a;
+            }
+            QDialogButtonBox QPushButton {
+                min-width: 96px;
+            }
+            QHeaderView::section {
+                background-color: #1b2533;
+                color: #f3cc6c;
+                border: 1px solid #5f4f26;
+                padding: 4px 6px;
+                font-weight: 700;
+            }
+            QTabWidget::pane {
+                border: 1px solid #5f4f26;
+                background-color: #0f1722;
+            }
+            QTabBar::tab {
+                background-color: #1a2432;
+                color: #c9a95a;
+                border: 1px solid #5f4f26;
+                padding: 6px 12px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #2b3a50;
+                color: #ffe38a;
+                border-color: #d7aa1a;
+            }
+        """)
 
     def init_settings_menu(self, title_bar):
         menu_btn = QToolButton()
@@ -5384,6 +5434,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         )
         dlg = QDialog(self)
         dlg.setWindowTitle("Add Live PFDS Device")
+        self._style_tactical_dialog(dlg)
         layout = QFormLayout(dlg)
 
         name_edit = QLineEdit(); name_edit.setPlaceholderText("Device Name")
@@ -6349,6 +6400,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Live PFDS Devices")
+        self._style_tactical_dialog(dlg)
         layout = QVBoxLayout(dlg)
 
         table = QTableWidget(0, 12)
@@ -6850,6 +6902,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         from error_logger import get_error_logger
         dlg = QDialog(self)
         dlg.setWindowTitle("Log Viewer")
+        self._style_tactical_dialog(dlg)
         layout = QVBoxLayout(dlg)
         tabs = QTabWidget()
         layout.addWidget(tabs)
@@ -7231,13 +7284,14 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         dlg.setWindowTitle("Import Deployment Model")
         dlg.setModal(True)
         dlg.resize(600, 250)
+        self._style_tactical_dialog(dlg)
         
         layout = QVBoxLayout(dlg)
         layout.setSpacing(15)
         
         # Title
         title = QLabel("Import Model from EmberEye Studio")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #00bcd4;")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #e7c75f;")
         layout.addWidget(title)
         
         # Description
@@ -7245,7 +7299,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             "Select a trained model exported from Studio to use for real-time detection.\n"
             "After import, you can choose whether to activate it immediately for all video streams."
         )
-        desc.setStyleSheet("color: #aaa; margin-bottom: 10px;")
+        desc.setStyleSheet("color: rgba(200,175,90,0.72); margin-bottom: 10px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
         
@@ -7253,7 +7307,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         file_layout = QHBoxLayout()
         file_layout.addWidget(QLabel("Model File:"))
         self._import_model_path_label = QLabel("No file selected")
-        self._import_model_path_label.setStyleSheet("color: #888; font-style: italic;")
+        self._import_model_path_label.setStyleSheet("color: rgba(200,175,90,0.55); font-style: italic;")
         file_layout.addWidget(self._import_model_path_label, 1)
         browse_btn = QPushButton("Browse...")
         browse_btn.clicked.connect(lambda: self._browse_model_file(dlg))
@@ -7280,11 +7334,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             "You will be asked to confirm activation at runtime after import completes."
         )
         info.setStyleSheet(
-            "background-color: rgba(0, 188, 212, 0.1); "
-            "border: 1px solid rgba(0, 188, 212, 0.3); "
+            "background-color: rgba(20, 29, 42, 0.9); "
+            "border: 1px solid rgba(213, 171, 45, 0.4); "
             "border-radius: 4px; "
             "padding: 10px; "
-            "color: #bbb; "
+            "color: rgba(200,175,90,0.75); "
             "font-size: 12px;"
         )
         info.setWordWrap(True)
@@ -7298,7 +7352,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         import_btn = QPushButton("Import Model")
         import_btn.setStyleSheet(
-            "background-color: #00bcd4; color: white; "
+            "background-color: #e2b83a; color: #0f1722; "
             "padding: 8px 20px; font-weight: bold; border-radius: 4px;"
         )
         import_btn.clicked.connect(lambda: self._execute_model_import(dlg))
@@ -7325,7 +7379,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self._selected_model_path = file_path
             from pathlib import Path
             self._import_model_path_label.setText(Path(file_path).name)
-            self._import_model_path_label.setStyleSheet("color: #00bcd4; font-weight: bold;")
+            self._import_model_path_label.setStyleSheet("color: #e7c75f; font-weight: bold;")
             
             # Auto-detect model type from extension
             ext = Path(file_path).suffix.lower()
@@ -9816,6 +9870,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         profile_dialog = QDialog(self)
         profile_dialog.setWindowTitle("User Profile")
         profile_dialog.setFixedSize(300, 200)
+        self._style_tactical_dialog(profile_dialog)
         layout = QVBoxLayout()
         layout.addWidget(QLabel("Username: admin"))
         layout.addWidget(QLabel("Email: admin@example.com"))
