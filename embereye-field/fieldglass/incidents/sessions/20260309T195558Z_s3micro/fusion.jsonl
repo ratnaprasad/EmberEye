@@ -1,0 +1,4 @@
+{"location_id": "s3micro", "source": "sensor_packet", "alarm": true, "confidence": 2.0, "severity": "HIGH", "reason": "Smoke threshold exceeded: 100.0% >= 35.0%", "sources": ["smoke", "flame"], "ts": 1773086158.034647}
+{"location_id": "s3micro", "source": "sensor_packet", "alarm": true, "confidence": 2.0, "severity": "HIGH", "reason": "Smoke threshold exceeded: 100.0% >= 35.0%", "sources": ["smoke", "flame"], "ts": 1773086158.837395}
+{"location_id": "s3micro", "source": "sensor_packet", "alarm": true, "confidence": 2.0, "severity": "HIGH", "reason": "Smoke threshold exceeded: 100.0% >= 35.0%", "sources": ["smoke", "flame"], "ts": 1773086158.856246}
+{"location_id": "s3micro", "source": "sensor_packet", "alarm": true, "confidence": 2.0, "severity": "HIGH", "reason": "Smoke threshold exceeded: 100.0% >= 35.0%", "sources": ["smoke", "flame"], "ts": 1773086159.657483}

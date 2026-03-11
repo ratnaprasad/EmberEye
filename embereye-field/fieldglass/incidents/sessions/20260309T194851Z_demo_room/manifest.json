@@ -1,0 +1,17 @@
+{
+  "token": "20260309T194851Z_demo_room",
+  "location_id": "demo_room",
+  "reason": "sensor_packet",
+  "start_ts": 1773085731.801899,
+  "end_ts": 1773085781.5681322,
+  "acked": true,
+  "feedback": "pending",
+  "counts": {
+    "video_frames": 51,
+    "thermal_frames": 51,
+    "sensor_packets": 125,
+    "fusion_events": 125,
+    "vision_events": 0
+  },
+  "thumbnail_path": "/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/embereye-field/fieldglass/incidents/sessions/20260309T194851Z_demo_room/video/video_00001.jpg"
+}

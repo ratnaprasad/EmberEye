@@ -1,0 +1,31 @@
+{
+  "decision": "PASS",
+  "generated_at": "2026-03-08T18:36:22.979270+00:00",
+  "steps": [
+    {
+      "detail": "scheduled_reconcile_run_count=0 rows=84",
+      "name": "baseline_telemetry",
+      "ok": true
+    },
+    {
+      "detail": "set reconcile_schedule_enabled=false",
+      "name": "disable_reconcile_schedule",
+      "ok": true
+    },
+    {
+      "detail": "restart rc=0 stdout_tail=isabled)\n\n============================================================\nAll services started (background mode)\n============================================================\nRTSP Stream: skipped (missing video file)\nPFDS Sim:    skipped\nField App:   embereye-field/main.py\nStop stack:  ./stop_field.sh stderr_tail=",
+      "name": "restart_app_hook",
+      "ok": true
+    },
+    {
+      "detail": "before=0 after=0 delta=0 observe_seconds=15 rows_before=84 rows_after=84",
+      "name": "verify_no_new_scheduled_reconcile_events",
+      "ok": true
+    },
+    {
+      "detail": "reconcile_schedule_enabled restored to False",
+      "name": "restore_original_config",
+      "ok": true
+    }
+  ]
+}

@@ -68,6 +68,31 @@
 
 ## 🚀 Deployment Steps
 
+### Phase D Release Gate (Required)
+
+Run the automated readiness gate before production rollout:
+
+```bash
+source .venv/bin/activate
+python tests/field/run_release_readiness_gate.py
+```
+
+Output contract:
+- `RELEASE_READINESS_DECISION: GO` means all checks passed.
+- `RELEASE_READINESS_DECISION: NO-GO` means rollout must stop and failures must be resolved.
+- JSON report is written to `tests/artifacts/release_readiness_report.json`.
+
+Rollback drill command (Phase D):
+
+```bash
+source .venv/bin/activate
+python tests/field/run_rollback_drill.py --restart-cmd "bash start_studio.sh" --observe-seconds 15 --restore-original
+```
+
+Rollback drill output:
+- `ROLLBACK_DRILL_DECISION: PASS` means scheduled reconcile stayed disabled during observation.
+- JSON report is written to `tests/artifacts/rollback_drill_report.json`.
+
 ### Step 1: Extract Zip File
 ```bash
 unzip EmberEye_Windows_Migration.zip -d C:\EmberEye_App

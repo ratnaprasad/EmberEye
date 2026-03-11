@@ -1,0 +1,36 @@
+Test Case,Vision Score,Temp (°C),Smoke (%),Flame (%),Expected Alarm (Provided),Description
+1,0.7,40.0,25.0,25.0,Y,Your example: smoke & flame above independent thresholds → alarm
+2,0.7,40.0,15.0,15.0,Y,Vision alone triggers (≥0.70)
+3,0.69,55.0,15.0,15.0,Y,"Vision in range, temp hot, flame present (below independent)"
+4,0.69,55.0,15.0,5.0,N,"Vision in range, temp hot but flame too low"
+5,0.69,45.0,15.0,15.0,N,Vision in range but temp not hot enough
+6,0.4,55.0,15.0,15.0,Y,"Vision lower range, conditions met"
+7,0.4,55.0,15.0,5.0,N,"Vision lower range, flame insufficient"
+8,0.4,45.0,15.0,15.0,N,"Vision lower range, temp not hot"
+9,0.29,55.0,15.0,15.0,Y,Low vision but conditions met
+10,0.29,55.0,15.0,5.0,N,"Low vision, flame insufficient"
+11,0.29,45.0,15.0,15.0,N,"Low vision, temp not hot"
+12,0.7,65.0,0.0,0.0,Y,Temp above independent threshold
+13,0.7,65.0,25.0,25.0,Y,Multiple independent triggers
+14,0.5,65.0,0.0,0.0,Y,"Temp trigger, vision irrelevant"
+15,0.5,55.0,25.0,0.0,Y,"Smoke trigger, vision irrelevant"
+16,0.5,55.0,0.0,25.0,Y,Flame trigger
+17,0.5,55.0,15.0,15.0,Y,"No independent, vision-based triggers"
+18,0.5,55.0,15.0,5.0,N,"No independent, vision-based fails"
+19,0.3,55.0,15.0,15.0,Y,Boundary at 0.3
+20,0.3,55.0,15.0,5.0,N,"Boundary at 0.3, flame low"
+21,0.29,60.0,15.0,15.0,Y,Temp exactly at independent threshold
+22,0.69,50.0,15.0,15.0,N,Thermal boundary for vision (≤50)
+23,0.69,50.1,15.0,15.0,Y,Slightly above 50 triggers vision
+24,0.7,50.0,19.0,19.0,Y,Vision alone even with near-threshold sensors
+25,0.7,50.0,20.0,19.0,Y,Smoke at threshold triggers independent
+26,0.69,55.0,15.0,9.0,N,Flame boundary below intended 10% cutoff
+27,0.69,55.0,15.0,10.0,Y,Flame boundary exactly intended 10% cutoff
+28,0.69,55.0,15.0,11.0,Y,Flame boundary above intended 10% cutoff
+29,0.7,55.0,15.0,10.0,Y,Vision boundary at 0.70 with supporting temp/flame
+30,0.5,55.0,15.0,10.0,Y,Vision boundary at 0.50 with supporting temp/flame
+31,0.3,55.0,15.0,10.0,Y,Vision boundary at 0.30 with supporting temp/flame
+32,0.69,50.0,15.0,10.0,N,Temp boundary at 50.0 with supporting vision/flame
+33,0.69,50.1,15.0,10.0,Y,Temp boundary at 50.1 with supporting vision/flame
+34,0.3,45.0,25.0,0.0,Y,Smoke independent trigger even when vision/temp low
+35,0.5,45.0,30.0,9.0,Y,Smoke independent trigger with low flame

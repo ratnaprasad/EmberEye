@@ -1,0 +1,20 @@
+{
+  "token": "20260311T080637Z_Demo_Room3",
+  "location_id": "Demo Room3",
+  "reason": "ui_raise",
+  "start_ts": 1773216397.8780532,
+  "end_ts": 1773216398.638975,
+  "acked": true,
+  "feedback": "pending",
+  "counts": {
+    "video_frames": 1,
+    "thermal_frames": 0,
+    "sensor_packets": 0,
+    "fusion_events": 0,
+    "vision_events": 0,
+    "video_recording_frames": 1
+  },
+  "thumbnail_path": "/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/embereye-field/fieldglass/incidents/sessions/20260311T080637Z_Demo_Room3/video/video_00001.jpg",
+  "video_recording_path": "/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/embereye-field/fieldglass/incidents/sessions/20260311T080637Z_Demo_Room3/incident_capture.mp4",
+  "video_recording_fps": 2.0
+}

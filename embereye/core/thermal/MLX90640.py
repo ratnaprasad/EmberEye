@@ -1,6 +1,9 @@
 from collections import namedtuple
 import numpy as np
-import serial
+try:
+    import serial
+except ImportError:
+    serial = None  # pyserial not installed; hardware serial access unavailable
 import sys
 import time
 
@@ -56,6 +59,11 @@ Registers = namedtuple('Registers', [
 
 class MLX90640:
     def __init__(self, port, baudrate=BAUD_RATE):
+        if serial is None:
+            raise ImportError(
+                "pyserial is required for MLX90640 hardware access. "
+                "Install it with: pip install pyserial"
+            )
         self.port = serial.Serial(port, baudrate)
         time.sleep(2) # wait for arduino to restart
         self.mem = {} # addr => value

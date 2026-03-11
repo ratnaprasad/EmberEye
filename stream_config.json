@@ -62,5 +62,9 @@
     "thermal_target_room": "",
     "thermal_auto_window": true,
     "thermal_window_min": 20.0,
-    "thermal_window_max": 120.0
+    "thermal_window_max": 120.0,
+    "reconcile_schedule_enabled": false,
+    "metrics_port": 9090,
+    "reduced_motion": true,
+    "operator_id": "s3micro"
 }

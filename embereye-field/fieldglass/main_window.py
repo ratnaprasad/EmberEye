@@ -8,6 +8,10 @@ import json
 import asyncio
 import cv2
 import sys
+import webbrowser
+import urllib.request
+import urllib.error
+from urllib.parse import urlparse
 from typing import List
 from pathlib import Path
 from threading import Thread, Event
@@ -26,13 +30,14 @@ from PyQt5.QtWidgets import (
     QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
     QListWidget, QListWidgetItem, QProgressBar, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem,
     QSlider, QGroupBox, QCompleter, QCheckBox, QDoubleSpinBox, QFormLayout, QInputDialog,
-    QProgressDialog, QApplication
+    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QScrollArea,
+    QProgressDialog, QApplication, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QDialogButtonBox
 )
 from PyQt5.QtCore import (
-    Qt, pyqtSignal, pyqtSlot, QMutex, QObject, QTimer, QUrl, QThread
+    Qt, pyqtSignal, pyqtSlot, QMutex, QObject, QTimer, QUrl, QThread, QPropertyAnimation, QEasingCurve, QMetaObject
 )
 from PyQt5.QtGui import (
-    QPixmap, QImage
+    QPixmap, QImage, QPainter, QPen, QColor
 )
 # Optional import: QWebEngineView may not be available in minimal builds
 try:
@@ -40,7 +45,7 @@ try:
     HAS_WEBENGINE = True
 except Exception:
     HAS_WEBENGINE = False
-from datetime import datetime
+from datetime import datetime, timezone
 from streamconfig_dialog import StreamConfigDialog
 from video_widget import VideoWidget
 from embereye.core.fusion import FusionOrchestrator, DetectionSource
@@ -243,6 +248,111 @@ class BEMainWindow(QMainWindow):
                 self.showMaximized()
             else:
                 self.setGeometry(avail)
+            self._apply_responsive_dashboard_scaling()
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_dashboard_scaling()
+
+    def _build_status_chip_style(self, tone="neutral"):
+        palette = {
+            "neutral": ("#8edff0", "#13222d", "#2f5062"),
+            "ok": ("#b8f4dd", "#153026", "#2f7f62"),
+            "warn": ("#ffe2a8", "#352812", "#7f5f2f"),
+            "error": ("#ffd0d0", "#391919", "#8d3d3d"),
+        }
+        fg, bg, bd = palette.get(tone, palette["neutral"])
+        return (
+            "QLabel { "
+            f"color: {fg}; "
+            f"background: {bg}; "
+            f"border: 1px solid {bd}; "
+            "border-radius: 5px; "
+            "padding: 2px 7px; "
+            "font-size: 11px; "
+            "font-family: \"Avenir Next\", \"Segoe UI\", \"Helvetica Neue\", sans-serif; "
+            "}"
+        )
+
+    def _set_status_chip_state(self, label, tone="neutral"):
+        if label is None:
+            return
+        try:
+            label.setStyleSheet(self._build_status_chip_style(tone))
+        except Exception:
+            pass
+
+    def _apply_responsive_dashboard_scaling(self):
+        """Adjust high-frequency UI dimensions for laptop/desktop resolutions."""
+        try:
+            width = max(640, int(self.width()))
+            if width < 1200:
+                header_height = 46
+                group_width = 122
+                grid_width = 82
+                nav_size = 44
+            elif width > 1800:
+                header_height = 56
+                group_width = 156
+                grid_width = 96
+                nav_size = 54
+            else:
+                header_height = 50
+                group_width = 140
+                grid_width = 90
+                nav_size = 50
+
+            if hasattr(self, 'overlay_header') and self.overlay_header:
+                self.overlay_header.setFixedHeight(header_height)
+            if hasattr(self, 'group_combo') and self.group_combo:
+                self.group_combo.setFixedWidth(group_width)
+            if hasattr(self, 'grid_size') and self.grid_size:
+                self.grid_size.setFixedWidth(grid_width)
+
+            # Keep nav buttons proportional and re-centered as window changes.
+            if hasattr(self, 'prev_rtsp') and hasattr(self, 'next_rtsp') and hasattr(self, 'tabs'):
+                for btn in (self.prev_rtsp, self.next_rtsp):
+                    btn.setFixedSize(nav_size, nav_size)
+                    btn.setStyleSheet(
+                        "QPushButton {"
+                        "background-color: rgba(11, 21, 29, 0.92);"
+                        "border: 1px solid #3f6a82;"
+                        f"border-radius: {nav_size // 2}px;"
+                        "color: #7fd6e6;"
+                        "font-size: 18px;"
+                        "font-weight: bold;"
+                        "}"
+                        "QPushButton:hover {"
+                        "background-color: rgba(26, 44, 57, 0.95);"
+                        "border-color: #66b4c8;"
+                        "}"
+                        "QPushButton:pressed {"
+                        "background-color: rgba(41, 64, 79, 0.95);"
+                        "}"
+                    )
+        except Exception:
+            pass
+
+    def _animate_dashboard_entry(self):
+        """Fade in the main tab surface once at startup for a smoother first paint."""
+        try:
+            if not hasattr(self, 'tabs') or self.tabs is None:
+                return
+            if bool(self.config.get('reduced_motion', False)):
+                self.tabs.setGraphicsEffect(None)
+                return
+            effect = QGraphicsOpacityEffect(self.tabs)
+            self.tabs.setGraphicsEffect(effect)
+            effect.setOpacity(0.0)
+
+            self._entry_fade_animation = QPropertyAnimation(effect, b"opacity", self)
+            self._entry_fade_animation.setDuration(320)
+            self._entry_fade_animation.setStartValue(0.0)
+            self._entry_fade_animation.setEndValue(1.0)
+            self._entry_fade_animation.setEasingCurve(QEasingCurve.OutCubic)
+            self._entry_fade_animation.start()
         except Exception:
             pass
     
@@ -379,9 +489,29 @@ class BEMainWindow(QMainWindow):
 
     def handle_vision_score_from_widget(self, loc_id, score):
         """Run fusion for this loc_id with vision score and update alarm indicator."""
+        try:
+            self._record_incident_vision_event(loc_id, score)
+        except Exception:
+            pass
+        loc_key = str(loc_id) if loc_id is not None else None
+        now_ts = time.time()
+        last_sensor_ts = float(self._sensor_last_packet_ts_by_loc_id.get(loc_key, 0.0)) if loc_key else 0.0
+        has_recent_sensor = bool(last_sensor_ts > 0.0 and (now_ts - last_sensor_ts) <= float(self._sensor_overlay_stale_timeout_s))
+
         # Find widget for loc_id
         for widget in self.get_video_widgets():
             if getattr(widget, 'loc_id', None) == loc_id:
+                if not has_recent_sensor:
+                    # No fresh PFDS sensor input for this tile: clear stale sensor/fusion overlay.
+                    try:
+                        if hasattr(widget, 'set_fusion_data'):
+                            widget.set_fusion_data(None)
+                        if hasattr(widget, 'update_fire_alarm'):
+                            widget.update_fire_alarm(False)
+                    except Exception:
+                        pass
+                    break
+
                 # Run fusion with only vision score (other sources can be cached for full fusion)
                 fusion_result = self._run_fusion(vision_score=score)
                 try:
@@ -396,10 +526,722 @@ class BEMainWindow(QMainWindow):
                     pass
                 if hasattr(widget, 'update_fire_alarm'):
                     try:
+                        self._handle_alarm_transition(loc_id, bool(fusion_result.get('alarm')), source='vision_only')
                         widget.update_fire_alarm(fusion_result['alarm'])
+                        if hasattr(widget, 'set_alarm_acknowledged'):
+                            acked = bool(self._alarm_ack_by_loc_id.get(str(loc_id), False))
+                            widget.set_alarm_acknowledged(acked)
+                        self._record_incident_fusion_event(loc_id, fusion_result, source='vision_only')
                     except Exception as e:
                         print(f"Alarm update error (vision): {e}")
                 break
+
+    def _normalize_loc_key(self, loc_id):
+        if loc_id is None:
+            return None
+        key = str(loc_id).strip()
+        return key or None
+
+    def _normalize_serial_key(self, serial_number):
+        if serial_number is None:
+            return None
+        key = str(serial_number).strip()
+        return key or None
+
+    def _parse_seen_timestamp(self, value):
+        """Parse DB/packet timestamps into epoch seconds."""
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc).timestamp()
+            return value.timestamp()
+
+        raw = str(value).strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except Exception:
+            pass
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except Exception:
+            return None
+
+    def _get_device_lifecycle_state(self, device: dict, now_ts: float = None) -> str:
+        """Classify configured devices into operational lifecycle states."""
+        if not isinstance(device, dict):
+            return 'pending_identity'
+
+        serial = self._normalize_serial_key(device.get('serial_number'))
+        if not serial:
+            return 'pending_identity'
+
+        is_authorized = bool(device.get('is_authorized', True))
+        is_linked = bool(device.get('is_linked', True))
+        if not is_authorized:
+            return 'unauthorized'
+        if not is_linked:
+            return 'unlinked'
+
+        now_val = float(now_ts if now_ts is not None else time.time())
+        ghost_after_s = float(getattr(self, '_device_ghost_after_s', 120.0))
+        last_seen_ts = self._parse_seen_timestamp(device.get('last_seen_at'))
+        if last_seen_ts is not None and (now_val - last_seen_ts) > ghost_after_s:
+            return 'ghost'
+        return 'active'
+
+    def _get_pending_identity_state(self, pending_info: dict, now_ts: float = None) -> str:
+        """Classify pending identity sightings as pending/unlinked/location-pending/ghost."""
+        if not isinstance(pending_info, dict):
+            return 'pending_identity'
+        explicit_state = str(pending_info.get('state') or '').strip()
+        if explicit_state in ('unlinked', 'pending_location', 'unauthorized'):
+            return explicit_state
+        now_val = float(now_ts if now_ts is not None else time.time())
+        ghost_after_s = float(getattr(self, '_device_ghost_after_s', 120.0))
+        last_seen_ts = self._parse_seen_timestamp(pending_info.get('last_seen'))
+        if last_seen_ts is not None and (now_val - last_seen_ts) > ghost_after_s:
+            return 'ghost'
+        return 'pending_identity'
+
+    def _emit_device_telemetry(self, event: str, **fields):
+        """Emit serial-centric telemetry for device lifecycle and routing decisions."""
+        payload = {'event': str(event)}
+        for key, value in fields.items():
+            if value is not None:
+                payload[str(key)] = value
+        try:
+            from metrics import get_metrics
+            metrics = get_metrics()
+            event_name = str(event)
+            state = str(payload.get('state') or 'unknown')
+            drop_reason = str(payload.get('drop_reason') or 'unknown')
+            command = str(payload.get('command') or 'unknown')
+
+            metrics.record_device_lifecycle_event(event_name, state=state)
+            if event_name == 'packet_dropped':
+                metrics.record_device_packet_drop(drop_reason=drop_reason, state=state)
+            if event_name in ('command_sent', 'command_failed'):
+                metrics.record_device_command(event=event_name, command=command)
+            if event_name == 'command_failed':
+                metrics.record_device_command_failure(drop_reason=drop_reason, command=command)
+        except Exception:
+            pass
+        try:
+            from tcp_logger import log_device_telemetry
+            log_device_telemetry(event=str(event), payload=payload)
+        except Exception:
+            pass
+        try:
+            should_print = True
+            event_name = str(payload.get('event') or '')
+            drop_reason = str(payload.get('drop_reason') or '')
+            if event_name == 'command_failed' and drop_reason in ('tcp_server_unavailable', 'no_active_connection'):
+                # Preserve structured telemetry, but suppress repetitive console output.
+                should_print = False
+
+            if should_print:
+                print(f"[DEVICE_TELEMETRY] {json.dumps(payload, sort_keys=True, default=str)}")
+        except Exception:
+            print(f"[DEVICE_TELEMETRY] {payload}")
+
+    def _operator_actor(self) -> str:
+        operator_id = str(getattr(self, '_operator_id', '') or '').strip()
+        if operator_id:
+            return f"ui:{operator_id}"
+        return f"ui:{os.getenv('USER', 'unknown')}"
+
+    def _ensure_operator_identity(self, parent=None, action: str = "device mutation") -> bool:
+        """Require an explicit operator identity before sensitive PFDS mutations."""
+        existing = str(getattr(self, '_operator_id', '') or '').strip()
+        if existing:
+            return True
+
+        prompt_parent = parent or self
+        text, ok = QInputDialog.getText(
+            prompt_parent,
+            "Operator Identity Required",
+            f"Enter operator id for {action}:",
+        )
+        operator_id = str(text or '').strip()
+        if not ok or not operator_id:
+            QMessageBox.warning(prompt_parent, "Operator Required", "Operation canceled: operator id is required.")
+            return False
+
+        self._operator_id = operator_id
+        try:
+            self.config['operator_id'] = operator_id
+            StreamConfig.save_config(self.config)
+        except Exception:
+            pass
+        return True
+
+    @staticmethod
+    def _sum_counter_delta(previous: dict, current: dict) -> int:
+        prev = previous or {}
+        curr = current or {}
+        delta = 0
+        for key, value in curr.items():
+            try:
+                delta += max(0, int(value) - int(prev.get(key, 0)))
+            except Exception:
+                continue
+        return int(delta)
+
+    def _snapshot_device_alert_counters(self):
+        try:
+            from metrics import get_metrics
+            metrics = get_metrics()
+            return {
+                'packet_drops': dict(getattr(metrics, 'device_packet_drops_total', {}) or {}),
+                'command_failures': dict(getattr(metrics, 'device_command_failures_total', {}) or {}),
+            }
+        except Exception:
+            return {'packet_drops': {}, 'command_failures': {}}
+
+    def _start_device_alert_monitor(self):
+        """Start periodic operational alert checks from device telemetry counters."""
+        if getattr(self, '_device_alert_timer', None):
+            return
+        self._device_alert_last_snapshot = self._snapshot_device_alert_counters()
+        self._device_alert_last_ts = time.time()
+        self._device_alert_timer = QTimer(self)
+        self._device_alert_timer.timeout.connect(self._check_device_alerts)
+        self._device_alert_timer.start(max(1000, int(self._device_alert_window_ms)))
+
+    def _start_scheduled_reconcile(self):
+        """Start periodic pending-identity reconciliation job with safety guards."""
+        if not bool(getattr(self, '_reconcile_schedule_enabled', False)):
+            return
+        if getattr(self, '_reconcile_timer', None):
+            return
+        self._reconcile_timer = QTimer(self)
+        self._reconcile_timer.timeout.connect(self._run_scheduled_reconcile)
+        self._reconcile_timer.start(max(1000, int(self._reconcile_interval_s * 1000)))
+
+    def _disable_scheduled_reconcile(self, reason: str):
+        self._reconcile_schedule_enabled = False
+        try:
+            self.config['reconcile_schedule_enabled'] = False
+            StreamConfig.save_config(self.config)
+        except Exception:
+            pass
+        try:
+            if self._reconcile_timer:
+                self._reconcile_timer.stop()
+                self._reconcile_timer = None
+        except Exception:
+            pass
+        try:
+            from metrics import get_metrics
+            get_metrics().record_scheduled_reconcile_disabled()
+        except Exception:
+            pass
+        self._emit_device_telemetry(
+            'scheduled_reconcile_disabled',
+            state='warning',
+            drop_reason='failure_guard',
+            reason=reason,
+        )
+
+    def _run_scheduled_reconcile(self):
+        if not bool(getattr(self, '_reconcile_schedule_enabled', False)):
+            return
+        now = time.time()
+        if now - float(getattr(self, '_reconcile_last_run_ts', 0.0) or 0.0) < float(self._reconcile_cooldown_s):
+            return
+
+        pending = dict(getattr(self, '_pending_device_by_serial', {}) or {})
+        if not pending:
+            return
+
+        try:
+            summary = self.emberhawk.bulk_reconcile_pending_serials(
+                pending,
+                auto_link=True,
+                actor='system:scheduled_reconcile',
+                dry_run=False,
+            )
+            self._reconcile_last_run_ts = now
+            self._reconcile_last_summary = dict(summary)
+
+            bound_serials = summary.get('bound_serials', []) or []
+            for serial in bound_serials:
+                self._pending_device_by_serial.pop(serial, None)
+
+            bound = int(summary.get('bound', 0))
+            unmatched = int(summary.get('unmatched', 0))
+            errors = int(summary.get('errors', 0))
+
+            try:
+                from metrics import get_metrics
+                outcome = 'success' if errors == 0 else 'partial_error'
+                get_metrics().record_scheduled_reconcile_run(
+                    outcome=outcome,
+                    bound=bound,
+                    unmatched=unmatched,
+                    errors=errors,
+                )
+            except Exception:
+                pass
+
+            if errors > 0:
+                self._reconcile_consecutive_errors += 1
+            else:
+                self._reconcile_consecutive_errors = 0
+
+            if bound > 0 or unmatched > 0 or errors > 0:
+                msg = (
+                    f"Scheduled Reconcile: bound={bound}, unmatched={unmatched}, errors={errors}"
+                )
+                print(f"ℹ️  {msg}")
+                try:
+                    self.statusBar().showMessage(msg, 4000)
+                except Exception:
+                    pass
+
+            self._emit_device_telemetry(
+                'scheduled_reconcile_run',
+                state='active',
+                command='scheduled_reconcile',
+                attempted=int(summary.get('attempted', 0)),
+                bound=bound,
+                unmatched=unmatched,
+                errors=errors,
+            )
+
+            if self._reconcile_consecutive_errors >= int(self._reconcile_max_consecutive_errors):
+                self._disable_scheduled_reconcile(
+                    reason=f"consecutive_errors={self._reconcile_consecutive_errors}"
+                )
+        except Exception as e:
+            self._reconcile_consecutive_errors += 1
+            try:
+                from metrics import get_metrics
+                get_metrics().record_scheduled_reconcile_run(
+                    outcome='exception',
+                    bound=0,
+                    unmatched=0,
+                    errors=1,
+                )
+            except Exception:
+                pass
+            self._emit_device_telemetry(
+                'scheduled_reconcile_error',
+                state='warning',
+                drop_reason='exception',
+                error=str(e),
+                consecutive_errors=int(self._reconcile_consecutive_errors),
+            )
+            if self._reconcile_consecutive_errors >= int(self._reconcile_max_consecutive_errors):
+                self._disable_scheduled_reconcile(
+                    reason=f"exception_threshold:{self._reconcile_consecutive_errors}"
+                )
+
+    def _check_device_alerts(self):
+        now = time.time()
+        prev_snapshot = getattr(self, '_device_alert_last_snapshot', None)
+        prev_ts = float(getattr(self, '_device_alert_last_ts', 0.0) or 0.0)
+
+        current_snapshot = self._snapshot_device_alert_counters()
+        self._device_alert_last_snapshot = current_snapshot
+        self._device_alert_last_ts = now
+
+        if not prev_snapshot or prev_ts <= 0:
+            return
+
+        elapsed = now - prev_ts
+        if elapsed <= 0:
+            return
+
+        drop_delta = self._sum_counter_delta(prev_snapshot.get('packet_drops'), current_snapshot.get('packet_drops'))
+        fail_delta = self._sum_counter_delta(prev_snapshot.get('command_failures'), current_snapshot.get('command_failures'))
+
+        drop_rate_per_min = (drop_delta * 60.0) / elapsed
+        fail_rate_per_min = (fail_delta * 60.0) / elapsed
+
+        should_alert = (
+            drop_rate_per_min >= float(self._device_drop_alert_per_min)
+            or fail_rate_per_min >= float(self._device_command_fail_alert_per_min)
+        )
+        if not should_alert:
+            return
+
+        last_emit = float(getattr(self, '_device_alert_last_emit_ts', 0.0) or 0.0)
+        if now - last_emit < float(self._device_alert_cooldown_s):
+            return
+
+        self._device_alert_last_emit_ts = now
+        message = (
+            f"Device Ops Alert: drop_rate={drop_rate_per_min:.1f}/min "
+            f"fail_rate={fail_rate_per_min:.1f}/min"
+        )
+        print(f"⚠️  {message}")
+        try:
+            self.statusBar().showMessage(message, 5000)
+        except Exception:
+            pass
+        self._emit_device_telemetry(
+            'ops_alert',
+            state='warning',
+            drop_reason='high_rate',
+            drop_rate_per_min=round(drop_rate_per_min, 2),
+            command_fail_rate_per_min=round(fail_rate_per_min, 2),
+        )
+
+    def _register_device_identity_packet(self, packet: dict) -> None:
+        """Track identity handshake packets and bind serials to configured devices."""
+        if not isinstance(packet, dict):
+            return
+
+        serial = self._normalize_serial_key(packet.get('serial_number') or packet.get('serialno'))
+        client_ip = self._normalize_loc_key(packet.get('client_ip'))
+        if not serial:
+            return
+
+        if client_ip:
+            self._serial_by_client_ip[client_ip] = serial
+
+        device = None
+        try:
+            if getattr(self, 'emberhawk', None):
+                device = self.emberhawk.bind_serial_to_existing_device(serial, client_ip)
+                if not device:
+                    device = self.emberhawk.get_device_by_serial(serial)
+        except Exception as e:
+            print(f"Identity bind failed for serial={serial}: {e}")
+            device = None
+
+        if device:
+            mapped_loc = self._normalize_loc_key(device.get('location_id'))
+            if mapped_loc:
+                self._loc_by_serial[serial] = mapped_loc
+
+            is_linked = bool(device.get('is_linked', True))
+            is_authorized = bool(device.get('is_authorized', True))
+            if mapped_loc and is_linked and is_authorized:
+                self._pending_device_by_serial.pop(serial, None)
+                print(f"🔐 Identity mapped: serial={serial} -> device_id={device.get('id')} loc_id={device.get('location_id')}")
+                self._emit_device_telemetry(
+                    'identity_mapped',
+                    serial=serial,
+                    client_ip=client_ip,
+                    location_id=device.get('location_id'),
+                    state=self._get_device_lifecycle_state(device),
+                )
+                return
+
+            if not mapped_loc:
+                pending_state = 'pending_location'
+            elif not is_linked:
+                pending_state = 'unlinked'
+            else:
+                pending_state = 'unauthorized'
+            self._pending_device_by_serial[serial] = {
+                'serial_number': serial,
+                'client_ip': client_ip,
+                'last_seen': time.time(),
+                'state': pending_state,
+                'device_id': device.get('id'),
+            }
+            print(f"⏳ Identity pending: serial={serial} state={pending_state}")
+            self._emit_device_telemetry(
+                'identity_pending',
+                serial=serial,
+                client_ip=client_ip,
+                location_id=device.get('location_id'),
+                state=pending_state,
+            )
+            return
+
+        self._pending_device_by_serial[serial] = {
+            'serial_number': serial,
+            'client_ip': client_ip,
+            'last_seen': time.time(),
+        }
+        print(f"⏳ Identity pending: serial={serial} (no linked device yet)")
+        self._emit_device_telemetry(
+            'identity_pending',
+            serial=serial,
+            client_ip=client_ip,
+            state='pending_identity',
+        )
+
+    def _resolve_packet_identity(self, packet: dict):
+        """Resolve packet to serial and managed device, preferring serial-first identity."""
+        if not isinstance(packet, dict):
+            return None, None
+
+        client_ip = self._normalize_loc_key(packet.get('client_ip'))
+        serial = self._normalize_serial_key(packet.get('serial_number') or packet.get('serialno'))
+        if not serial and client_ip:
+            serial = self._normalize_serial_key(self._serial_by_client_ip.get(client_ip))
+            if serial:
+                packet['serial_number'] = serial
+
+        device = None
+        try:
+            if serial and getattr(self, 'emberhawk', None):
+                device = self.emberhawk.get_device_by_serial(serial)
+                if not device:
+                    device = self.emberhawk.bind_serial_to_existing_device(serial, client_ip)
+                if device and client_ip:
+                    self.emberhawk.touch_device_seen(serial, client_ip)
+        except Exception as e:
+            print(f"Packet identity resolve error: {e}")
+
+        if device and serial:
+            mapped_loc = self._normalize_loc_key(device.get('location_id'))
+            if mapped_loc:
+                self._loc_by_serial[serial] = mapped_loc
+
+        return serial, device
+
+    def _is_packet_authorized_and_linked(self, packet: dict) -> bool:
+        """Allow only authorized/linked devices into fusion/UI pipeline."""
+        serial, device = self._resolve_packet_identity(packet)
+        pkt_type = packet.get('type') if isinstance(packet, dict) else 'unknown'
+        client_ip = self._normalize_loc_key(packet.get('client_ip')) if isinstance(packet, dict) else None
+        packet_loc = self._normalize_loc_key(packet.get('loc_id')) if isinstance(packet, dict) else None
+        if serial:
+            packet['serial_number'] = serial
+
+        if not serial:
+            peer = client_ip or 'unknown'
+            if not self._pending_warned_tokens.get(f"missing:{peer}"):
+                print(f"⛔ Dropping packet from {peer}: missing device serial identity")
+                self._pending_warned_tokens[f"missing:{peer}"] = time.time()
+            self._emit_device_telemetry(
+                'packet_dropped',
+                packet_type=pkt_type,
+                client_ip=peer,
+                state='pending_identity',
+                drop_reason='missing_serial',
+            )
+            return False
+
+        if not device and packet_loc:
+            # Best-effort fallback: allow packets that match a linked+authorized location,
+            # but never override an already bound, different serial for that location.
+            loc_device = self._resolve_emberhawk_device_for_loc_id(packet_loc)
+            if loc_device:
+                loc_serial = self._normalize_serial_key(loc_device.get('serial_number'))
+                if loc_serial and loc_serial != serial:
+                    if not self._pending_warned_tokens.get(f"loc-serial-mismatch:{serial}:{packet_loc}"):
+                        print(
+                            f"⛔ Dropping packet for serial={serial}: "
+                            f"loc_id={packet_loc} is already bound to serial={loc_serial}"
+                        )
+                        self._pending_warned_tokens[f"loc-serial-mismatch:{serial}:{packet_loc}"] = time.time()
+                    self._emit_device_telemetry(
+                        'packet_dropped',
+                        packet_type=pkt_type,
+                        serial=serial,
+                        client_ip=client_ip,
+                        location_id=packet_loc,
+                        state='pending_identity',
+                        drop_reason='serial_mismatch_for_location',
+                    )
+                    return False
+
+                if bool(loc_device.get('is_authorized', True)) and bool(loc_device.get('is_linked', True)):
+                    device = loc_device
+                    self._loc_by_serial[serial] = packet_loc
+                    packet['loc_id'] = packet_loc
+                    # Keep normal serial-first flow up to date when possible.
+                    try:
+                        rebound = self.emberhawk.bind_serial_to_existing_device(serial, client_ip)
+                        if rebound:
+                            device = rebound
+                    except Exception:
+                        pass
+
+        if not device:
+            if not self._pending_warned_tokens.get(f"pending:{serial}"):
+                print(f"⏳ Dropping packet for serial={serial}: device not linked in dashboard")
+                self._pending_warned_tokens[f"pending:{serial}"] = time.time()
+            self._emit_device_telemetry(
+                'packet_dropped',
+                packet_type=pkt_type,
+                serial=serial,
+                client_ip=client_ip,
+                state='pending_identity',
+                drop_reason='device_not_linked',
+            )
+            return False
+
+        is_authorized = bool(device.get('is_authorized', True))
+        is_linked = bool(device.get('is_linked', True))
+        state = self._get_device_lifecycle_state(device)
+        if not is_authorized or not is_linked:
+            if not self._pending_warned_tokens.get(f"blocked:{serial}"):
+                print(
+                    f"⛔ Dropping packet for serial={serial}: "
+                    f"authorized={is_authorized}, linked={is_linked}"
+                )
+                self._pending_warned_tokens[f"blocked:{serial}"] = time.time()
+            self._emit_device_telemetry(
+                'packet_dropped',
+                packet_type=pkt_type,
+                serial=serial,
+                client_ip=client_ip,
+                state=state,
+                authorized=is_authorized,
+                linked=is_linked,
+                drop_reason='access_blocked',
+            )
+            return False
+
+        mapped_loc = self._normalize_loc_key(device.get('location_id')) or self._loc_by_serial.get(serial)
+        if mapped_loc:
+            # Device mapping is the source of truth once identity is linked.
+            packet['loc_id'] = mapped_loc
+        self._emit_device_telemetry(
+            'packet_accepted',
+            packet_type=pkt_type,
+            serial=serial,
+            client_ip=client_ip,
+            location_id=packet.get('loc_id'),
+            state=state,
+            authorized=True,
+            linked=True,
+        )
+        return True
+
+    def _resolve_emberhawk_device_for_loc_id(self, loc_id):
+        """Resolve location id to a configured EmberHawk device record."""
+        key = self._normalize_loc_key(loc_id)
+        if not key or not getattr(self, 'emberhawk', None):
+            return None
+        try:
+            devices = self.emberhawk.list_devices()
+        except Exception as e:
+            print(f"EmberHawk lookup failed for loc_id={key}: {e}")
+            return None
+
+        for device in devices:
+            if str(device.get('location_id') or '').strip() == key:
+                return device
+        for device in devices:
+            if str(device.get('name') or '').strip() == key:
+                return device
+        return None
+
+    def _send_emberhawk_command_for_loc(self, loc_id, command, reason=''):
+        """Send an EmberHawk command to device mapped to a location id."""
+        key = self._normalize_loc_key(loc_id)
+        if not key:
+            return False
+
+        device = self._resolve_emberhawk_device_for_loc_id(key)
+        if not device:
+            print(f"No EmberHawk device mapping for loc_id={key}; cannot send {command}")
+            return False
+
+        cmd = {
+            'command': command,
+            'ip': device.get('ip'),
+            'name': device.get('name') or key,
+            'location_id': device.get('location_id') or key,
+            'device_id': device.get('id'),
+            'serial_number': device.get('serial_number'),
+        }
+        success = self.dispatch_emberhawk_command(cmd)
+        if success:
+            msg_reason = f" ({reason})" if reason else ""
+            print(f"✅ {command} sent for loc_id={key}{msg_reason}")
+        return bool(success)
+
+    def _set_loc_alarm_ack_state(self, loc_id, acknowledged):
+        key = self._normalize_loc_key(loc_id)
+        if not key:
+            return
+        self._alarm_ack_by_loc_id[key] = bool(acknowledged)
+        widget = self.video_widgets.get(key)
+        if widget and hasattr(widget, 'set_alarm_acknowledged'):
+            try:
+                widget.set_alarm_acknowledged(bool(acknowledged))
+            except Exception as e:
+                print(f"ACK state UI update failed for loc_id={key}: {e}")
+
+    def _handle_alarm_transition(self, loc_id, alarm_active, source='fusion'):
+        """Track alarm transitions and send ALARM_ON once per active cycle."""
+        key = self._normalize_loc_key(loc_id)
+        if not key:
+            return
+
+        now = time.time()
+        active = bool(alarm_active)
+        prev_active = bool(self._alarm_state_by_loc_id.get(key, False))
+        self._alarm_state_by_loc_id[key] = active
+
+        if not active:
+            self._alarm_on_sent_by_loc_id[key] = False
+            self._alarm_on_retry_ts_by_loc_id[key] = 0.0
+            self._set_loc_alarm_ack_state(key, False)
+            return
+
+        if not prev_active:
+            self._alarm_on_sent_by_loc_id[key] = False
+            self._alarm_on_retry_ts_by_loc_id[key] = 0.0
+            self._set_loc_alarm_ack_state(key, False)
+            self._start_incident_session(key, reason=source)
+
+        if self._alarm_on_sent_by_loc_id.get(key, False):
+            return
+
+        retry_every_s = 2.0
+        last_retry = float(self._alarm_on_retry_ts_by_loc_id.get(key, 0.0))
+        if now - last_retry < retry_every_s:
+            return
+
+        self._alarm_on_retry_ts_by_loc_id[key] = now
+        sent = self._send_emberhawk_command_for_loc(key, 'ALARM_ON', reason=source)
+        if sent:
+            self._alarm_on_sent_by_loc_id[key] = True
+
+    def handle_alarm_ack_from_widget(self, loc_id):
+        """Handle per-tile triggered action by sending ACK_ON to the mapped device."""
+        key = self._normalize_loc_key(loc_id)
+        if not key:
+            return
+
+        if not bool(self._alarm_state_by_loc_id.get(key, False)):
+            self._set_loc_alarm_ack_state(key, False)
+            print(f"Ignoring ACK for loc_id={key}: alarm is not active")
+            return
+
+        success = self._send_emberhawk_command_for_loc(key, 'ACK_ON', reason='ui_ack')
+        if not success:
+            # Keep UI responsive even when PFDS transport is temporarily unavailable.
+            print(f"ACK_ON failed for loc_id={key}; forcing local stop and finalizing incident")
+
+        self._alarm_state_by_loc_id[key] = False
+        self._alarm_on_sent_by_loc_id[key] = False
+        self._alarm_on_retry_ts_by_loc_id[key] = 0.0
+        self._set_loc_alarm_ack_state(key, True)
+        self._finalize_incident_session(key, feedback='pending')
+        widget = self.video_widgets.get(key)
+        if widget and hasattr(widget, 'update_fire_alarm'):
+            try:
+                widget.update_fire_alarm(False, source='manual')
+            except Exception:
+                pass
+
+    def handle_alarm_raise_from_widget(self, loc_id):
+        """Handle per-tile raise action by sending ALARM_ON and starting incident capture."""
+        key = self._normalize_loc_key(loc_id)
+        if not key:
+            return
+        self._handle_alarm_transition(key, True, source='ui_raise')
 
     def _evaluate_rule_alarm(self, detections, yolo_score=0.0, fusion_result=None):
         """Evaluate rule-based alarm from detection classes."""
@@ -520,6 +1362,10 @@ class BEMainWindow(QMainWindow):
         # X-ray Effect: Header/status bar auto-hide state
         self.header_visible = True
         self.statusbar_visible = True
+        self._xray_header_fade_anim = None
+        self._xray_status_fade_anim = None
+        self._xray_header_opacity_effect = None
+        self._xray_status_opacity_effect = None
         
         self.maximized_widget = None
         self.original_layout = None
@@ -573,6 +1419,43 @@ class BEMainWindow(QMainWindow):
         # Hybrid alarm support (rules + fusion)
         self._fusion_by_loc_id = {}
         self._fusion_ts_by_loc_id = {}
+        self._sensor_last_packet_ts_by_loc_id = {}
+        self._sensor_overlay_stale_timeout_s = float(self.config.get('sensor_overlay_stale_timeout_s', 5.0))
+        self._alarm_state_by_loc_id = {}
+        self._alarm_ack_by_loc_id = {}
+        self._alarm_on_sent_by_loc_id = {}
+        self._alarm_on_retry_ts_by_loc_id = {}
+        self._active_incident_sessions = {}
+        self._incident_rows_by_token = {}
+        self._incident_video_save_interval_s = 0.8
+        self._incident_thermal_save_interval_s = 0.8
+        self._incident_video_record_fps = 2.0
+        self._incident_record_timer = QTimer(self)
+        self._incident_record_timer.setInterval(500)
+        self._incident_record_timer.timeout.connect(self._tick_active_incident_recording)
+        self._incident_record_timer.start()
+        self._serial_by_client_ip = {}
+        self._loc_by_serial = {}
+        self._pending_device_by_serial = {}
+        self._pending_warned_tokens = {}
+        self._device_ghost_after_s = int(self.config.get('device_ghost_after_s', 120))
+        self._device_alert_window_ms = int(self.config.get('device_alert_window_ms', 30000))
+        self._device_drop_alert_per_min = float(self.config.get('device_drop_alert_per_min', 20.0))
+        self._device_command_fail_alert_per_min = float(self.config.get('device_command_fail_alert_per_min', 10.0))
+        self._device_alert_cooldown_s = float(self.config.get('device_alert_cooldown_s', 60.0))
+        self._device_alert_last_snapshot = None
+        self._device_alert_last_ts = 0.0
+        self._device_alert_last_emit_ts = 0.0
+        self._device_alert_timer = None
+        self._reconcile_schedule_enabled = bool(self.config.get('reconcile_schedule_enabled', False))
+        self._reconcile_interval_s = float(self.config.get('reconcile_interval_s', 300.0))
+        self._reconcile_cooldown_s = float(self.config.get('reconcile_cooldown_s', 120.0))
+        self._reconcile_max_consecutive_errors = int(self.config.get('reconcile_max_consecutive_errors', 3))
+        self._reconcile_last_run_ts = 0.0
+        self._reconcile_consecutive_errors = 0
+        self._reconcile_last_summary = {}
+        self._reconcile_timer = None
+        self._operator_id = str(self.config.get('operator_id', '')).strip()
         try:
             self._rule_engine = VisionDetector(yolo_model_path="__no_model__")
         except Exception:
@@ -627,6 +1510,8 @@ class BEMainWindow(QMainWindow):
                 print(f"Metrics endpoint available at http://0.0.0.0:{metrics_port}/metrics")
         except Exception as e:
             print(f"Metrics server start failed: {e}")
+        self._start_device_alert_monitor()
+        self._start_scheduled_reconcile()
         
         # EmberHawk manager + scheduler (reuse if provided)
         if self._emberhawk is not None:
@@ -717,8 +1602,20 @@ class BEMainWindow(QMainWindow):
         self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} | Messages: {self.tcp_message_count}")
         
         if isinstance(packet, dict):
+            pkt_type = packet.get('type')
+
+            if pkt_type in ('device_id', 'serialno'):
+                self._register_device_identity_packet(packet)
+                return
+
             fusion_args = {}
             loc_id = packet.get('loc_id')  # Extract loc_id from packet
+            now_ts = time.time()
+
+            if pkt_type in ('frame', 'sensor', 'eeprom') and not self._is_packet_authorized_and_linked(packet):
+                return
+
+            loc_id = packet.get('loc_id')
             
             # Handle EEPROM calibration packets
             if packet.get('type') == 'eeprom':
@@ -736,10 +1633,12 @@ class BEMainWindow(QMainWindow):
             
             # Overlay for #frame packets
             if packet.get('type') == 'frame':
-                fusion_args['thermal_matrix'] = packet['matrix']
+                if loc_id:
+                    self._sensor_last_packet_ts_by_loc_id[str(loc_id)] = now_ts
                 # Route to specific widget by loc_id, or broadcast to all
                 target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
                 print(f"🔥 THERMAL FRAME: loc_id={loc_id}, widgets_available={len(self.video_widgets)}, target_widgets={len(target_widgets)}, matrix_shape={np.array(packet['matrix']).shape if packet['matrix'] else None}")
+                self._record_incident_thermal_frame(loc_id, packet.get('matrix'))
                 for widget in target_widgets:
                     if widget and hasattr(widget, 'set_thermal_overlay'):
                         try:
@@ -748,6 +1647,9 @@ class BEMainWindow(QMainWindow):
                         except Exception as e:
                             print(f"Overlay error: {e}")
             elif packet.get('type') == 'sensor':
+                if loc_id:
+                    self._sensor_last_packet_ts_by_loc_id[str(loc_id)] = now_ts
+                self._record_incident_sensor_packet(loc_id, packet)
                 # Store raw sensor values
                 adc1 = packet.get('ADC1')
                 adc2 = packet.get('ADC2')
@@ -789,6 +1691,7 @@ class BEMainWindow(QMainWindow):
             # Run fusion if any relevant data
             if fusion_args:
                 fusion_result = self._run_fusion(**fusion_args)
+                self._record_incident_fusion_event(loc_id, fusion_result, source='sensor_packet')
                 try:
                     log_fusion_event(
                         str(loc_id),
@@ -806,10 +1709,15 @@ class BEMainWindow(QMainWindow):
                 target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
                 for widget in target_widgets:
                     if widget:
+                        widget_loc_id = getattr(widget, 'loc_id', None) or loc_id
+                        self._handle_alarm_transition(widget_loc_id, bool(fusion_result.get('alarm')), source='sensor_packet')
                         # Update fire alarm status
                         if hasattr(widget, 'update_fire_alarm'):
                             try:
                                 widget.update_fire_alarm(fusion_result['alarm'])
+                                if hasattr(widget, 'set_alarm_acknowledged'):
+                                    acked = bool(self._alarm_ack_by_loc_id.get(str(widget_loc_id), False))
+                                    widget.set_alarm_acknowledged(acked)
                             except Exception as e:
                                 print(f"Alarm update error: {e}")
                         
@@ -828,6 +1736,7 @@ class BEMainWindow(QMainWindow):
                                 widget.set_fusion_data(fusion_result)
                             except Exception as e:
                                 print(f"Fusion data update error: {e}")
+                        self._record_incident_widget_snapshot(widget_loc_id, widget)
             
             # Forward other packets to sensor handler
             self.handle_sensor_data(packet)
@@ -880,7 +1789,8 @@ class BEMainWindow(QMainWindow):
                 header.setStyleSheet("""
                     QWidget {
                         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                            stop:0 rgba(26, 26, 26, 200), stop:0.5 rgba(37, 37, 37, 200), stop:1 rgba(26, 26, 26, 200));
+                            stop:0 rgba(24, 30, 36, 226), stop:0.5 rgba(34, 40, 48, 226), stop:1 rgba(24, 30, 36, 226));
+                        border-bottom: 1px solid rgba(210, 216, 224, 0.30);
                     }
                 """)
                 header.setFixedHeight(50)
@@ -923,22 +1833,33 @@ class BEMainWindow(QMainWindow):
                 # Group dropdown (without label)
                 self.group_combo = QComboBox()
                 self.group_combo.addItems(self.config["groups"])
+                for i in range(self.group_combo.count()):
+                    self.group_combo.setItemIcon(i, self._make_tactical_combo_icon("sensor"))
                 # Guard: connect to fallback if handler missing
                 handler = getattr(self, 'group_changed', None)
                 self.group_combo.currentTextChanged.connect(handler or self._fallback_group_changed)
                 self.group_combo.setFixedWidth(140)
                 self.group_combo.setStyleSheet("""
                     QComboBox {
-                        background-color: #2d2d2d;
-                        color: #e0e0e0;
-                        border: none;
+                        background-color: rgba(0, 0, 0, 0);
+                        color: #d2d8e0;
+                        border: 1px solid #d2d8e0;
                         border-radius: 4px;
-                        padding: 4px 10px;
+                        padding: 5px 10px;
                         font-weight: 600;
                         font-size: 12px;
+                        font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
                     }
                     QComboBox:hover {
-                        background-color: #353535;
+                        border-color: #ffdc00;
+                        color: #ffdc00;
+                    }
+                    QComboBox::drop-down {
+                        border: none;
+                        width: 18px;
+                    }
+                    QComboBox::down-arrow {
+                        image: none;
                     }
                 """)
                 header_layout.addWidget(self.group_combo)
@@ -946,20 +1867,31 @@ class BEMainWindow(QMainWindow):
                 # Grid size dropdown (without label)
                 self.grid_size = QComboBox()
                 self.grid_size.addItems(["2×2", "3×3", "4×4", "5×5"])
+                for i in range(self.grid_size.count()):
+                    self.grid_size.setItemIcon(i, self._make_tactical_combo_icon("grid"))
                 self.grid_size.currentIndexChanged.connect(self.update_rtsp_grid)
                 self.grid_size.setFixedWidth(90)
                 self.grid_size.setStyleSheet("""
                     QComboBox {
-                        background-color: #2d2d2d;
-                        color: #e0e0e0;
-                        border: none;
+                        background-color: rgba(0, 0, 0, 0);
+                        color: #d2d8e0;
+                        border: 1px solid #d2d8e0;
                         border-radius: 4px;
-                        padding: 4px 10px;
+                        padding: 5px 10px;
                         font-weight: 600;
                         font-size: 12px;
+                        font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
                     }
                     QComboBox:hover {
-                        background-color: #353535;
+                        border-color: #ffdc00;
+                        color: #ffdc00;
+                    }
+                    QComboBox::drop-down {
+                        border: none;
+                        width: 18px;
+                    }
+                    QComboBox::down-arrow {
+                        image: none;
                     }
                 """)
                 header_layout.addWidget(self.grid_size)
@@ -981,32 +1913,35 @@ class BEMainWindow(QMainWindow):
             self.tabs.setStyleSheet("""
                 QTabWidget::pane {
                     border: none;
-                    background: #1a1a1a;
+                    background: #0f1820;
                 }
                 QTabBar {
-                    background: #1a1a1a;
+                    background: #0f1820;
                     alignment: center;
                 }
                 QTabBar::tab {
-                    background: #252525;
-                    color: #9e9e9e;
-                    padding: 12px 40px;
+                    background: #15232f;
+                    color: #8fa7b6;
+                    padding: 11px 34px;
                     margin: 0px 4px;
                     border: none;
-                    border-top: 3px solid transparent;
+                    border-top: 2px solid transparent;
+                    border-bottom: 1px solid #223848;
                     font-weight: 600;
                     font-size: 12px;
-                    letter-spacing: 2px;
-                    min-width: 140px;
+                    letter-spacing: 1px;
+                    min-width: 132px;
+                    font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
                 }
                 QTabBar::tab:selected {
-                    background: #1a1a1a;
-                    color: #00bcd4;
-                    border-top-color: #00bcd4;
+                    background: #1d3140;
+                    color: #7fd6e6;
+                    border-top-color: #3dc0d7;
+                    border-bottom-color: #3dc0d7;
                 }
                 QTabBar::tab:hover:!selected {
-                    background: #2d2d2d;
-                    color: #b0b0b0;
+                    background: #1b2d3b;
+                    color: #c2d4de;
                 }
             """)
             # Set tab bar to not expand and center align
@@ -1023,6 +1958,7 @@ class BEMainWindow(QMainWindow):
                 self.init_grafana_tab()
             # Always initialize Incidents tab
             self.init_incidents_tab()
+            self.init_live_pfds_tab()
             # Training Manager removed - Studio-only feature
             # Field Edition focuses on monitoring and detection
             # Initialize Failed Devices tab if available
@@ -1040,11 +1976,17 @@ class BEMainWindow(QMainWindow):
                 status_bar.setStyleSheet("""
                     QStatusBar {
                         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                            stop:0 #1a1a1a, stop:0.5 #252525, stop:1 #1a1a1a);
-                        color: #00bcd4;
-                        border-top: 1px solid #00bcd4;
+                            stop:0 rgba(24, 30, 36, 230), stop:0.5 rgba(36, 42, 50, 230), stop:1 rgba(24, 30, 36, 230));
+                        color: #D2D8E0;
+                        border-top: 1px solid rgba(255, 220, 0, 0.40);
                         font-weight: 600;
                         font-size: 10px;
+                        font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+                    }
+                    QStatusBar::item {
+                        border: none;
+                        margin: 0px;
+                        padding: 0px;
                     }
                 """)
                 # Reduce mouse move events from status bar to avoid hover flicker
@@ -1061,109 +2003,219 @@ class BEMainWindow(QMainWindow):
             # Initialize TCP status indicator
             self.init_tcp_status_indicator()
             self.statusBar().showMessage("System Ready")
+            self._apply_responsive_dashboard_scaling()
+            self._animate_dashboard_entry()
             
         except Exception as e:
             QMessageBox.critical(None, "Error", f"Initialization failed: {str(e)}")
 
     def init_incidents_tab(self):
-        """Create an Incidents tab showing captured frames as thumbnails."""
-        from PyQt5.QtWidgets import QListWidget, QListWidgetItem
+        """Create a tactical Incidents tab for post-mission analysis."""
         from PyQt5.QtCore import QSize
         incidents_tab = QWidget()
         layout = QVBoxLayout(incidents_tab)
-        # Controls row
-        controls = QHBoxLayout()
-        self.incident_count_label = QLabel("Captured: 0")
-        # Toggle capture button
+
+        # Header strip: breadcrumbs + global actions + filters/search.
+        header_frame = QFrame()
+        header_frame.setObjectName("IncidentHeader")
+        header_frame.setStyleSheet("""
+            QFrame#IncidentHeader {
+                background-color: #151b22;
+                border: 1px solid #4c5560;
+                border-radius: 4px;
+            }
+            QLabel#IncidentBreadcrumb { color: #ffd24a; font-weight: 700; font-size: 13px; }
+            QLabel#IncidentCount { color: #dce3ea; font-size: 12px; }
+            QPushButton#PrimaryYellow {
+                background-color: #ffd200;
+                color: #1d2128;
+                border: 1px solid #d8b100;
+                border-radius: 8px;
+                font-weight: 700;
+                padding: 6px 12px;
+            }
+            QPushButton#PrimaryYellow:hover { background-color: #ffe061; }
+            QPushButton#GhostButton {
+                background-color: #38414d;
+                color: #dce3ea;
+                border: 1px solid #566170;
+                border-radius: 8px;
+                font-weight: 600;
+                padding: 6px 10px;
+            }
+            QPushButton#GhostButton:hover { background-color: #435062; }
+            QComboBox, QLineEdit {
+                background-color: #1f252d;
+                color: #dce3ea;
+                border: 1px solid #596474;
+                border-radius: 7px;
+                padding: 5px 8px;
+                min-height: 26px;
+            }
+            QCheckBox { color: #dce3ea; font-weight: 600; }
+        """)
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(12, 10, 12, 10)
+        header_layout.setSpacing(8)
+
+        self.incident_breadcrumb = QLabel("INCIDENTS > ARCHIVE")
+        self.incident_breadcrumb.setObjectName("IncidentBreadcrumb")
+        header_layout.addWidget(self.incident_breadcrumb)
+
+        self.incident_count_label = QLabel("Showing 0 incidents")
+        self.incident_count_label.setObjectName("IncidentCount")
+        header_layout.addWidget(self.incident_count_label)
+        header_layout.addStretch()
+
+        self.incident_filter_severity = QComboBox()
+        self.incident_filter_severity.addItems(["All Severity", "HIGH", "MEDIUM", "LOW"])
+        self.incident_filter_severity.currentIndexChanged.connect(self._refresh_incident_cards)
+        header_layout.addWidget(self.incident_filter_severity)
+
+        self.incident_filter_sensor = QComboBox()
+        self.incident_filter_sensor.addItems(["All Sensors", "thermal", "smoke", "gas", "flame", "vision"])
+        self.incident_filter_sensor.currentIndexChanged.connect(self._refresh_incident_cards)
+        header_layout.addWidget(self.incident_filter_sensor)
+
+        self.incident_filter_feedback = QComboBox()
+        self.incident_filter_feedback.addItems(["All Status", "pending", "valid_alarm", "false_positive", "nuisance"])
+        self.incident_filter_feedback.currentIndexChanged.connect(self._refresh_incident_cards)
+        header_layout.addWidget(self.incident_filter_feedback)
+
+        self.incident_search = QLineEdit()
+        self.incident_search.setPlaceholderText("Search ID / Location")
+        self.incident_search.textChanged.connect(self._refresh_incident_cards)
+        header_layout.addWidget(self.incident_search)
+
+        self.incident_night_mode_toggle = QCheckBox("Vessel Mode")
+        self.incident_night_mode_toggle.toggled.connect(self._toggle_incident_night_mode)
+        header_layout.addWidget(self.incident_night_mode_toggle)
+
+        export_all_btn = QPushButton("EXPORT ALL TO USB")
+        export_all_btn.setObjectName("PrimaryYellow")
+        export_all_btn.clicked.connect(self.export_incidents_bundle)
+        header_layout.addWidget(export_all_btn)
+
+        sync_usb_btn = QPushButton("Sync To USB")
+        sync_usb_btn.setObjectName("GhostButton")
+        sync_usb_btn.clicked.connect(self.export_incidents_bundle)
+        header_layout.addWidget(sync_usb_btn)
+
+        mission_btn = QPushButton("Mission Summary Report")
+        mission_btn.setObjectName("GhostButton")
+        mission_btn.clicked.connect(self._show_incident_mission_summary)
+        header_layout.addWidget(mission_btn)
+
+        clear_btn = QPushButton("CLEAR ALL")
+        clear_btn.setObjectName("GhostButton")
+        header_layout.addWidget(clear_btn)
+        layout.addWidget(header_frame)
+
+        # Tactical card body (3-column responsive grid in scroll area).
+        self.incident_cards_scroll = QScrollArea()
+        self.incident_cards_scroll.setWidgetResizable(True)
+        self.incident_cards_scroll.setFrameShape(QScrollArea.NoFrame)
+        cards_host = QWidget()
+        self.incident_cards_grid = QGridLayout(cards_host)
+        self.incident_cards_grid.setContentsMargins(8, 8, 8, 8)
+        self.incident_cards_grid.setHorizontalSpacing(18)
+        self.incident_cards_grid.setVerticalSpacing(18)
+        self.incident_cards_scroll.setWidget(cards_host)
+        layout.addWidget(self.incident_cards_scroll, 1)
+
+        # Footer pagination and storage strip.
+        footer_frame = QFrame()
+        footer_frame.setObjectName("IncidentFooter")
+        footer_frame.setStyleSheet("""
+            QFrame#IncidentFooter {
+                background-color: #151b22;
+                border: 1px solid #4c5560;
+                border-radius: 4px;
+            }
+            QLabel { color: #cdd5dd; font-size: 12px; }
+            QPushButton {
+                background-color: #3a444f;
+                color: #f0f2f5;
+                border: 1px solid #5f6c7b;
+                border-radius: 8px;
+                font-weight: 700;
+                padding: 8px 16px;
+                min-width: 88px;
+            }
+            QPushButton:hover { background-color: #495868; }
+        """)
+        footer_layout = QHBoxLayout(footer_frame)
+        footer_layout.setContentsMargins(12, 8, 12, 8)
+
+        self.incident_footer_range = QLabel("Showing 0-0 of 0 incidents")
+        footer_layout.addWidget(self.incident_footer_range)
+        footer_layout.addStretch()
+
+        self.incident_prev_btn = QPushButton("PREV")
+        self.incident_prev_btn.clicked.connect(lambda: self._change_incident_cards_page(-1))
+        footer_layout.addWidget(self.incident_prev_btn)
+
+        self.incident_next_btn = QPushButton("NEXT")
+        self.incident_next_btn.clicked.connect(lambda: self._change_incident_cards_page(1))
+        footer_layout.addWidget(self.incident_next_btn)
+
+        footer_layout.addStretch()
+        self.incident_storage_label = QLabel("Storage Capacity: 0% Used")
+        footer_layout.addWidget(self.incident_storage_label)
+        layout.addWidget(footer_frame)
+
+        # Hidden legacy widgets kept for compatibility with existing capture/export logic.
+        self.incident_table = QTableWidget(0, 9)
+        self.incident_table.setVisible(False)
+        self.incident_list = QListWidget()
+        self.incident_list.setVisible(False)
+        self.incident_list.setViewMode(self.incident_list.IconMode)
+        self.incident_list.setIconSize(QSize(160, 120))
+        self.incident_list.setSelectionMode(QListWidget.ExtendedSelection)
+
+        # Legacy capture toggle remains functional but no longer shown in tactical UI.
         self.incident_capture_btn = QPushButton("⏸ Pause Capture")
         self.incident_capture_btn.setCheckable(True)
         self.incident_capture_enabled = True
+
         def toggle_capture():
             self.incident_capture_enabled = not self.incident_capture_btn.isChecked()
             self.incident_capture_btn.setText("▶ Resume Capture" if self.incident_capture_btn.isChecked() else "⏸ Pause Capture")
             print(f"Incident capture {'enabled' if self.incident_capture_enabled else 'disabled'}")
+
         self.incident_capture_btn.clicked.connect(toggle_capture)
-        clear_btn = QPushButton("Clear All")
-        open_btn = QPushButton("Open Folder")
-        export_btn = QPushButton("Export Incidents")
-        controls.addWidget(self.incident_count_label)
-        controls.addStretch()
-        controls.addWidget(self.incident_capture_btn)
-        controls.addWidget(export_btn)
-        controls.addWidget(open_btn)
-        controls.addWidget(clear_btn)
-        layout.addLayout(controls)
-        # Thumbnails list
-        self.incident_list = QListWidget()
-        self.incident_list.setViewMode(self.incident_list.IconMode)
-        self.incident_list.setIconSize(QSize(160, 120))
-        self.incident_list.setResizeMode(self.incident_list.Adjust)
-        self.incident_list.setSpacing(10)
-        self.incident_list.setSelectionMode(QListWidget.ExtendedSelection)
-        layout.addWidget(self.incident_list)
+
+        # Tactical pagination state.
+        self._incident_cards_page = 1
+        self._incident_cards_page_size = 12
 
         # Storage for full images and metadata
         self._incidents_store = []  # list of dicts {pixmap, loc_id, score, ts}
+        self._incident_rows_by_token = {}
         if not hasattr(self, '_incident_max_items'):
             self._incident_max_items = 200
 
         def on_clear():
+            for _k, _session in list(getattr(self, '_active_incident_sessions', {}).items()):
+                try:
+                    self._close_incident_video_writer(_session)
+                except Exception:
+                    pass
             self._incidents_store.clear()
             self.incident_list.clear()
+            self.incident_table.setRowCount(0)
+            self._incident_rows_by_token.clear()
+            self._active_incident_sessions.clear()
             self._update_incident_count()
+            self._refresh_incident_cards()
         clear_btn.clicked.connect(on_clear)
-
-        def on_open_folder():
-            try:
-                from PyQt5.QtGui import QDesktopServices
-                from PyQt5.QtCore import QUrl
-                import os
-                path = getattr(self, 'incident_save_dir', '')
-                if not path:
-                    path = os.path.join(os.path.dirname(__file__), 'incidents')
-                os.makedirs(path, exist_ok=True)
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-            except Exception as e:
-                print(f"Open folder error: {e}")
-        open_btn.clicked.connect(on_open_folder)
-
-        def on_export():
-            try:
-                if self.incident_list.selectedItems():
-                    self.export_selected_incidents_bundle()
-                else:
-                    self.export_incidents_bundle()
-            except Exception as e:
-                QMessageBox.critical(self, "Export Failed", f"Incident export failed: {e}")
-        export_btn.clicked.connect(on_export)
-
-        def on_open_preview(item):
-            try:
-                idx = item.data(Qt.UserRole)
-                if idx is None or idx < 0 or idx >= len(self._incidents_store):
-                    return
-                entry = self._incidents_store[idx]
-                # Show simple preview dialog
-                dlg = QDialog(self)
-                dlg.setWindowTitle(f"Incident • {entry['loc_id']} • {entry['score']:.2f}")
-                v = QVBoxLayout(dlg)
-                lbl = QLabel()
-                lbl.setPixmap(entry['pixmap'].scaled(800, 600, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                v.addWidget(lbl)
-                btn = QPushButton("Close")
-                btn.clicked.connect(dlg.accept)
-                v.addWidget(btn)
-                dlg.resize(820, 640)
-                dlg.exec_()
-            except Exception as e:
-                print(f"Incident preview error: {e}")
-        self.incident_list.itemDoubleClicked.connect(on_open_preview)
 
         # Determine tab label based on theme
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
         is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
         self.tabs.addTab(incidents_tab, "INCIDENTS" if is_modern else "Incidents")
+        self._refresh_incident_cards()
 
     def init_training_manager_tab(self):
         """DISABLED: Training Manager tab is not available in Field Edition.
@@ -2149,9 +3201,769 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _update_incident_count(self):
         try:
             if hasattr(self, 'incident_count_label'):
-                self.incident_count_label.setText(f"Captured: {len(self._incidents_store)}")
+                self.incident_count_label.setText(f"Showing {len(self._incidents_store)} incidents")
         except Exception:
             pass
+
+    def _show_incident_mission_summary(self):
+        sessions = self._collect_incident_sessions()
+        total = len(sessions)
+        pending = sum(1 for s in sessions if str(s.get('feedback', 'pending')) == 'pending')
+        valid = sum(1 for s in sessions if str(s.get('feedback', '')) == 'valid_alarm')
+        nuisance = sum(1 for s in sessions if str(s.get('feedback', '')) == 'nuisance')
+        false_pos = sum(1 for s in sessions if str(s.get('feedback', '')) == 'false_positive')
+        msg = (
+            f"Mission Incident Summary\n\n"
+            f"Total Sessions: {total}\n"
+            f"Pending Review: {pending}\n"
+            f"Valid Alarm: {valid}\n"
+            f"Nuisance: {nuisance}\n"
+            f"False Alarm: {false_pos}"
+        )
+        QMessageBox.information(self, "Mission Summary Report", msg)
+
+    def _toggle_incident_night_mode(self, enabled):
+        try:
+            active = bool(enabled)
+            if hasattr(self, 'incident_cards_scroll'):
+                self.incident_cards_scroll.setStyleSheet(
+                    "QScrollArea { background-color: #140b0b; border: none; }" if active else
+                    "QScrollArea { background-color: #1d2229; border: none; }"
+                )
+            self._refresh_incident_cards()
+        except Exception:
+            pass
+
+    def _change_incident_cards_page(self, delta):
+        page = int(getattr(self, '_incident_cards_page', 1) or 1)
+        sessions = self._filter_incident_sessions(self._collect_incident_sessions())
+        page_size = int(getattr(self, '_incident_cards_page_size', 12) or 12)
+        max_page = max(1, int((len(sessions) + page_size - 1) / page_size))
+        self._incident_cards_page = max(1, min(max_page, page + int(delta)))
+        self._refresh_incident_cards()
+
+    def _collect_incident_sessions(self):
+        rows = getattr(self, '_incident_rows_by_token', {}) or {}
+        sessions = []
+        seen = set()
+        for token, info in rows.items():
+            session = (info or {}).get('session') if isinstance(info, dict) else None
+            if not isinstance(session, dict):
+                continue
+            tok = str(session.get('token') or token or '').strip()
+            if not tok or tok in seen:
+                continue
+            seen.add(tok)
+            sessions.append(session)
+        active = getattr(self, '_active_incident_sessions', {}) or {}
+        for _k, session in active.items():
+            if not isinstance(session, dict):
+                continue
+            tok = str(session.get('token') or '').strip()
+            if not tok or tok in seen:
+                continue
+            seen.add(tok)
+            sessions.append(session)
+        sessions.sort(key=lambda s: float(s.get('start_ts', 0.0) or 0.0), reverse=True)
+        return sessions
+
+    def _infer_session_severity(self, session):
+        reason = str((session or {}).get('reason', '')).lower()
+        if any(x in reason for x in ('critical', 'high', 'flame', 'smoke')):
+            return 'HIGH'
+        if any(x in reason for x in ('thermal', 'gas', 'vision')):
+            return 'MEDIUM'
+        return 'LOW'
+
+    def _infer_session_sensor_type(self, session):
+        reason = str((session or {}).get('reason', '')).lower()
+        for name in ('thermal', 'smoke', 'gas', 'flame', 'vision'):
+            if name in reason:
+                return name
+        return 'vision'
+
+    def _filter_incident_sessions(self, sessions):
+        severity_filter = str(getattr(self, 'incident_filter_severity', QComboBox()).currentText() if hasattr(self, 'incident_filter_severity') else 'All Severity')
+        sensor_filter = str(getattr(self, 'incident_filter_sensor', QComboBox()).currentText() if hasattr(self, 'incident_filter_sensor') else 'All Sensors')
+        feedback_filter = str(getattr(self, 'incident_filter_feedback', QComboBox()).currentText() if hasattr(self, 'incident_filter_feedback') else 'All Status')
+        search_value = str(getattr(self, 'incident_search', QLineEdit()).text() if hasattr(self, 'incident_search') else '').strip().lower()
+
+        result = []
+        for session in sessions:
+            severity = self._infer_session_severity(session)
+            sensor_type = self._infer_session_sensor_type(session)
+            feedback = str(session.get('feedback', 'pending'))
+            token = str(session.get('token', ''))
+            loc_id = str(session.get('loc_id', ''))
+
+            if severity_filter != 'All Severity' and severity != severity_filter:
+                continue
+            if sensor_filter != 'All Sensors' and sensor_type != sensor_filter:
+                continue
+            if feedback_filter != 'All Status' and feedback != feedback_filter:
+                continue
+            if search_value and search_value not in token.lower() and search_value not in loc_id.lower():
+                continue
+            result.append(session)
+        return result
+
+    def _clear_incident_cards_grid(self):
+        if not hasattr(self, 'incident_cards_grid'):
+            return
+        while self.incident_cards_grid.count():
+            item = self.incident_cards_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _sparkline_from_values(self, values, width=180, height=38):
+        pix = QPixmap(max(1, int(width)), max(1, int(height)))
+        pix.fill(Qt.transparent)
+        if not values:
+            return pix
+        try:
+            v = [float(x) for x in values]
+            mn, mx = min(v), max(v)
+            span = (mx - mn) if mx != mn else 1.0
+            painter = QPainter(pix)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(QColor('#ffd200'), 2))
+            count = len(v)
+            prev_x = 0
+            prev_y = int(height - ((v[0] - mn) / span) * (height - 4))
+            for i in range(1, count):
+                x = int((i / max(1, count - 1)) * (width - 1))
+                y = int(height - ((v[i] - mn) / span) * (height - 4))
+                painter.drawLine(prev_x, prev_y, x, y)
+                prev_x, prev_y = x, y
+            painter.end()
+        except Exception:
+            pass
+        return pix
+
+    def _load_session_preview_pixmaps(self, session):
+        rgb = None
+        therm = None
+        try:
+            thumb_path = str((session or {}).get('thumbnail_path', '') or '')
+            if thumb_path and os.path.exists(thumb_path):
+                rgb = QPixmap(thumb_path)
+            if (rgb is None or rgb.isNull()) and isinstance(session, dict):
+                vdir = os.path.join(str(session.get('dir', '')), 'video')
+                if os.path.isdir(vdir):
+                    files = sorted([f for f in os.listdir(vdir) if f.lower().endswith('.jpg')])
+                    if files:
+                        rgb = QPixmap(os.path.join(vdir, files[-1]))
+            tdir = os.path.join(str((session or {}).get('dir', '')), 'thermal')
+            if os.path.isdir(tdir):
+                files = sorted([f for f in os.listdir(tdir) if f.lower().endswith('.png')])
+                if files:
+                    therm = QPixmap(os.path.join(tdir, files[-1]))
+        except Exception:
+            pass
+        return rgb, therm
+
+    def _extract_sensor_series(self, session):
+        gas, smoke, thermal = [], [], []
+        try:
+            s_path = str((session or {}).get('sensor_log_path', '') or '')
+            if s_path and os.path.exists(s_path):
+                with open(s_path, 'r', encoding='utf-8') as fp:
+                    for line in fp.readlines()[-32:]:
+                        obj = json.loads(line)
+                        pkt = obj.get('packet', {}) if isinstance(obj, dict) else {}
+                        gas.append(float(pkt.get('ADC1', 0) or 0))
+                        smoke.append(float(pkt.get('ADC2', 0) or 0))
+            t_path = str((session or {}).get('thermal_log_path', '') or '')
+            if t_path and os.path.exists(t_path):
+                with open(t_path, 'r', encoding='utf-8') as fp:
+                    for line in fp.readlines()[-32:]:
+                        obj = json.loads(line)
+                        thermal.append(float(obj.get('max_temp', 0) or 0))
+        except Exception:
+            pass
+        return gas, smoke, thermal
+
+    def _set_incident_feedback_and_refresh(self, token, feedback):
+        self._set_incident_feedback(token, feedback)
+        self._refresh_incident_cards()
+
+    def _open_incident_dual_view(self, session):
+        try:
+            session_dir = str((session or {}).get('dir', '') or '')
+            vdir = os.path.join(session_dir, 'video')
+            tdir = os.path.join(session_dir, 'thermal')
+            video_files = sorted([f for f in os.listdir(vdir) if f.lower().endswith('.jpg')]) if os.path.isdir(vdir) else []
+            thermal_files = sorted([f for f in os.listdir(tdir) if f.lower().endswith('.png')]) if os.path.isdir(tdir) else []
+            if not video_files and not thermal_files:
+                QMessageBox.information(self, 'Playback', 'No incident media available for playback.')
+                return
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"Dual View Playback • {session.get('loc_id', '')}")
+            dlg.resize(980, 620)
+            root = QVBoxLayout(dlg)
+
+            views = QHBoxLayout()
+            rgb_lbl = QLabel('RGB')
+            rgb_lbl.setAlignment(Qt.AlignCenter)
+            rgb_lbl.setMinimumSize(440, 300)
+            rgb_lbl.setStyleSheet('background:#11161d; border:1px solid #4a5460;')
+            therm_lbl = QLabel('THERMAL')
+            therm_lbl.setAlignment(Qt.AlignCenter)
+            therm_lbl.setMinimumSize(440, 300)
+            therm_lbl.setStyleSheet('background:#11161d; border:1px solid #4a5460;')
+            views.addWidget(rgb_lbl)
+            views.addWidget(therm_lbl)
+            root.addLayout(views)
+
+            max_frames = max(len(video_files), len(thermal_files), 1)
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(0, max_frames - 1)
+            root.addWidget(slider)
+
+            controls = QHBoxLayout()
+            play_btn = QPushButton('▶ Play')
+            pause_btn = QPushButton('⏸ Pause')
+            close_btn = QPushButton('Close')
+            controls.addWidget(play_btn)
+            controls.addWidget(pause_btn)
+            controls.addStretch()
+            controls.addWidget(close_btn)
+            root.addLayout(controls)
+
+            timer = QTimer(dlg)
+            timer.setInterval(140)
+
+            def _frame_path(files, idx, folder):
+                if not files:
+                    return ''
+                ridx = int((idx / max(1, max_frames - 1)) * (len(files) - 1))
+                ridx = max(0, min(len(files) - 1, ridx))
+                return os.path.join(folder, files[ridx])
+
+            def _render(idx):
+                p1 = _frame_path(video_files, idx, vdir)
+                p2 = _frame_path(thermal_files, idx, tdir)
+                if p1 and os.path.exists(p1):
+                    px1 = QPixmap(p1)
+                    if not px1.isNull():
+                        rgb_lbl.setPixmap(px1.scaled(rgb_lbl.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                if p2 and os.path.exists(p2):
+                    px2 = QPixmap(p2)
+                    if not px2.isNull():
+                        therm_lbl.setPixmap(px2.scaled(therm_lbl.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+            def _tick():
+                cur = slider.value()
+                if cur >= slider.maximum():
+                    timer.stop()
+                    return
+                slider.setValue(cur + 1)
+
+            slider.valueChanged.connect(_render)
+            timer.timeout.connect(_tick)
+            play_btn.clicked.connect(lambda: timer.start())
+            pause_btn.clicked.connect(lambda: timer.stop())
+            close_btn.clicked.connect(dlg.accept)
+            _render(0)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, 'Playback Error', f'Unable to open dual-view playback:\n{e}')
+
+    def _build_incident_card(self, session):
+        token = str(session.get('token', ''))
+        loc = str(session.get('loc_id', ''))
+        start_ts = float(session.get('start_ts', time.time()) or time.time())
+        end_ts = float(session.get('end_ts', time.time()) or time.time())
+        duration = max(0.0, end_ts - start_ts)
+        severity = self._infer_session_severity(session)
+        feedback = str(session.get('feedback', 'pending'))
+        is_verified = feedback != 'pending'
+        is_night = bool(getattr(self, 'incident_night_mode_toggle', QCheckBox()).isChecked() if hasattr(self, 'incident_night_mode_toggle') else False)
+
+        card = QFrame()
+        card.setObjectName('IncidentCard')
+        card.setProperty('status', 'verified' if is_verified else 'pending')
+        card.setAttribute(Qt.WA_Hover, True)
+        bg = '#291414' if is_night else '#131920'
+        border_color = '#ffd200' if is_verified else '#5c6672'
+        border_style = 'solid' if is_verified else 'dashed'
+        card.setStyleSheet(
+            f"QFrame#IncidentCard {{ background-color: {bg}; border: 2px {border_style} {border_color}; border-radius: 4px; }}"
+            "QFrame#IncidentCard:hover { border-color: #ffdc00; }"
+            "QLabel { color: #e3e8ee; border: none; }"
+            "QPushButton { background-color: #394451; color: #f0f2f6; border: 1px solid #5f6b79; border-radius: 6px; padding: 4px 8px; font-weight: 600; }"
+            "QPushButton:hover { background-color: #495868; }"
+        )
+        v = QVBoxLayout(card)
+        v.setContentsMargins(10, 10, 10, 10)
+        v.setSpacing(6)
+
+        header = QHBoxLayout()
+        sev_dot = QLabel('●')
+        sev_dot.setStyleSheet('color:#ffd200; font-size:13px; border:none;')
+        header.addWidget(sev_dot)
+        header.addWidget(QLabel(f"{token[-16:]}  |  {datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M:%S')}"))
+        header.addStretch()
+        header.addWidget(QLabel(f"{severity}"))
+        v.addLayout(header)
+
+        timing = QHBoxLayout()
+        timing.addWidget(QLabel(f"Start: {datetime.fromtimestamp(start_ts).strftime('%H:%M:%S')}"))
+        timing.addStretch()
+        timing.addWidget(QLabel(f"Duration: {duration:.1f}s"))
+        v.addLayout(timing)
+
+        rgb, therm = self._load_session_preview_pixmaps(session)
+        media = QHBoxLayout()
+        rgb_lbl = QLabel('RGB')
+        rgb_lbl.setAlignment(Qt.AlignCenter)
+        rgb_lbl.setMinimumSize(150, 92)
+        rgb_lbl.setStyleSheet('background:#0f141a; border:1px solid #4f5b67;')
+        therm_lbl = QLabel('THERMAL')
+        therm_lbl.setAlignment(Qt.AlignCenter)
+        therm_lbl.setMinimumSize(150, 92)
+        therm_lbl.setStyleSheet('background:#0f141a; border:1px solid #4f5b67;')
+        if rgb and not rgb.isNull():
+            rgb_lbl.setPixmap(rgb.scaled(150, 92, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        if therm and not therm.isNull():
+            therm_lbl.setPixmap(therm.scaled(150, 92, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        media.addWidget(rgb_lbl)
+        media.addWidget(therm_lbl)
+        v.addLayout(media)
+
+        gas, smoke, thermal = self._extract_sensor_series(session)
+        spark_row = QHBoxLayout()
+        for title, series in (("GAS", gas), ("SMOKE", smoke), ("THERM", thermal)):
+            box = QVBoxLayout()
+            lbl = QLabel(title)
+            lbl.setStyleSheet('color:#ffd200; font-weight:700; border:none;')
+            graph = QLabel()
+            graph.setPixmap(self._sparkline_from_values(series or [0.0], 96, 32))
+            graph.setStyleSheet('background:#151b23; border:1px solid #4f5b67;')
+            box.addWidget(lbl)
+            box.addWidget(graph)
+            spark_row.addLayout(box)
+        v.addLayout(spark_row)
+
+        hub = QHBoxLayout()
+        play_btn = QPushButton('▶')
+        play_btn.setToolTip('Play incident playback')
+        play_btn.clicked.connect(lambda _=False, s=session: self._open_incident_dual_view(s))
+        expand_btn = QPushButton('⤢')
+        expand_btn.setToolTip('Expand dual-view playback')
+        expand_btn.clicked.connect(lambda _=False, s=session: self._open_incident_dual_view(s))
+        hub.addWidget(play_btn)
+        hub.addWidget(expand_btn)
+        hub.addStretch()
+        v.addLayout(hub)
+
+        feedback_row = QHBoxLayout()
+        valid_btn = QPushButton('VALID ALARM')
+        valid_btn.setStyleSheet('border:1px solid #ffd200;')
+        valid_btn.clicked.connect(lambda _=False, t=token: self._set_incident_feedback_and_refresh(t, 'valid_alarm'))
+        false_btn = QPushButton('FALSE ALARM')
+        false_btn.clicked.connect(lambda _=False, t=token: self._set_incident_feedback_and_refresh(t, 'false_positive'))
+        nuisance_btn = QPushButton('NUISANCE')
+        nuisance_btn.clicked.connect(lambda _=False, t=token: self._set_incident_feedback_and_refresh(t, 'nuisance'))
+        feedback_row.addWidget(valid_btn)
+        feedback_row.addWidget(false_btn)
+        feedback_row.addWidget(nuisance_btn)
+        v.addLayout(feedback_row)
+
+        return card
+
+    def _refresh_incident_cards(self):
+        if not hasattr(self, 'incident_cards_grid'):
+            return
+        sessions = self._filter_incident_sessions(self._collect_incident_sessions())
+        self._clear_incident_cards_grid()
+
+        page_size = int(getattr(self, '_incident_cards_page_size', 12) or 12)
+        total = len(sessions)
+        max_page = max(1, int((total + page_size - 1) / page_size))
+        page = int(getattr(self, '_incident_cards_page', 1) or 1)
+        page = max(1, min(max_page, page))
+        self._incident_cards_page = page
+
+        start = (page - 1) * page_size
+        end = min(total, start + page_size)
+        page_items = sessions[start:end]
+
+        for idx, session in enumerate(page_items):
+            row = idx // 3
+            col = idx % 3
+            self.incident_cards_grid.addWidget(self._build_incident_card(session), row, col)
+
+        if hasattr(self, 'incident_footer_range'):
+            self.incident_footer_range.setText(f"Showing {start + 1 if total else 0}-{end} of {total} incidents")
+        if hasattr(self, 'incident_prev_btn'):
+            self.incident_prev_btn.setEnabled(page > 1)
+        if hasattr(self, 'incident_next_btn'):
+            self.incident_next_btn.setEnabled(page < max_page)
+        self._update_incident_storage_usage_label()
+        self._update_incident_count()
+
+    def _update_incident_storage_usage_label(self):
+        if not hasattr(self, 'incident_storage_label'):
+            return
+        try:
+            incident_root = str(getattr(self, 'incident_save_dir', '') or os.path.join(os.path.dirname(__file__), 'incidents'))
+            total_bytes = 0
+            if os.path.isdir(incident_root):
+                for root, _dirs, files in os.walk(incident_root):
+                    for f in files:
+                        path = os.path.join(root, f)
+                        try:
+                            total_bytes += int(os.path.getsize(path))
+                        except Exception:
+                            pass
+            # Tactical estimate for local archive budget (10 GB).
+            used_pct = min(100.0, (float(total_bytes) / float(10 * 1024 * 1024 * 1024)) * 100.0)
+            self.incident_storage_label.setText(f"Storage Capacity: {used_pct:.1f}% (Used)")
+        except Exception:
+            self.incident_storage_label.setText("Storage Capacity: N/A")
+
+    def _incident_token_for_loc(self, loc_id):
+        key = self._normalize_loc_key(loc_id) or "unknown"
+        safe = "".join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in key)
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        return f"{ts}_{safe}"
+
+    def _start_incident_session(self, loc_id, reason="alarm"):
+        key = self._normalize_loc_key(loc_id)
+        if not key:
+            return None
+        existing = self._active_incident_sessions.get(key)
+        if existing and not existing.get('acked'):
+            return existing
+
+        base_dir = getattr(self, 'incident_save_dir', '') or os.path.join(os.path.dirname(__file__), 'incidents')
+        token = self._incident_token_for_loc(key)
+        session_dir = os.path.join(base_dir, "sessions", token)
+        os.makedirs(session_dir, exist_ok=True)
+
+        session = {
+            'token': token,
+            'loc_id': key,
+            'reason': str(reason or 'alarm'),
+            'start_ts': time.time(),
+            'end_ts': None,
+            'acked': False,
+            'feedback': 'pending',
+            'dir': session_dir,
+            'video_frames': 0,
+            'thermal_frames': 0,
+            'sensor_packets': 0,
+            'fusion_events': 0,
+            'vision_events': 0,
+            'last_video_ts': 0.0,
+            'last_thermal_ts': 0.0,
+            'thumbnail_path': '',
+            'video_recording_path': os.path.join(session_dir, 'incident_capture.mp4'),
+            'video_recording_fps': float(getattr(self, '_incident_video_record_fps', 8.0) or 8.0),
+            'video_recording_frames': 0,
+            'video_writer': None,
+            'video_writer_size': None,
+            'video_writer_last_ts': 0.0,
+            'manifest_path': os.path.join(session_dir, 'manifest.json'),
+            'sensor_log_path': os.path.join(session_dir, 'sensor.jsonl'),
+            'fusion_log_path': os.path.join(session_dir, 'fusion.jsonl'),
+            'vision_log_path': os.path.join(session_dir, 'vision.jsonl'),
+            'video_log_path': os.path.join(session_dir, 'video.jsonl'),
+            'thermal_log_path': os.path.join(session_dir, 'thermal.jsonl'),
+        }
+        self._active_incident_sessions[key] = session
+        self._write_incident_manifest(session)
+        return session
+
+    def _write_incident_manifest(self, session):
+        try:
+            payload = {
+                'token': session.get('token'),
+                'location_id': session.get('loc_id'),
+                'reason': session.get('reason'),
+                'start_ts': session.get('start_ts'),
+                'end_ts': session.get('end_ts'),
+                'acked': bool(session.get('acked')),
+                'feedback': session.get('feedback', 'pending'),
+                'counts': {
+                    'video_frames': int(session.get('video_frames', 0)),
+                    'thermal_frames': int(session.get('thermal_frames', 0)),
+                    'sensor_packets': int(session.get('sensor_packets', 0)),
+                    'fusion_events': int(session.get('fusion_events', 0)),
+                    'vision_events': int(session.get('vision_events', 0)),
+                    'video_recording_frames': int(session.get('video_recording_frames', 0)),
+                },
+                'thumbnail_path': session.get('thumbnail_path', ''),
+                'video_recording_path': session.get('video_recording_path', ''),
+                'video_recording_fps': float(session.get('video_recording_fps', 0.0) or 0.0),
+            }
+            with open(session.get('manifest_path'), 'w', encoding='utf-8') as fp:
+                json.dump(payload, fp, indent=2)
+        except Exception as e:
+            print(f"Incident manifest write error: {e}")
+
+    def _ensure_incident_video_writer(self, session, qimage):
+        if not isinstance(session, dict) or qimage is None:
+            return False
+        writer = session.get('video_writer')
+        if writer is not None:
+            return True
+        try:
+            w = int(qimage.width())
+            h = int(qimage.height())
+            if w <= 0 or h <= 0:
+                return False
+            video_path = str(session.get('video_recording_path') or '').strip()
+            if not video_path:
+                return False
+            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            fps = max(1.0, float(session.get('video_recording_fps', 8.0) or 8.0))
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            vw = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
+            if not vw or (hasattr(vw, 'isOpened') and not vw.isOpened()):
+                return False
+            session['video_writer'] = vw
+            session['video_writer_size'] = (w, h)
+            session['video_writer_last_ts'] = 0.0
+            return True
+        except Exception as e:
+            print(f"Incident video writer init error: {e}")
+            return False
+
+    def _close_incident_video_writer(self, session):
+        if not isinstance(session, dict):
+            return
+        writer = session.get('video_writer')
+        try:
+            if writer is not None:
+                writer.release()
+        except Exception as e:
+            print(f"Incident video writer close error: {e}")
+        session['video_writer'] = None
+
+    def _append_incident_jsonl(self, path, payload):
+        try:
+            row = dict(payload or {})
+            row['ts'] = time.time()
+            with open(path, 'a', encoding='utf-8') as fp:
+                fp.write(json.dumps(row, ensure_ascii=True) + "\n")
+        except Exception as e:
+            print(f"Incident log append error: {e}")
+
+    def _record_incident_sensor_packet(self, loc_id, packet):
+        key = self._normalize_loc_key(loc_id)
+        session = self._active_incident_sessions.get(key)
+        if not session or session.get('acked'):
+            return
+        session['sensor_packets'] = int(session.get('sensor_packets', 0)) + 1
+        self._append_incident_jsonl(session['sensor_log_path'], {'location_id': key, 'packet': packet})
+
+    def _record_incident_fusion_event(self, loc_id, fusion_result, source='fusion'):
+        key = self._normalize_loc_key(loc_id)
+        session = self._active_incident_sessions.get(key)
+        if not session or session.get('acked'):
+            return
+        session['fusion_events'] = int(session.get('fusion_events', 0)) + 1
+        self._append_incident_jsonl(
+            session['fusion_log_path'],
+            {
+                'location_id': key,
+                'source': str(source),
+                'alarm': bool((fusion_result or {}).get('alarm')),
+                'confidence': float((fusion_result or {}).get('confidence', 0.0) or 0.0),
+                'severity': (fusion_result or {}).get('severity'),
+                'reason': (fusion_result or {}).get('alarm_reason'),
+                'sources': (fusion_result or {}).get('sources', []),
+            },
+        )
+
+    def _record_incident_vision_event(self, loc_id, score):
+        key = self._normalize_loc_key(loc_id)
+        session = self._active_incident_sessions.get(key)
+        if not session or session.get('acked'):
+            return
+        session['vision_events'] = int(session.get('vision_events', 0)) + 1
+        self._append_incident_jsonl(session['vision_log_path'], {'location_id': key, 'vision_score': float(score or 0.0)})
+
+    def _record_incident_thermal_frame(self, loc_id, matrix):
+        key = self._normalize_loc_key(loc_id)
+        session = self._active_incident_sessions.get(key)
+        if not session or session.get('acked'):
+            return
+        if matrix is None:
+            return
+        now = time.time()
+        if now - float(session.get('last_thermal_ts', 0.0)) < float(self._incident_thermal_save_interval_s):
+            return
+        session['last_thermal_ts'] = now
+        session['thermal_frames'] = int(session.get('thermal_frames', 0)) + 1
+        try:
+            arr = np.array(matrix, dtype=np.float32)
+            if arr.size == 0 or arr.ndim < 2:
+                return
+            thermal_dir = os.path.join(session['dir'], 'thermal')
+            os.makedirs(thermal_dir, exist_ok=True)
+            idx = int(session['thermal_frames'])
+            npy_path = os.path.join(thermal_dir, f"thermal_{idx:05d}.npy")
+            png_path = os.path.join(thermal_dir, f"thermal_{idx:05d}.png")
+            np.save(npy_path, arr)
+            norm = cv2.normalize(arr, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            color = cv2.applyColorMap(norm, cv2.COLORMAP_INFERNO)
+            cv2.imwrite(png_path, color)
+            self._append_incident_jsonl(session['thermal_log_path'], {
+                'location_id': key,
+                'index': idx,
+                'npy_path': npy_path,
+                'png_path': png_path,
+                'shape': list(arr.shape),
+                'max_temp': float(np.max(arr)),
+            })
+        except Exception as e:
+            print(f"Incident thermal record error: {e}")
+
+    def _record_incident_video_frame(self, loc_id, qimage, score=0.0, yolo_score=0.0, detections=None):
+        key = self._normalize_loc_key(loc_id)
+        session = self._active_incident_sessions.get(key)
+        if not session or session.get('acked'):
+            return
+        now = time.time()
+        # Write continuous MP4 frames while incident session is active.
+        if self._ensure_incident_video_writer(session, qimage):
+            try:
+                fps = max(1.0, float(session.get('video_recording_fps', 8.0) or 8.0))
+                min_interval = 1.0 / fps
+                last_ts = float(session.get('video_writer_last_ts', 0.0) or 0.0)
+                if (now - last_ts) >= min_interval:
+                    img = qimage.convertToFormat(QImage.Format_RGB888)
+                    w = int(img.width())
+                    h = int(img.height())
+                    frame_w, frame_h = session.get('video_writer_size') or (w, h)
+                    ptr = img.bits()
+                    ptr.setsize(img.byteCount())
+                    bpl = int(img.bytesPerLine())
+                    row = np.frombuffer(ptr, np.uint8).reshape((h, bpl))
+                    rgb = row[:, : (w * 3)].reshape((h, w, 3))
+                    frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                    if (w, h) != (frame_w, frame_h):
+                        frame = cv2.resize(frame, (int(frame_w), int(frame_h)), interpolation=cv2.INTER_LINEAR)
+                    session['video_writer'].write(frame)
+                    session['video_recording_frames'] = int(session.get('video_recording_frames', 0)) + 1
+                    session['video_writer_last_ts'] = now
+            except Exception as e:
+                print(f"Incident video writer frame error: {e}")
+
+        if now - float(session.get('last_video_ts', 0.0)) < float(self._incident_video_save_interval_s):
+            return
+        session['last_video_ts'] = now
+        session['video_frames'] = int(session.get('video_frames', 0)) + 1
+        try:
+            video_dir = os.path.join(session['dir'], 'video')
+            os.makedirs(video_dir, exist_ok=True)
+            idx = int(session['video_frames'])
+            jpg_path = os.path.join(video_dir, f"video_{idx:05d}.jpg")
+            pix = QPixmap.fromImage(qimage)
+            pix.save(jpg_path, 'JPG', quality=90)
+            if not session.get('thumbnail_path'):
+                session['thumbnail_path'] = jpg_path
+            self._append_incident_jsonl(session['video_log_path'], {
+                'location_id': key,
+                'index': idx,
+                'path': jpg_path,
+                'score': float(score or 0.0),
+                'yolo_score': float(yolo_score or 0.0),
+                'detections': detections or [],
+            })
+        except Exception as e:
+            print(f"Incident video record error: {e}")
+
+    def _record_incident_widget_snapshot(self, loc_id, widget):
+        try:
+            if not widget or not hasattr(widget, 'video_label'):
+                return
+            pix = widget.video_label.pixmap()
+            if not pix or pix.isNull():
+                return
+            self._record_incident_video_frame(loc_id, pix.toImage(), 0.0, 0.0, [])
+        except Exception as e:
+            print(f"Incident widget snapshot error: {e}")
+
+    def _tick_active_incident_recording(self):
+        """Continuously sample active incident tiles into session recording."""
+        try:
+            sessions = dict(getattr(self, '_active_incident_sessions', {}) or {})
+            if not sessions:
+                return
+            widgets = getattr(self, 'video_widgets', {}) or {}
+            for key, session in sessions.items():
+                if not isinstance(session, dict) or session.get('acked'):
+                    continue
+                widget = widgets.get(key)
+                if not widget:
+                    continue
+                self._record_incident_widget_snapshot(key, widget)
+        except Exception as e:
+            print(f"Incident record tick error: {e}")
+
+    def _set_incident_feedback(self, token, feedback):
+        token_key = str(token or '').strip()
+        if not token_key:
+            return
+        feedback_value = str(feedback or 'pending').strip() or 'pending'
+        row_info = self._incident_rows_by_token.get(token_key, {})
+        session = row_info.get('session')
+        if isinstance(session, dict):
+            session['feedback'] = feedback_value
+            self._write_incident_manifest(session)
+        self._refresh_incident_cards()
+
+    def _append_incident_session_row(self, session):
+        if not hasattr(self, 'incident_table') or not isinstance(session, dict):
+            return
+        token = str(session.get('token') or '').strip()
+        if not token:
+            return
+        row = self.incident_table.rowCount()
+        self.incident_table.insertRow(row)
+        start_ts = float(session.get('start_ts', time.time()) or time.time())
+        end_ts = float(session.get('end_ts', time.time()) or time.time())
+        dur = max(0.0, end_ts - start_ts)
+        vals = [
+            datetime.fromtimestamp(start_ts).strftime('%Y-%m-%d %H:%M:%S'),
+            str(session.get('loc_id', '')),
+            f"{dur:.1f}",
+            str(int(session.get('video_frames', 0))),
+            str(int(session.get('thermal_frames', 0))),
+            str(int(session.get('sensor_packets', 0))),
+            str(int(session.get('fusion_events', 0))),
+            str(int(session.get('vision_events', 0))),
+        ]
+        for idx, value in enumerate(vals):
+            self.incident_table.setItem(row, idx, QTableWidgetItem(value))
+
+        feedback_combo = QComboBox()
+        feedback_combo.addItems(['pending', 'valid_alarm', 'nuisance', 'false_positive'])
+        feedback_combo.setCurrentText(str(session.get('feedback', 'pending')))
+        feedback_combo.currentTextChanged.connect(lambda text, t=token: self._set_incident_feedback(t, text))
+        self.incident_table.setCellWidget(row, 8, feedback_combo)
+        self._incident_rows_by_token[token] = {'row': row, 'session': session}
+        self._refresh_incident_cards()
+
+    def _finalize_incident_session(self, loc_id, feedback='pending'):
+        key = self._normalize_loc_key(loc_id)
+        if not key:
+            return
+        session = self._active_incident_sessions.pop(key, None)
+        if not session:
+            return
+        self._close_incident_video_writer(session)
+        session['acked'] = True
+        session['feedback'] = str(feedback or 'pending')
+        session['end_ts'] = time.time()
+        self._write_incident_manifest(session)
+        self._append_incident_session_row(session)
 
     @pyqtSlot(str, object, float, float, object)
     def handle_incident_frame_from_widget(self, loc_id, qimage, score, yolo_score=0.0, detections=None):
@@ -2174,6 +3986,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     alarm_reason.append(f"Rules: {reasons[0]}")
                 else:
                     alarm_reason.append("Rules: alarm")
+
+            if final_alarm:
+                self._start_incident_session(loc_id, reason=(" | ".join(alarm_reason) or 'alarm'))
+            self._record_incident_video_frame(loc_id, qimage, score, yolo_score, detections)
 
             # Update alarm indicator for this widget
             for widget in self.get_video_widgets():
@@ -2243,6 +4059,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.incident_list.addItem(item)
             debug_print(f"[INCIDENT] Added to list: total={self.incident_list.count()}, store={len(self._incidents_store)}")
             self._update_incident_count()
+            self._refresh_incident_cards()
 
             # Periodic retention cleanup (every 60 sec)
             now = time.time()
@@ -2433,6 +4250,14 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if not pixmap.isNull():
                     scaled_pixmap = pixmap.scaled(36, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.logo.setPixmap(scaled_pixmap)
+                    try:
+                        glow = QGraphicsDropShadowEffect(self.logo)
+                        glow.setBlurRadius(12)
+                        glow.setOffset(0, 0)
+                        glow.setColor(QColor(255, 220, 0, 120))
+                        self.logo.setGraphicsEffect(glow)
+                    except Exception:
+                        pass
                     logo_loaded = True
         except Exception as e:
             print(f"Logo loading error: {e}")
@@ -2455,9 +4280,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         brand.setStyleSheet("""
             font-size: 14px;
             font-weight: 700;
-            color: #00bcd4;
+            color: #FFDC00;
             letter-spacing: 2px;
             background: transparent;
+            text-shadow: 0 0 6px rgba(255, 220, 0, 0.35);
         """)
         logo_layout.addWidget(brand)
         
@@ -2476,88 +4302,105 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """)
         self.header_countdown_label.hide()
         header_layout.addWidget(self.header_countdown_label)
+
+    def _make_tactical_combo_icon(self, kind="grid"):
+        """Return a compact icon for ghost-style header combos."""
+        pix = QPixmap(14, 14)
+        pix.fill(Qt.transparent)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor("#D2D8E0"), 1)
+        painter.setPen(pen)
+        if str(kind) == "grid":
+            painter.drawRect(1, 1, 12, 12)
+            painter.drawLine(5, 1, 5, 13)
+            painter.drawLine(9, 1, 9, 13)
+            painter.drawLine(1, 5, 13, 5)
+            painter.drawLine(1, 9, 13, 9)
+        else:
+            painter.drawEllipse(2, 2, 10, 10)
+            painter.drawLine(7, 2, 7, 12)
+            painter.drawLine(2, 7, 12, 7)
+        painter.end()
+        from PyQt5.QtGui import QIcon
+        return QIcon(pix)
     
     def init_header_actions(self, header_layout):
         """Create Settings gear icon and Profile icon with dropdown overlays"""
         
         # Settings Gear Icon
         settings_btn = QToolButton()
-        settings_btn.setText("⚙ SETTINGS")
+        settings_btn.setText("⚙")
         settings_btn.setFixedHeight(38)
-        settings_btn.setMinimumWidth(110)
+        settings_btn.setFixedWidth(38)
         settings_btn.setPopupMode(QToolButton.InstantPopup)
         settings_btn.setCursor(Qt.PointingHandCursor)
         settings_btn.setStyleSheet("""
             QToolButton {
-                background-color: rgba(0, 188, 212, 0.25);
-                border: 1px solid rgba(0, 188, 212, 0.6);
-                border-radius: 18px;
-                color: #00bcd4;
-                font-size: 12px;
+                background-color: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(210, 216, 224, 0.65);
+                border-radius: 4px;
+                color: #D2D8E0;
+                font-size: 15px;
                 font-weight: 700;
-                padding: 0 12px;
+                padding: 0;
             }
             QToolButton:hover {
-                background-color: rgba(0, 188, 212, 0.4);
-                border-color: #00e5ff;
+                border-color: #FFDC00;
+                color: #FFDC00;
+                background-color: rgba(255, 220, 0, 0.08);
             }
             QToolButton::menu-indicator { image: none; }
         """)
         
         settings_menu = QMenu()
-        settings_menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d2d;
-                border: 1px solid #00bcd4;
-                border-radius: 8px;
-                padding: 8px 0;
-            }
-            QMenu::item {
-                padding: 8px 20px;
-                color: #e0e0e0;
-                font-size: 12px;
-                font-weight: 500;
-            }
-            QMenu::item:selected {
-                background-color: rgba(0, 188, 212, 0.2);
-                color: #00bcd4;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #404040;
-                margin: 4px 12px;
-            }
-        """)
-        settings_menu.addAction("🎥 Configure Streams", self.configure_streams)
-        settings_menu.addAction("🔄 Reset Streams", self.reset_streams)
+        self._style_tactical_settings_menu(settings_menu)
+
+        self._add_settings_menu_section(settings_menu, "STREAM MANAGEMENT")
+        settings_menu.addAction("Configure Streams", self.configure_streams)
+        settings_menu.addAction("Reset Streams", self.reset_streams)
+        settings_menu.addAction("Observability", self.show_observability_settings)
         settings_menu.addSeparator()
-        settings_menu.addAction("💾 Backup Configuration", self.backup_config)
-        settings_menu.addAction("📂 Restore Configuration", self.restore_config)
+
+        self._add_settings_menu_section(settings_menu, "SYSTEM CONFIGURATION")
+        settings_menu.addAction("Backup Configuration", self.backup_config)
+        settings_menu.addAction("Restore Configuration", self.restore_config)
+        settings_menu.addAction("TCP Server Port", self._request_tcp_port_dialog)
         settings_menu.addSeparator()
-        settings_menu.addAction("🔌 TCP Server Port", self.show_tcp_port_dialog)
-        settings_menu.addAction("🌡 Thermal Grid Settings", self.show_thermal_grid_config)
-        self.global_grid_action = settings_menu.addAction("📊 Numeric Grid (All)")
+
+        self._add_settings_menu_section(settings_menu, "SENSOR GRID")
+        settings_menu.addAction("Thermal Grid Settings", self.show_thermal_grid_config)
+        self.global_grid_action = settings_menu.addAction("Numeric Grid (All)")
         self.global_grid_action.setCheckable(True)
         self.global_grid_action.toggled.connect(self.toggle_all_numeric_grids)
-        settings_menu.addAction("🎛 Sensor Configuration", self.show_sensor_config)
-        # Master taxonomy manager
-        settings_menu.addAction("📚 Class & Subclass Manager", self.show_master_class_config)
-        settings_menu.addAction("📋 Log Viewer", self.show_log_viewer_dialog)
-        settings_menu.addAction("🌐 IP→Loc Mappings", self.show_ip_loc_mappings_dialog)
+        settings_menu.addAction("Sensor Configuration", self.show_sensor_config)
         settings_menu.addSeparator()
-        # Model Management (Import & Export)
-        settings_menu.addAction("📥 Import Model", self.import_deployment_model)
-        export_model_menu = settings_menu.addMenu("📤 Export Model")
+
+        self._add_settings_menu_section(settings_menu, "INVENTORY & MAPPINGS")
+        settings_menu.addAction("Class Subclass Manager", self.show_master_class_config)
+        settings_menu.addAction("Log Viewer", self.show_log_viewer_dialog)
+        settings_menu.addAction("IP→Loc Mappings", self.show_ip_loc_mappings_dialog)
+        settings_menu.addSeparator()
+
+        self._add_settings_menu_section(settings_menu, "DATA OPERATIONS")
+        settings_menu.addAction("Import Model", self.import_deployment_model)
+        export_model_menu = settings_menu.addMenu("Export Model")
+        self._style_tactical_settings_menu(export_model_menu)
         export_model_menu.addAction("Export to ONNX", lambda: self.export_model('onnx'))
         export_model_menu.addAction("Export to TorchScript", lambda: self.export_model('torchscript'))
         export_model_menu.addAction("Export to CoreML", lambda: self.export_model('coreml'))
         export_model_menu.addAction("Export to TensorFlow Lite", lambda: self.export_model('tflite'))
         settings_menu.addSeparator()
-        pfds_menu = settings_menu.addMenu("🔥 PFDS Devices")
-        pfds_menu.addAction("➕ Add Device", self.show_pfds_add_dialog)
-        pfds_menu.addAction("👁 View Devices", self.show_pfds_view_dialog)
+
+        self._add_settings_menu_section(settings_menu, "LIVE ASSETS")
+        pfds_menu = settings_menu.addMenu("Live PFDS Devices")
+        self._style_tactical_settings_menu(pfds_menu)
+        pfds_menu.addAction("Add Device", self.show_pfds_add_dialog)
+        pfds_menu.addAction("Live PFDS Devices", self._open_live_pfds_tab)
         settings_menu.addSeparator()
-        settings_menu.addAction("🧪 Test Error", self.inject_test_stream_error)
+
+        self._add_settings_menu_section(settings_menu, "DIAGNOSTICS")
+        settings_menu.addAction("Test Error", self.inject_test_stream_error)
         
         settings_btn.setMenu(settings_menu)
         settings_btn.setToolTip("Settings")
@@ -2572,17 +4415,18 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         profile_btn.setCursor(Qt.PointingHandCursor)
         profile_btn.setStyleSheet("""
             QToolButton {
-                background-color: rgba(0, 188, 212, 0.25);
-                border: 1px solid rgba(0, 188, 212, 0.6);
-                border-radius: 18px;
-                color: #00bcd4;
+                background-color: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(210, 216, 224, 0.65);
+                border-radius: 4px;
+                color: #D2D8E0;
                 font-size: 12px;
                 font-weight: 700;
                 padding: 0 12px;
             }
             QToolButton:hover {
-                background-color: rgba(0, 188, 212, 0.4);
-                border-color: #00e5ff;
+                border-color: #FFDC00;
+                color: #FFDC00;
+                background-color: rgba(255, 220, 0, 0.08);
             }
             QToolButton::menu-indicator { image: none; }
         """)
@@ -2619,20 +4463,68 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         profile_btn.setToolTip("Profile")
         header_layout.addWidget(profile_btn)
 
+    def _style_tactical_settings_menu(self, menu):
+        if menu is None:
+            return
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #141a22;
+                border: 1px solid #d7aa1a;
+                border-radius: 10px;
+                padding: 8px 0;
+            }
+            QMenu::item {
+                padding: 8px 20px;
+                color: #e7c75f;
+                font-size: 12px;
+                font-weight: 600;
+                font-family: "Avenir Next", "Segoe UI", sans-serif;
+            }
+            QMenu::item:selected {
+                background-color: rgba(226, 184, 58, 0.22);
+                color: #ffe38a;
+                border-radius: 4px;
+            }
+            QMenu::item:disabled {
+                color: #f0be2f;
+                background: transparent;
+                font-size: 10px;
+                font-weight: 800;
+                font-family: "Roboto Mono", "Menlo", "Consolas", monospace;
+                letter-spacing: 0.6px;
+                text-transform: uppercase;
+                padding: 8px 16px 4px 16px;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: rgba(213, 171, 45, 0.36);
+                margin: 6px 14px;
+            }
+        """)
+
+    def _add_settings_menu_section(self, menu, title):
+        if menu is None:
+            return None
+        action = menu.addAction(str(title).upper())
+        action.setEnabled(False)
+        return action
+
     def init_settings_menu(self, title_bar):
         menu_btn = QToolButton()
         menu_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
         menu_btn.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu()
+        self._style_tactical_settings_menu(menu)
         menu.addAction("Profile", self.show_profile)
         menu.addAction("Configure Streams", self.configure_streams)
         menu.addAction("Reset Streams", self.reset_streams)
+        menu.addAction("Observability...", self.show_observability_settings)
         # Add backup/restore actions
         menu.addSeparator()
         menu.addAction("Backup Configuration", self.backup_config)
         menu.addAction("Restore Configuration", self.restore_config)
         menu.addSeparator()
-        menu.addAction("TCP Server Port...", self.show_tcp_port_dialog)
+        menu.addAction("TCP Server Port...", self._request_tcp_port_dialog)
         menu.addAction("Thermal Grid Settings...", self.show_thermal_grid_config)
         # Global numeric thermal grid toggle (all streams)
         self.global_grid_action = menu.addAction("Numeric Thermal Grid (All Streams)")
@@ -2641,9 +4533,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         menu.addAction("Sensor Configuration...", self.show_sensor_config)
         menu.addAction("Log Viewer...", self.show_log_viewer_dialog)
         # Configure PFDS Device submenu
-        pfds_menu = QMenu("Configure PFDS Device", menu)
+        pfds_menu = QMenu("Configure Live PFDS Device", menu)
         pfds_menu.addAction("Add Device...", self.show_pfds_add_dialog)
-        pfds_menu.addAction("View Devices...", self.show_pfds_view_dialog)
+        pfds_menu.addAction("View Live PFDS Devices...", self._open_live_pfds_tab)
         menu.addMenu(pfds_menu)
         menu.addAction("Inject Test Stream Error", self.inject_test_stream_error)
         menu.addSeparator()
@@ -2651,106 +4543,195 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         menu_btn.setMenu(menu)
         title_bar.addWidget(menu_btn)
 
+    def _apply_tactical_status_module_style(self, frame, label, text, text_color="#D2D8E0", active=False, mono=True):
+        """Apply consistent tactical styling to status-bar modules."""
+        if frame is None or label is None:
+            return
+        border_color = "#FFDC00" if active else "#374552"
+        font_family = '"Roboto Mono", "Menlo", "Consolas", monospace' if mono else '"Avenir Next", "Segoe UI", sans-serif'
+        frame.setStyleSheet(
+            "QFrame {"
+            "background-color: rgba(15, 21, 29, 0.96);"
+            f"border: 1px solid {border_color};"
+            "border-radius: 2px;"
+            "padding: 0px;"
+            "}"
+        )
+        label.setStyleSheet(
+            "QLabel {"
+            f"color: {text_color};"
+            f"font-family: {font_family};"
+            "font-size: 11px;"
+            "font-weight: 700;"
+            "padding: 2px 8px;"
+            "letter-spacing: 0.5px;"
+            "}"
+        )
+        label.setText(str(text).upper())
+
+    def _set_tcp_pulse_state(self, is_running):
+        """Set pulse color/animation for high-visibility system health feedback."""
+        if not hasattr(self, 'tcp_led') or self.tcp_led is None:
+            return
+        running = bool(is_running)
+        glow_color = '#4CAF50' if running else '#8a2f2f'
+        self.tcp_led.setStyleSheet(
+            "QLabel {"
+            f"background-color: {glow_color};"
+            "border: 1px solid #1e242b;"
+            "border-radius: 6px;"
+            "}"
+        )
+        if hasattr(self, '_tcp_pulse_glow') and self._tcp_pulse_glow is not None:
+            self._tcp_pulse_glow.setColor(QColor(glow_color))
+        if hasattr(self, '_tcp_pulse_anim') and self._tcp_pulse_anim is not None:
+            if running:
+                if self._tcp_pulse_anim.state() != QPropertyAnimation.Running:
+                    self._tcp_pulse_anim.start()
+            else:
+                self._tcp_pulse_anim.stop()
+                if hasattr(self, '_tcp_pulse_glow') and self._tcp_pulse_glow is not None:
+                    self._tcp_pulse_glow.setBlurRadius(2.0)
+
     def init_tcp_status_indicator(self):
         """Initialize TCP server status indicator in status bar."""
-        from PyQt5.QtWidgets import QLabel, QPushButton, QWidget, QHBoxLayout
+        from PyQt5.QtWidgets import QLabel, QPushButton, QWidget, QHBoxLayout, QFrame
         from PyQt5.QtCore import Qt
+
+        # This can be called before tcp_server_port is initialized in some startup paths.
+        cfg = getattr(self, 'config', {}) if isinstance(getattr(self, 'config', {}), dict) else {}
+        port_value = int(getattr(self, 'tcp_server_port', cfg.get('tcp_port', 4888)))
         
         # Create a container widget for the status indicator
         status_widget = QWidget()
+        status_widget.setObjectName("tacticalStatusStrip")
+        status_widget.setStyleSheet("QWidget#tacticalStatusStrip { background: transparent; border: none; }")
         status_layout = QHBoxLayout()
-        status_layout.setContentsMargins(5, 0, 5, 0)
-        status_layout.setSpacing(8)
+        status_layout.setContentsMargins(6, 0, 6, 0)
+        status_layout.setSpacing(6)
 
-        # Tray-like icon strip (Windows system tray style)
-        self.status_tray_widget = QWidget()
-        tray_layout = QHBoxLayout(self.status_tray_widget)
-        tray_layout.setContentsMargins(0, 0, 0, 0)
-        tray_layout.setSpacing(4)
-
-        def _make_tray_icon(standard_icon, tooltip):
-            icon_label = QLabel()
-            icon_label.setFixedSize(16, 16)
-            icon_label.setPixmap(self.style().standardIcon(standard_icon).pixmap(14, 14))
-            icon_label.setToolTip(tooltip)
-            return icon_label
-
-        # Copies existing status items as icons
-        self.tray_tcp_icon = _make_tray_icon(QStyle.SP_DriveNetIcon, "TCP Server")
-        self.tray_device_icon = _make_tray_icon(QStyle.SP_DesktopIcon, "Inference Device")
-        self.tray_model_icon = _make_tray_icon(QStyle.SP_FileIcon, "Model Status")
-        self.tray_detection_icon = _make_tray_icon(QStyle.SP_DialogApplyButton, "Detections")
-        # Proposed new system icon
-        self.tray_system_icon = _make_tray_icon(QStyle.SP_ComputerIcon, "System")
-
-        tray_layout.addWidget(self.tray_tcp_icon)
-        tray_layout.addWidget(self.tray_device_icon)
-        tray_layout.addWidget(self.tray_model_icon)
-        tray_layout.addWidget(self.tray_detection_icon)
-        tray_layout.addWidget(self.tray_system_icon)
-        status_layout.addWidget(self.status_tray_widget)
-        
-        # LED indicator (colored circle)
+        # SYSTEM HEALTH module with green pulse for peripheral awareness
+        self.health_status_frame = QFrame()
+        health_layout = QHBoxLayout(self.health_status_frame)
+        health_layout.setContentsMargins(6, 1, 6, 1)
+        health_layout.setSpacing(6)
         self.tcp_led = QLabel()
         self.tcp_led.setFixedSize(12, 12)
-        self.tcp_led.setStyleSheet("""
-            QLabel {
-                background-color: #ff0000;
-                border-radius: 6px;
-                border: 1px solid #333;
-            }
-        """)
-        status_layout.addWidget(self.tcp_led)
-        
-        # Status text label
-        self.tcp_status_label = QLabel("TCP Server: Initializing...")
-        self.tcp_status_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
-        status_layout.addWidget(self.tcp_status_label)
+        health_layout.addWidget(self.tcp_led)
+        self.health_status_label = QLabel("SYSTEM HEALTH: ONLINE")
+        health_layout.addWidget(self.health_status_label)
+        status_layout.addWidget(self.health_status_frame)
+        self._apply_tactical_status_module_style(
+            self.health_status_frame,
+            self.health_status_label,
+            "SYSTEM HEALTH: ONLINE",
+            text_color="#CFF8D7",
+            active=True,
+            mono=True,
+        )
 
-        # Device indicator (resolved from active DetectionWorker)
-        self.device_status_label = QLabel("Device: Detecting...")
-        self.device_status_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
-        status_layout.addWidget(self.device_status_label)
+        # CONNECTIVITY module
+        self.tcp_status_frame = QFrame()
+        tcp_layout = QHBoxLayout(self.tcp_status_frame)
+        tcp_layout.setContentsMargins(0, 0, 0, 0)
+        self.tcp_status_label = QLabel()
+        tcp_layout.addWidget(self.tcp_status_label)
+        status_layout.addWidget(self.tcp_status_frame)
+        self._apply_tactical_status_module_style(
+            self.tcp_status_frame,
+            self.tcp_status_label,
+            f"TCP SERVER: PORT {port_value}",
+            text_color="#D2D8E0",
+            active=False,
+            mono=True,
+        )
 
-        # Model load indicator
-        self.model_status_label = QLabel("Model: Loading...")
-        self.model_status_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
-        status_layout.addWidget(self.model_status_label)
+        # HARDWARE module
+        self.device_status_frame = QFrame()
+        device_layout = QHBoxLayout(self.device_status_frame)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        self.device_status_label = QLabel("DEVICE: CPU")
+        device_layout.addWidget(self.device_status_label)
+        status_layout.addWidget(self.device_status_frame)
+        self._apply_tactical_status_module_style(
+            self.device_status_frame,
+            self.device_status_label,
+            "DEVICE: CPU",
+            text_color="#E5E9EF",
+            active=False,
+            mono=True,
+        )
 
-        # Detection counter
-        self.detection_count_label = QLabel("Detections: 0")
-        self.detection_count_label.setStyleSheet("QLabel { color: #00bcd4; font-size: 11px; }")
-        status_layout.addWidget(self.detection_count_label)
+        # MODEL module
+        self.model_status_frame = QFrame()
+        model_layout = QHBoxLayout(self.model_status_frame)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        self.model_status_label = QLabel("MODEL: NOT LOADED")
+        model_layout.addWidget(self.model_status_label)
+        status_layout.addWidget(self.model_status_frame)
+        self._apply_tactical_status_module_style(
+            self.model_status_frame,
+            self.model_status_label,
+            "MODEL: NOT LOADED",
+            text_color="#8B95A1",
+            active=False,
+            mono=True,
+        )
+
+        # Keep a compatibility label around for legacy references.
+        self.detection_count_label = QLabel("DETECTIONS: 0")
+        self.detection_count_label.hide()
+
+        # Pulse animation setup (blur glow is more visible than opacity-only pulse).
+        self._tcp_pulse_glow = QGraphicsDropShadowEffect(self.tcp_led)
+        self._tcp_pulse_glow.setOffset(0, 0)
+        self._tcp_pulse_glow.setColor(QColor("#4CAF50"))
+        self._tcp_pulse_glow.setBlurRadius(3.0)
+        self.tcp_led.setGraphicsEffect(self._tcp_pulse_glow)
+        self._tcp_pulse_anim = QPropertyAnimation(self._tcp_pulse_glow, b"blurRadius", self)
+        self._tcp_pulse_anim.setDuration(1000)
+        self._tcp_pulse_anim.setKeyValueAt(0.0, 2.0)
+        self._tcp_pulse_anim.setKeyValueAt(0.5, 14.0)
+        self._tcp_pulse_anim.setKeyValueAt(1.0, 2.0)
+        self._tcp_pulse_anim.setEasingCurve(QEasingCurve.InOutSine)
+        self._tcp_pulse_anim.setLoopCount(-1)
+        self._set_tcp_pulse_state(True)
         
         # Restart button
-        restart_btn = QPushButton("↻ Restart")
-        restart_btn.setFixedHeight(20)
+        restart_btn = QPushButton("RESTART")
+        restart_btn.setFixedHeight(24)
+        restart_btn.setCursor(Qt.PointingHandCursor)
         restart_btn.setStyleSheet("""
             QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                border-radius: 3px;
-                padding: 2px 8px;
-                font-size: 10px;
+                background-color: rgba(17, 24, 33, 0.97);
+                color: #FFDC00;
+                border: 1px solid #FFDC00;
+                border-radius: 2px;
+                padding: 2px 14px;
+                font-size: 11px;
+                font-weight: 700;
+                font-family: "Roboto Mono", "Menlo", "Consolas", monospace;
             }
             QPushButton:hover {
-                background-color: #45a049;
+                background-color: rgba(38, 48, 62, 0.98);
             }
             QPushButton:pressed {
-                background-color: #3d8b40;
+                background-color: rgba(56, 68, 84, 0.98);
             }
         """)
-        restart_btn.clicked.connect(self.show_tcp_port_dialog)
+        # Defensive disconnect: ensures no stale callback (e.g., port dialog) is attached.
+        try:
+            restart_btn.clicked.disconnect()
+        except Exception:
+            pass
+        restart_btn.clicked.connect(self._quick_restart_tcp_server)
         status_layout.addWidget(restart_btn)
+        status_layout.addStretch()
         
         status_widget.setLayout(status_layout)
         
         # Add to status bar (permanent widget on the left)
         self.statusBar().addPermanentWidget(status_widget, 0)
-
-        # Initial tooltip sync for tray icons
-        self._refresh_status_tray_icons(tcp_running=False)
 
         # Periodically update model load state
         try:
@@ -2763,34 +4744,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             pass
 
     def _refresh_status_tray_icons(self, tcp_running=None):
-        """Sync tray icon appearance/tooltips with existing status labels."""
+        """Compatibility hook retained for older call sites (no tray icons)."""
         try:
-            if hasattr(self, 'tray_system_icon'):
-                self.tray_system_icon.setToolTip(f"System | PID: {os.getpid()}")
-
-            if hasattr(self, 'tray_tcp_icon'):
-                tcp_text = self.tcp_status_label.text() if hasattr(self, 'tcp_status_label') else "TCP Server"
-                self.tray_tcp_icon.setToolTip(tcp_text)
-                if tcp_running is True:
-                    self.tray_tcp_icon.setPixmap(self.style().standardIcon(QStyle.SP_DialogApplyButton).pixmap(14, 14))
-                elif tcp_running is False:
-                    self.tray_tcp_icon.setPixmap(self.style().standardIcon(QStyle.SP_MessageBoxCritical).pixmap(14, 14))
-
-            if hasattr(self, 'tray_device_icon') and hasattr(self, 'device_status_label'):
-                self.tray_device_icon.setToolTip(self.device_status_label.text())
-
-            if hasattr(self, 'tray_model_icon') and hasattr(self, 'model_status_label'):
-                model_text = self.model_status_label.text()
-                self.tray_model_icon.setToolTip(model_text)
-                if "Loaded" in model_text:
-                    self.tray_model_icon.setPixmap(self.style().standardIcon(QStyle.SP_DialogApplyButton).pixmap(14, 14))
-                elif "Error" in model_text:
-                    self.tray_model_icon.setPixmap(self.style().standardIcon(QStyle.SP_MessageBoxCritical).pixmap(14, 14))
-                else:
-                    self.tray_model_icon.setPixmap(self.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(14, 14))
-
-            if hasattr(self, 'tray_detection_icon') and hasattr(self, 'detection_count_label'):
-                self.tray_detection_icon.setToolTip(self.detection_count_label.text())
+            port = int(getattr(self, 'tcp_server_port', self.config.get('tcp_port', 4888)))
+            if hasattr(self, 'tcp_status_label') and self.tcp_status_label is not None:
+                self.tcp_status_label.setToolTip(f"TCP SERVER PORT {port}")
+            if hasattr(self, 'device_status_label') and self.device_status_label is not None:
+                self.device_status_label.setToolTip(self.device_status_label.text())
+            if hasattr(self, 'model_status_label') and self.model_status_label is not None:
+                self.model_status_label.setToolTip(self.model_status_label.text())
         except Exception:
             pass
     
@@ -2805,26 +4767,26 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             return
         
         try:
-            # Update LED color
-            if is_running:
-                self.tcp_led.setStyleSheet("""
-                    QLabel {
-                        background-color: #00ff00;
-                        border-radius: 6px;
-                        border: 1px solid #333;
-                    }
-                """)
-            else:
-                self.tcp_led.setStyleSheet("""
-                    QLabel {
-                        background-color: #ff0000;
-                        border-radius: 6px;
-                        border: 1px solid #333;
-                    }
-                """)
-            
-            # Update status text
-            self.tcp_status_label.setText(message)
+            self._set_tcp_pulse_state(is_running)
+
+            port = int(getattr(self, 'tcp_server_port', self.config.get('tcp_port', 4888)))
+            self._apply_tactical_status_module_style(
+                self.health_status_frame,
+                self.health_status_label,
+                "SYSTEM HEALTH: ONLINE" if is_running else "SYSTEM HEALTH: OFFLINE",
+                text_color="#CFF8D7" if is_running else "#E6B6B6",
+                active=bool(is_running),
+                mono=True,
+            )
+            self._apply_tactical_status_module_style(
+                self.tcp_status_frame,
+                self.tcp_status_label,
+                f"TCP SERVER: PORT {port}",
+                text_color="#D2D8E0" if is_running else "#9BA5B0",
+                active=bool(is_running),
+                mono=True,
+            )
+            self.tcp_status_label.setToolTip(str(message))
             self._refresh_status_tray_icons(tcp_running=is_running)
             
         except Exception as e:
@@ -2839,36 +4801,141 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             worker = get_detection_worker()
             if not worker:
                 self.model_status_label.setText("Model: Unavailable")
+                self._set_status_chip_state(self.model_status_label, "warn")
                 return
             stats = worker.get_stats()
             if hasattr(self, 'device_status_label'):
                 inferred_device = str(stats.get('inference_device', '') or '').strip().lower()
                 if inferred_device in ("0", "cuda", "gpu"):
-                    self.device_status_label.setText("Device: GPU")
+                    self._apply_tactical_status_module_style(
+                        self.device_status_frame,
+                        self.device_status_label,
+                        "DEVICE: GPU",
+                        text_color="#D2D8E0",
+                        active=True,
+                        mono=True,
+                    )
                 elif inferred_device:
-                    self.device_status_label.setText(f"Device: {inferred_device.upper()}")
+                    self._apply_tactical_status_module_style(
+                        self.device_status_frame,
+                        self.device_status_label,
+                        f"DEVICE: {inferred_device.upper()}",
+                        text_color="#D2D8E0",
+                        active=False,
+                        mono=True,
+                    )
                 else:
-                    self.device_status_label.setText("Device: Detecting...")
+                    self._apply_tactical_status_module_style(
+                        self.device_status_frame,
+                        self.device_status_label,
+                        "DEVICE: CPU",
+                        text_color="#D2D8E0",
+                        active=False,
+                        mono=True,
+                    )
             if stats.get('model_loaded'):
-                self.model_status_label.setText("Model: Loaded")
+                self._apply_tactical_status_module_style(
+                    self.model_status_frame,
+                    self.model_status_label,
+                    "MODEL: LOADED",
+                    text_color="#FFDC00",
+                    active=True,
+                    mono=True,
+                )
                 self.model_status_label.setToolTip("")
             else:
                 model_error = stats.get('model_error')
                 if model_error:
-                    self.model_status_label.setText("Model: Error")
+                    self._apply_tactical_status_module_style(
+                        self.model_status_frame,
+                        self.model_status_label,
+                        "MODEL: ERROR",
+                        text_color="#E6B6B6",
+                        active=False,
+                        mono=True,
+                    )
                     self.model_status_label.setToolTip(model_error)
                 else:
-                    self.model_status_label.setText("Model: Not Loaded")
+                    self._apply_tactical_status_module_style(
+                        self.model_status_frame,
+                        self.model_status_label,
+                        "MODEL: NOT LOADED",
+                        text_color="#8B95A1",
+                        active=False,
+                        mono=True,
+                    )
                     self.model_status_label.setToolTip("")
-            if hasattr(self, 'detection_count_label'):
-                self.detection_count_label.setText(f"Detections: {stats.get('detections_confirmed', 0)}")
             self._refresh_status_tray_icons()
         except Exception:
-            self.model_status_label.setText("Model: Error")
+            self._apply_tactical_status_module_style(
+                self.model_status_frame,
+                self.model_status_label,
+                "MODEL: ERROR",
+                text_color="#E6B6B6",
+                active=False,
+                mono=True,
+            )
             self._refresh_status_tray_icons()
+
+    def _quick_restart_tcp_server(self):
+        """One-click tactical restart for the TCP server using current config."""
+        port = int(self.config.get('tcp_port', getattr(self, 'tcp_server_port', 4888)))
+        tcp_mode = self.config.get('tcp_mode', 'threaded')
+        self.tcp_server_port = port
+        try:
+            if hasattr(self, 'tcp_server') and self.tcp_server:
+                try:
+                    self.tcp_server.stop()
+                except Exception:
+                    pass
+            self.update_tcp_status(False, f"TCP SERVER: RESTARTING PORT {port}")
+
+            self.tcp_message_count = 0
+            if tcp_mode == 'async':
+                from embereye.core.tcp_async_server import TCPAsyncSensorServer
+                self.tcp_server = TCPAsyncSensorServer(port=port, packet_callback=self._emit_tcp_packet)
+                self.tcp_sensor_server = self.tcp_server
+                if self.tcp_server:
+                    if self._async_loop is None:
+                        import asyncio
+                        import threading
+                        self._async_loop = asyncio.new_event_loop()
+
+                        def _run_loop(loop):
+                            asyncio.set_event_loop(loop)
+                            loop.run_forever()
+
+                        self._async_thread = threading.Thread(target=_run_loop, args=(self._async_loop,), daemon=True)
+                        self._async_thread.start()
+                    import asyncio
+                    asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
+            else:
+                from embereye.core.tcp_sensor_server import TCPSensorServer
+                self.tcp_server = TCPSensorServer(port=port, packet_callback=self._emit_tcp_packet)
+                self.tcp_sensor_server = self.tcp_server
+                if self.tcp_server:
+                    self.tcp_server.start()
+
+            self.update_tcp_status(True, f"TCP SERVER: RUNNING ON PORT {port} ({tcp_mode})")
+        except Exception as e:
+            self.update_tcp_status(False, f"TCP SERVER: RESTART FAILED - {e}")
+            QMessageBox.critical(self, "TCP Server Error", f"Failed to restart TCP server on port {port}:\n{e}")
+
+    def _request_tcp_port_dialog(self):
+        """Allow TCP port prompt only for explicit menu actions."""
+        self._port_dialog_requested = True
+        self.show_tcp_port_dialog()
 
     def show_tcp_port_dialog(self):
         from PyQt5.QtWidgets import QInputDialog
+
+        # Safety gate: non-menu invocations should perform direct restart,
+        # never prompt for a port change.
+        if not bool(getattr(self, '_port_dialog_requested', False)):
+            self._quick_restart_tcp_server()
+            return
+
+        self._port_dialog_requested = False
         current_port = self.config.get('tcp_port', 9001)
         port, ok = QInputDialog.getInt(self, "TCP Server Port", "Enter TCP server port:", value=current_port, min=1024, max=65535)
         if ok and port != current_port:
@@ -2888,13 +4955,18 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Restart with new port
             try:
-                from embereye.core.tcp_sensor_server import TCPSensorServer
+                tcp_mode = self.config.get('tcp_mode', 'threaded')
                 self.tcp_message_count = 0
                 # Always connect the signal (PyQt5 does not duplicate connections)
                 self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
-                self.tcp_server = TCPSensorServer(port=port, packet_callback=self._emit_tcp_packet)
+                if tcp_mode == 'async':
+                    from embereye.core.tcp_async_server import TCPAsyncSensorServer
+                    self.tcp_server = TCPAsyncSensorServer(port=port, packet_callback=self._emit_tcp_packet)
+                else:
+                    from embereye.core.tcp_sensor_server import TCPSensorServer
+                    self.tcp_server = TCPSensorServer(port=port, packet_callback=self._emit_tcp_packet)
                 self.tcp_server.start()
-                self.update_tcp_status(True, f"TCP Server: Running on port {port}")
+                self.update_tcp_status(True, f"TCP Server: Running on port {port} ({tcp_mode})")
                 QMessageBox.information(self, "TCP Server Restarted", f"TCP server successfully restarted on port {port}.")
             except Exception as e:
                 error_msg = str(e)
@@ -3299,14 +5371,24 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 
     def show_pfds_add_dialog(self):
-        """Stub dialog for adding a PFDS device. Will be wired to SQLite and scheduler."""
-        from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox, QDialogButtonBox, QMessageBox
+        """Add PFDS/EmberHawk device with mandatory serial binding and access flags."""
+        from PyQt5.QtWidgets import (
+            QDialog,
+            QFormLayout,
+            QLineEdit,
+            QComboBox,
+            QSpinBox,
+            QDialogButtonBox,
+            QMessageBox,
+            QCheckBox,
+        )
         dlg = QDialog(self)
-        dlg.setWindowTitle("Add PFDS Device")
+        dlg.setWindowTitle("Add Live PFDS Device")
         layout = QFormLayout(dlg)
 
         name_edit = QLineEdit(); name_edit.setPlaceholderText("Device Name")
         ip_edit = QLineEdit(); ip_edit.setPlaceholderText("IP:Port (e.g., 127.0.0.1:5000)")
+        serial_edit = QLineEdit(); serial_edit.setPlaceholderText("Required serial (DEVICE_ID)")
         loc_combo = QComboBox(); loc_combo.addItem("")
         # Populate location IDs from stream config
         try:
@@ -3325,24 +5407,37 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         mode_combo = QComboBox(); mode_combo.addItems(["Continuous", "On Demand"])
         poll_spin = QSpinBox(); poll_spin.setRange(1, 3600); poll_spin.setValue(10)
         poll_spin.setSuffix(" s")
+        authorized_check = QCheckBox("Authorized")
+        authorized_check.setChecked(True)
+        linked_check = QCheckBox("Linked")
+        linked_check.setChecked(True)
 
         layout.addRow("Name", name_edit)
         layout.addRow("IP Address", ip_edit)
+        layout.addRow("Serial Number *", serial_edit)
         layout.addRow("Location Id", loc_combo)
         layout.addRow("Mode", mode_combo)
         layout.addRow("Poll Frequency", poll_spin)
+        layout.addRow("Access", authorized_check)
+        layout.addRow("Link", linked_check)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         layout.addRow(buttons)
 
         def on_ok():
+            if not self._ensure_operator_identity(dlg, action="adding PFDS device"):
+                return
             name = name_edit.text().strip()
             ip = ip_edit.text().strip()
+            serial = self._normalize_serial_key(serial_edit.text())
             loc = loc_combo.currentText().strip()
             mode = mode_combo.currentText()
             poll = poll_spin.value()
             if not name or not ip:
                 QMessageBox.warning(dlg, "Missing Data", "Please enter device name and IP:Port.")
+                return
+            if not serial:
+                QMessageBox.warning(dlg, "Missing Data", "Serial Number is mandatory.")
                 return
             # Parse IP:Port format
             if ':' in ip:
@@ -3362,7 +5457,19 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     return
                 ip_address = f"{ip}:9001"  # Default port
             try:
-                self.emberhawk.add_device(name, ip_address, loc if loc else None, mode, int(poll))
+                device_id = self.emberhawk.add_device(name, ip_address, loc if loc else None, mode, int(poll))
+                effective_linked = linked_check.isChecked()
+                self.emberhawk.set_device_access(
+                    device_id,
+                    is_authorized=authorized_check.isChecked(),
+                    is_linked=effective_linked,
+                    actor=self._operator_actor(),
+                    reason="add_device_dialog",
+                )
+                if serial:
+                    self.emberhawk.bind_serial_to_device(device_id, serial)
+                    self._pending_device_by_serial.pop(serial, None)
+                self._refresh_live_operations_views()
                 QMessageBox.information(dlg, "Saved", f"EmberHawk device '{name}' saved.\nIP: {ip_address}\nLocation: {loc or 'N/A'}\nMode: {mode}\nPoll: {poll}s")
             except Exception as e:
                 QMessageBox.critical(dlg, "Save Failed", f"Could not save device: {e}")
@@ -3372,27 +5479,951 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         buttons.rejected.connect(dlg.reject)
         dlg.exec_()
 
+    def _refresh_live_operations_views(self):
+        self._refresh_live_pfds_tab()
+        self._refresh_live_assets_tab()
+
+    def _clear_dynamic_layout(self, layout):
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if item is None:
+                continue
+            child_layout = item.layout()
+            widget = item.widget()
+            if child_layout is not None:
+                self._clear_dynamic_layout(child_layout)
+            if widget is not None:
+                widget.deleteLater()
+
+    def _responsive_card_columns(self, viewport_width: int, min_card_width: int = 320) -> int:
+        width = max(int(viewport_width or 0), min_card_width)
+        return max(1, width // max(220, int(min_card_width)))
+
+    def _format_seen_text(self, value) -> str:
+        ts = self._parse_seen_timestamp(value)
+        if ts is None:
+            return "NO SIGNAL"
+        delta = max(0, int(time.time() - ts))
+        if delta < 60:
+            return f"{delta}s AGO"
+        if delta < 3600:
+            return f"{delta // 60}m AGO"
+        if delta < 86400:
+            return f"{delta // 3600}h AGO"
+        return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
+
+    def _location_choices_for_live_devices(self):
+        loc_ids = set()
+        try:
+            groups = self.config.get('groups', [])
+            streams_block = self.config.get('streams', [])
+            if isinstance(streams_block, dict):
+                source_groups = groups or list(streams_block.keys())
+                for group in source_groups:
+                    for stream in streams_block.get(group, []):
+                        lid = stream.get('location_id') or stream.get('loc_id') or stream.get('name')
+                        if lid:
+                            loc_ids.add(str(lid).strip())
+            else:
+                for stream in streams_block:
+                    lid = stream.get('location_id') or stream.get('loc_id') or stream.get('name')
+                    if lid:
+                        loc_ids.add(str(lid).strip())
+        except Exception:
+            pass
+        if not loc_ids:
+            loc_ids.add('demo_room')
+        return sorted(loc_ids)
+
+    def _get_emberhawk_device_by_id(self, device_id):
+        try:
+            did = int(device_id)
+        except Exception:
+            return None
+        try:
+            for device in self.emberhawk.list_devices():
+                if int(device.get('id', -1)) == did:
+                    return device
+        except Exception:
+            return None
+        return None
+
+    def _collect_live_pfds_snapshot(self):
+        now_ts = time.time()
+        try:
+            devices = list(self.emberhawk.list_devices())
+        except Exception:
+            devices = []
+
+        pending = dict(getattr(self, '_pending_device_by_serial', {}) or {})
+        for device in devices:
+            serial = self._normalize_serial_key(device.get('serial_number'))
+            if not serial or serial in pending:
+                continue
+            missing_location = not self._normalize_loc_key(device.get('location_id'))
+            not_linked = not bool(device.get('is_linked', True))
+            not_authorized = not bool(device.get('is_authorized', True))
+            if missing_location or not_linked or not_authorized:
+                if missing_location:
+                    pending_state = 'pending_location'
+                elif not_linked:
+                    pending_state = 'unlinked'
+                else:
+                    pending_state = 'unauthorized'
+                pending[serial] = {
+                    'serial_number': serial,
+                    'client_ip': device.get('last_seen_ip') or '',
+                    'last_seen': device.get('last_seen_at') or '',
+                    'state': pending_state,
+                    'device_id': device.get('id'),
+                }
+
+        pending_list = []
+        for serial, info in sorted(pending.items(), key=lambda item: item[0]):
+            payload = dict(info)
+            payload['serial_number'] = self._normalize_serial_key(payload.get('serial_number') or serial)
+            payload['resolved_state'] = self._get_pending_identity_state(payload, now_ts=now_ts)
+            pending_list.append(payload)
+
+        offline_list = []
+        try:
+            if hasattr(self, 'device_status_manager') and self.device_status_manager:
+                all_offline = list(self.device_status_manager.get_offline_devices())
+                for status in all_offline:
+                    dtype = str(getattr(status, 'device_type', '') or '').upper()
+                    if (not dtype) or ('PFDS' in dtype) or ('EMBERHAWK' in dtype):
+                        offline_list.append(status)
+        except Exception:
+            offline_list = []
+
+        # Fallback source: derive offline PFDS cards directly from configured EmberHawk devices.
+        # This covers deployments where device_status_manager is not actively registering PFDS devices.
+        try:
+            server = getattr(self, 'tcp_sensor_server', None) or getattr(self, 'tcp_server', None)
+            serial_to_ip = dict(getattr(server, '_serial_to_ip', {}) or {}) if server else {}
+            connected_ips = set((getattr(server, '_client_sockets', {}) or {}).keys()) if server else set()
+
+            existing_keys = set()
+            for entry in offline_list:
+                key = str(getattr(entry, 'ip', '') or getattr(entry, 'device_id', '') or '').strip()
+                if key:
+                    existing_keys.add(key)
+
+            for device in devices:
+                serial = self._normalize_serial_key(device.get('serial_number'))
+                ip_endpoint = str(device.get('ip') or '').strip()
+                host_ip = ip_endpoint.split(':', 1)[0] if ':' in ip_endpoint else ip_endpoint
+                state = self._get_device_lifecycle_state(device, now_ts=now_ts)
+
+                has_live_socket = False
+                if serial and serial in serial_to_ip:
+                    mapped_ip = str(serial_to_ip.get(serial) or '').strip()
+                    has_live_socket = bool(mapped_ip and mapped_ip in connected_ips)
+                elif host_ip:
+                    has_live_socket = host_ip in connected_ips
+
+                should_mark_offline = bool(serial and not has_live_socket)
+                if state in {'ghost'}:
+                    should_mark_offline = True
+
+                if not should_mark_offline:
+                    continue
+
+                key = str(device.get('id') or ip_endpoint or serial or '').strip()
+                if key and key in existing_keys:
+                    continue
+
+                offline_list.append({
+                    'device_id': device.get('id'),
+                    'device_name': device.get('name') or f"PFDS {device.get('id')}",
+                    'ip': ip_endpoint or '--',
+                    'loc_id': device.get('location_id') or '--',
+                    'device_type': 'PFDS',
+                    'connection_attempts': 0,
+                    'failure_reason': 'No active socket connection' if serial else 'Missing serial binding',
+                })
+                if key:
+                    existing_keys.add(key)
+        except Exception:
+            pass
+
+        return devices, pending_list, offline_list, now_ts
+
+    def _reconnect_offline_device(self, ip: str, parent=None):
+        target_ip = str(ip or '').strip()
+        if not target_ip:
+            return
+        if not hasattr(self, 'device_status_manager') or not self.device_status_manager:
+            QMessageBox.warning(parent or self, 'Unavailable', 'Device status manager is not available.')
+            return
+        try:
+            ok = bool(self.device_status_manager.manual_reconnect(target_ip))
+            if ok:
+                QMessageBox.information(parent or self, 'Reconnect', f'Reconnect initiated for {target_ip}.')
+            else:
+                QMessageBox.warning(parent or self, 'Reconnect Failed', f'Could not trigger reconnect for {target_ip}.')
+        except Exception as e:
+            QMessageBox.critical(parent or self, 'Reconnect Failed', f'Could not reconnect {target_ip}: {e}')
+        self._refresh_live_operations_views()
+
+    def _open_devices_tab(self):
+        if not hasattr(self, 'tabs') or self.tabs is None:
+            return
+        for idx in range(self.tabs.count()):
+            if str(self.tabs.tabText(idx)).strip().upper() == 'DEVICES':
+                self.tabs.setCurrentIndex(idx)
+                return
+
+    def _open_live_pfds_tab(self):
+        if not hasattr(self, 'tabs') or self.tabs is None:
+            return
+        for idx in range(self.tabs.count()):
+            if str(self.tabs.tabText(idx)).strip().upper() == 'LIVE PFDS':
+                self.tabs.setCurrentIndex(idx)
+                self._refresh_live_operations_views()
+                return
+        # Fallback to legacy dialog if the LIVE PFDS tab is not available.
+        self.show_pfds_view_dialog()
+
+    def _collect_live_asset_entries(self):
+        devices, _pending_list, _offline_list, now_ts = self._collect_live_pfds_snapshot()
+        streams_config = self.config.get('streams', [])
+        streams = []
+        if isinstance(streams_config, dict):
+            for group_name, group_streams in streams_config.items():
+                for stream in group_streams:
+                    payload = dict(stream)
+                    payload.setdefault('group', group_name)
+                    streams.append(payload)
+        else:
+            streams = [dict(stream) for stream in streams_config]
+
+        device_by_loc = {}
+        for device in devices:
+            loc_key = self._normalize_loc_key(device.get('location_id'))
+            if loc_key and loc_key not in device_by_loc:
+                device_by_loc[loc_key] = device
+
+        asset_entries = []
+        seen_locs = set()
+        for stream in streams:
+            loc_id = self._normalize_loc_key(stream.get('loc_id') or stream.get('location_id') or stream.get('name'))
+            if not loc_id:
+                continue
+            seen_locs.add(loc_id)
+            device = device_by_loc.get(loc_id)
+            state = self._get_device_lifecycle_state(device, now_ts=now_ts) if device else 'pending_location'
+            asset_entries.append({
+                'loc_id': loc_id,
+                'stream_name': str(stream.get('name') or loc_id),
+                'stream_url': str(stream.get('url') or ''),
+                'group': str(stream.get('group') or self.current_group or 'default'),
+                'device': device,
+                'state': state,
+                'sensor_seen': self._sensor_last_packet_ts_by_loc_id.get(loc_id),
+            })
+
+        for loc_id, device in sorted(device_by_loc.items(), key=lambda item: item[0]):
+            if loc_id in seen_locs:
+                continue
+            asset_entries.append({
+                'loc_id': loc_id,
+                'stream_name': 'No linked video stream',
+                'stream_url': '',
+                'group': 'unassigned',
+                'device': device,
+                'state': self._get_device_lifecycle_state(device, now_ts=now_ts),
+                'sensor_seen': self._sensor_last_packet_ts_by_loc_id.get(loc_id),
+            })
+
+        return sorted(asset_entries, key=lambda item: (str(item.get('group')), str(item.get('loc_id'))))
+
+    def _apply_live_card_style(self, frame, state: str):
+        if frame is None:
+            return
+        state_key = str(state or 'pending_location').strip().lower()
+        is_active = state_key == 'active'
+        is_offline = state_key in {'offline', 'disconnected'}
+        is_incomplete = state_key in {'ghost', 'pending_identity', 'pending_location', 'unlinked', 'unauthorized'}
+        border_style = 'solid' if is_active else 'dashed' if (is_incomplete or is_offline) else 'solid'
+        border_color = '#ffdc00' if (is_active or is_incomplete) else '#c15b5b' if is_offline else '#75808d'
+        background = '#10161c' if is_active else '#201519' if is_offline else '#141a22'
+        frame.setObjectName('LiveOpCard')
+        frame.setAttribute(Qt.WA_Hover, True)
+        frame.setStyleSheet(
+            f"QFrame#LiveOpCard {{ background-color: {background}; border: 2px {border_style} {border_color}; border-radius: 4px; }}"
+            "QFrame#LiveOpCard:hover { border-color: #ffe564; background-color: #182028; }"
+            "QLabel#LiveCardEyebrow { color: #97a1ac; font-size: 10px; font-weight: 700; letter-spacing: 0.8px; }"
+            "QLabel#LiveCardTitle { color: #edf1f5; font-size: 14px; font-weight: 800; }"
+            "QLabel#LiveCardState { color: #ffdc00; font-size: 10px; font-weight: 800; letter-spacing: 0.7px; }"
+            "QLabel#LiveCardMeta { color: #8f99a5; font-size: 11px; font-family: \"Roboto Mono\", \"Menlo\", \"Consolas\", monospace; }"
+            "QToolButton#LiveCardMenuButton { background: transparent; border: 1px solid #495564; border-radius: 3px; color: #ffdc00; font-size: 15px; padding: 2px 8px; }"
+            "QToolButton#LiveCardMenuButton:hover { border-color: #ffe46e; color: #fff2a8; background-color: rgba(255, 220, 0, 0.08); }"
+            "QPushButton#LiveCardActionButton { background-color: #26303a; color: #edf1f5; border: 1px solid #596575; border-radius: 3px; padding: 6px 10px; font-weight: 700; }"
+            "QPushButton#LiveCardActionButton:hover { border-color: #ffdc00; color: #ffdc00; }"
+        )
+        # Keep rendering deterministic across platforms by avoiding stacked graphics effects on cards.
+        frame.setGraphicsEffect(None)
+
+    def _build_live_card_menu(self, actions):
+        menu_btn = QToolButton()
+        menu_btn.setObjectName('LiveCardMenuButton')
+        menu_btn.setText('⋯')
+        menu_btn.setCursor(Qt.PointingHandCursor)
+        menu_btn.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(menu_btn)
+        self._style_tactical_settings_menu(menu)
+        for label, callback in actions:
+            menu.addAction(label, callback)
+        menu_btn.setMenu(menu)
+        return menu_btn
+
+    def _build_live_pfds_device_card(self, device):
+        state = self._get_device_lifecycle_state(device)
+        card = QFrame()
+        card.setMinimumWidth(320)
+        card.setMinimumHeight(240)
+        card.setVisible(True)
+        self._apply_live_card_style(card, state)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        device_id = device.get('id')
+        eyebrow = QLabel(f"PFDS {device_id}")
+        eyebrow.setObjectName('LiveCardEyebrow')
+        top.addWidget(eyebrow)
+        top.addStretch(1)
+        top.addWidget(self._build_live_card_menu([
+            ('Toggle Authorized', lambda did=device_id: self._toggle_live_device_authorized(did, self)),
+            ('Toggle Linked', lambda did=device_id: self._toggle_live_device_linked(did, self)),
+            ('Set Location Id', lambda did=device_id: self._set_live_device_location(did, self)),
+            ('Set Poll Rate', lambda did=device_id: self._set_live_device_poll_seconds(did, self)),
+            ('Remove Device', lambda did=device_id: self._remove_live_device(did, self)),
+        ]))
+        layout.addLayout(top)
+
+        title = QLabel(str(device.get('name') or f"PFDS {device_id}").upper())
+        title.setObjectName('LiveCardTitle')
+        layout.addWidget(title)
+
+        state_label = QLabel(str(state).replace('_', ' ').upper())
+        state_label.setObjectName('LiveCardState')
+        layout.addWidget(state_label)
+
+        for meta in [
+            f"ID       {device_id}",
+            f"LOCATION {device.get('location_id') or 'UNMAPPED'}",
+            f"IP       {device.get('ip') or '--'}",
+            f"SERIAL   {device.get('serial_number') or 'UNSEEN'}",
+            f"MODE     {device.get('mode') or '--'} | POLL {device.get('poll_seconds') or '--'}s",
+            f"SEEN     {self._format_seen_text(device.get('last_seen_at'))}",
+        ]:
+            lbl = QLabel(meta)
+            lbl.setObjectName('LiveCardMeta')
+            layout.addWidget(lbl)
+
+        action_row = QHBoxLayout()
+        set_loc_btn = QPushButton('Set Location')
+        set_loc_btn.setObjectName('LiveCardActionButton')
+        set_loc_btn.clicked.connect(lambda _=False, did=device_id: self._set_live_device_location(did, self))
+        action_row.addWidget(set_loc_btn)
+
+        auth_btn = QPushButton('Authorize')
+        auth_btn.setObjectName('LiveCardActionButton')
+        auth_btn.clicked.connect(lambda _=False, did=device_id: self._toggle_live_device_authorized(did, self))
+        action_row.addWidget(auth_btn)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+        return card
+
+    def _build_pending_identity_card(self, pending_info):
+        state = str(pending_info.get('resolved_state') or self._get_pending_identity_state(pending_info)).strip()
+        card = QFrame()
+        card.setMinimumWidth(300)
+        card.setMinimumHeight(170)
+        card.setVisible(True)
+        self._apply_live_card_style(card, state)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        eyebrow = QLabel('PENDING IDENTITY')
+        eyebrow.setObjectName('LiveCardEyebrow')
+        top.addWidget(eyebrow)
+        top.addStretch(1)
+        top.addWidget(self._build_live_card_menu([
+            ('Assign Room', lambda info=dict(pending_info): self._assign_pending_identity_to_room_from_info(info, self)),
+        ]))
+        layout.addLayout(top)
+
+        title = QLabel(str(pending_info.get('serial_number') or 'UNKNOWN SERIAL').upper())
+        title.setObjectName('LiveCardTitle')
+        layout.addWidget(title)
+
+        state_label = QLabel(state.replace('_', ' ').upper())
+        state_label.setObjectName('LiveCardState')
+        layout.addWidget(state_label)
+
+        for meta in [
+            f"CLIENT   {pending_info.get('client_ip') or '--'}",
+            f"SEEN     {self._format_seen_text(pending_info.get('last_seen'))}",
+            f"DEVICE   {pending_info.get('device_id') or 'UNBOUND'}",
+        ]:
+            lbl = QLabel(meta)
+            lbl.setObjectName('LiveCardMeta')
+            layout.addWidget(lbl)
+
+        assign_btn = QPushButton('Assign Room')
+        assign_btn.setObjectName('LiveCardActionButton')
+        assign_btn.clicked.connect(lambda _=False, info=dict(pending_info): self._assign_pending_identity_to_room_from_info(info, self))
+        layout.addWidget(assign_btn)
+        return card
+
+    def _build_offline_device_card(self, device_status):
+        def _read(field, default='--'):
+            if isinstance(device_status, dict):
+                value = device_status.get(field, default)
+            else:
+                value = getattr(device_status, field, default)
+            if value is None or value == '':
+                return default
+            return value
+
+        card = QFrame()
+        card.setMinimumWidth(320)
+        card.setMinimumHeight(220)
+        self._apply_live_card_style(card, 'offline')
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        eyebrow = QLabel('OFFLINE DEVICE')
+        eyebrow.setObjectName('LiveCardEyebrow')
+        top.addWidget(eyebrow)
+        top.addStretch(1)
+        top.addWidget(self._build_live_card_menu([
+            ('Reconnect', lambda ip=str(_read('ip', '')): self._reconnect_offline_device(ip, self)),
+            ('Open Devices Tab', self._open_devices_tab),
+        ]))
+        layout.addLayout(top)
+
+        title = QLabel(str(_read('device_name', 'Unknown Device')).upper())
+        title.setObjectName('LiveCardTitle')
+        layout.addWidget(title)
+
+        state_label = QLabel('OFFLINE')
+        state_label.setObjectName('LiveCardState')
+        layout.addWidget(state_label)
+
+        failure_reason = str(_read('failure_reason', '') or 'No telemetry')
+        for meta in [
+            f"IP       {_read('ip', '--')}",
+            f"LOCATION {_read('loc_id', '--')}",
+            f"TYPE     {_read('device_type', '--')}",
+            f"ATTEMPTS {_read('connection_attempts', 0)}",
+            f"REASON   {failure_reason}",
+        ]:
+            lbl = QLabel(meta)
+            lbl.setWordWrap(True)
+            lbl.setObjectName('LiveCardMeta')
+            layout.addWidget(lbl)
+
+        action_row = QHBoxLayout()
+        reconnect_btn = QPushButton('Reconnect')
+        reconnect_btn.setObjectName('LiveCardActionButton')
+        reconnect_btn.clicked.connect(lambda _=False, ip=str(_read('ip', '')): self._reconnect_offline_device(ip, self))
+        action_row.addWidget(reconnect_btn)
+
+        devices_btn = QPushButton('Devices Tab')
+        devices_btn.setObjectName('LiveCardActionButton')
+        devices_btn.clicked.connect(self._open_devices_tab)
+        action_row.addWidget(devices_btn)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+        return card
+
+    def _build_live_asset_card(self, entry):
+        device = entry.get('device')
+        state = str(entry.get('state') or 'pending_location')
+        card = QFrame()
+        card.setMinimumWidth(340)
+        card.setMinimumHeight(240)
+        self._apply_live_card_style(card, state)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        menu_actions = [('Open PFDS Dialog', self.show_pfds_view_dialog)]
+        if device:
+            device_id = device.get('id')
+            menu_actions = [
+                ('Toggle Authorized', lambda did=device_id: self._toggle_live_device_authorized(did, self)),
+                ('Toggle Linked', lambda did=device_id: self._toggle_live_device_linked(did, self)),
+                ('Set Location Id', lambda did=device_id: self._set_live_device_location(did, self)),
+                ('Set Poll Rate', lambda did=device_id: self._set_live_device_poll_seconds(did, self)),
+                ('Open PFDS Dialog', self.show_pfds_view_dialog),
+            ]
+
+        top = QHBoxLayout()
+        eyebrow = QLabel(f"GROUP {str(entry.get('group') or 'default').upper()}")
+        eyebrow.setObjectName('LiveCardEyebrow')
+        top.addWidget(eyebrow)
+        top.addStretch(1)
+        top.addWidget(self._build_live_card_menu(menu_actions))
+        layout.addLayout(top)
+
+        title = QLabel(str(entry.get('loc_id') or 'UNMAPPED').upper())
+        title.setObjectName('LiveCardTitle')
+        layout.addWidget(title)
+
+        stream_name = QLabel(str(entry.get('stream_name') or '').upper())
+        stream_name.setObjectName('LiveCardState')
+        layout.addWidget(stream_name)
+
+        for meta in [
+            f"STREAM   {entry.get('stream_url') or 'NO VIDEO URL'}",
+            f"PFDS     {device.get('name') if device else 'NO PFDS LINK'}",
+            f"SERIAL   {device.get('serial_number') if device else 'UNSEEN'}",
+            f"STATUS   {state.replace('_', ' ').upper()}",
+            f"SEEN     {self._format_seen_text(entry.get('sensor_seen') or (device or {}).get('last_seen_at'))}",
+        ]:
+            lbl = QLabel(meta)
+            lbl.setWordWrap(True)
+            lbl.setObjectName('LiveCardMeta')
+            layout.addWidget(lbl)
+
+        action_row = QHBoxLayout()
+        primary_btn = QPushButton('Set Location' if device else 'Add PFDS Device')
+        primary_btn.setObjectName('LiveCardActionButton')
+        if device:
+            primary_btn.clicked.connect(lambda _=False, did=device.get('id'): self._set_live_device_location(did, self))
+        else:
+            primary_btn.clicked.connect(self.show_pfds_add_dialog)
+        action_row.addWidget(primary_btn)
+
+        secondary_btn = QPushButton('Authorize' if device else 'Open PFDS')
+        secondary_btn.setObjectName('LiveCardActionButton')
+        if device:
+            secondary_btn.clicked.connect(lambda _=False, did=device.get('id'): self._toggle_live_device_authorized(did, self))
+        else:
+            secondary_btn.clicked.connect(self.show_pfds_view_dialog)
+        action_row.addWidget(secondary_btn)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+        return card
+
+    def _refresh_live_pfds_tab(self):
+        if not hasattr(self, 'live_pfds_grid'):
+            return
+        devices, pending_list, offline_list, _now_ts = self._collect_live_pfds_snapshot()
+
+        offline_device_ids = set()
+        for entry in (offline_list or []):
+            did = None
+            if isinstance(entry, dict):
+                did = entry.get('device_id')
+            else:
+                did = getattr(entry, 'device_id', None)
+            try:
+                if did is not None:
+                    offline_device_ids.add(int(did))
+            except Exception:
+                pass
+
+        online_devices = []
+        for device in (devices or []):
+            try:
+                did = int(device.get('id'))
+            except Exception:
+                did = None
+            if did is not None and did in offline_device_ids:
+                continue
+            online_devices.append(device)
+
+        live_count = len(online_devices)
+        pending_count = len(pending_list)
+        total_count = live_count + len(offline_list) + pending_count
+
+        if hasattr(self, 'live_pfds_filter_all_btn'):
+            self.live_pfds_filter_all_btn.setText(f"ALL {total_count}")
+        if hasattr(self, 'live_pfds_filter_live_btn'):
+            self.live_pfds_filter_live_btn.setText(f"LIVE {live_count}")
+        if hasattr(self, 'live_pfds_filter_pending_btn'):
+            self.live_pfds_filter_pending_btn.setText(f"PENDING {pending_count}")
+
+        current_filter = str(getattr(self, '_live_pfds_filter', 'all') or 'all').strip().lower()
+        if current_filter not in {'all', 'live', 'pending'}:
+            current_filter = 'all'
+            self._live_pfds_filter = 'all'
+        self._sync_live_pfds_filter_buttons()
+
+        self._clear_dynamic_layout(self.live_pfds_grid)
+        viewport_width = self.live_pfds_scroll.viewport().width() if hasattr(self, 'live_pfds_scroll') else 1200
+        cols = self._responsive_card_columns(viewport_width, 320)
+        for c in range(max(1, cols)):
+            self.live_pfds_grid.setColumnStretch(c, 1)
+
+        merged_cards = []
+        if current_filter in {'all', 'live'}:
+            for device in online_devices:
+                merged_cards.append(('live', device))
+        if current_filter == 'all':
+            for status in (offline_list or []):
+                merged_cards.append(('offline', status))
+        if current_filter in {'all', 'pending'}:
+            for pending in pending_list:
+                merged_cards.append(('pending', pending))
+
+        for idx, payload in enumerate(merged_cards):
+            row = idx // cols
+            col = idx % cols
+            kind, item = payload
+            try:
+                if kind == 'pending':
+                    self.live_pfds_grid.addWidget(self._build_pending_identity_card(item), row, col, Qt.AlignTop | Qt.AlignLeft)
+                elif kind == 'offline':
+                    self.live_pfds_grid.addWidget(self._build_offline_device_card(item), row, col, Qt.AlignTop | Qt.AlignLeft)
+                else:
+                    self.live_pfds_grid.addWidget(self._build_live_pfds_device_card(item), row, col, Qt.AlignTop | Qt.AlignLeft)
+            except Exception as e:
+                err = QLabel(f"CARD RENDER ERROR: {e}")
+                err.setStyleSheet('color: #ffb4b4; font-size: 11px; padding: 10px; border: 1px dashed #aa6666;')
+                self.live_pfds_grid.addWidget(err, row, col, Qt.AlignTop | Qt.AlignLeft)
+
+        if not merged_cards:
+            empty = QLabel('No live or offline PFDS devices available')
+            empty.setStyleSheet('color: #9aa4af; font-size: 12px; padding: 20px;')
+            self.live_pfds_grid.addWidget(empty, 0, 0)
+
+        if hasattr(self, 'live_pfds_grid_host'):
+            self.live_pfds_grid_host.adjustSize()
+
+        if hasattr(self, 'live_pfds_pending_layout'):
+            self._clear_dynamic_layout(self.live_pfds_pending_layout)
+            for info in pending_list:
+                self.live_pfds_pending_layout.addWidget(self._build_pending_identity_card(info))
+            if not pending_list:
+                empty = QLabel('No pending or unmapped identities')
+                empty.setStyleSheet('color: #9aa4af; font-size: 12px; padding: 8px 4px;')
+                self.live_pfds_pending_layout.addWidget(empty)
+            self.live_pfds_pending_layout.addStretch(1)
+
+    def _set_live_pfds_filter(self, filter_name: str):
+        self._live_pfds_filter = str(filter_name or 'all').strip().lower()
+        self._sync_live_pfds_filter_buttons()
+        self._refresh_live_pfds_tab()
+
+    def _sync_live_pfds_filter_buttons(self):
+        current = str(getattr(self, '_live_pfds_filter', 'all') or 'all').strip().lower()
+        mapping = {
+            'all': getattr(self, 'live_pfds_filter_all_btn', None),
+            'live': getattr(self, 'live_pfds_filter_live_btn', None),
+            'pending': getattr(self, 'live_pfds_filter_pending_btn', None),
+        }
+        for key, btn in mapping.items():
+            if btn is not None:
+                btn.setChecked(key == current)
+
+    def _refresh_live_assets_tab(self):
+        if not hasattr(self, 'live_assets_grid'):
+            return
+        asset_entries = self._collect_live_asset_entries()
+        ready = sum(1 for entry in asset_entries if str(entry.get('state')) == 'active')
+        if hasattr(self, 'live_assets_count_chip'):
+            self.live_assets_count_chip.setText(f"ASSETS {len(asset_entries)}")
+        if hasattr(self, 'live_assets_healthy_chip'):
+            self.live_assets_healthy_chip.setText(f"READY {ready}")
+
+        self._clear_dynamic_layout(self.live_assets_grid)
+        viewport_width = self.live_assets_scroll.viewport().width() if hasattr(self, 'live_assets_scroll') else 1200
+        cols = self._responsive_card_columns(viewport_width, 340)
+        for c in range(max(1, cols)):
+            self.live_assets_grid.setColumnStretch(c, 1)
+        for idx, entry in enumerate(asset_entries):
+            row = idx // cols
+            col = idx % cols
+            try:
+                self.live_assets_grid.addWidget(self._build_live_asset_card(entry), row, col)
+            except Exception as e:
+                err = QLabel(f"CARD RENDER ERROR: {e}")
+                err.setStyleSheet('color: #ffb4b4; font-size: 11px; padding: 10px; border: 1px dashed #aa6666;')
+                self.live_assets_grid.addWidget(err, row, col)
+        if not asset_entries:
+            empty = QLabel('No configured assets available')
+            empty.setStyleSheet('color: #9aa4af; font-size: 12px; padding: 20px;')
+            self.live_assets_grid.addWidget(empty, 0, 0)
+
+        if hasattr(self, 'live_assets_host'):
+            self.live_assets_host.adjustSize()
+
+    def _toggle_live_pfds_sidebar(self):
+        if not hasattr(self, 'live_pfds_sidebar'):
+            return
+        expanded = bool(getattr(self, 'live_pfds_sidebar_expanded', True))
+        start_width = int(self.live_pfds_sidebar.maximumWidth())
+        end_width = 0 if expanded else int(getattr(self, '_live_pfds_sidebar_width', 340))
+        if not expanded:
+            self.live_pfds_sidebar.setVisible(True)
+        self.live_pfds_sidebar_expanded = not expanded
+        if hasattr(self, 'live_pfds_sidebar_toggle'):
+            self.live_pfds_sidebar_toggle.setText('Hide Pending' if not expanded else 'Show Pending')
+        self._live_pfds_sidebar_anim.stop()
+        self._live_pfds_sidebar_anim.setStartValue(start_width)
+        self._live_pfds_sidebar_anim.setEndValue(end_width)
+        self._live_pfds_sidebar_anim.start()
+
+    def _on_live_pfds_sidebar_anim_finished(self):
+        if not hasattr(self, 'live_pfds_sidebar'):
+            return
+        if not bool(getattr(self, 'live_pfds_sidebar_expanded', True)):
+            self.live_pfds_sidebar.setVisible(False)
+        else:
+            self.live_pfds_sidebar.setVisible(True)
+
+    def _toggle_live_device_authorized(self, device_id, parent=None):
+        if not self._ensure_operator_identity(parent or self, action='authorization toggle'):
+            return
+        device = self._get_emberhawk_device_by_id(device_id)
+        if not device:
+            QMessageBox.warning(parent or self, 'Device Missing', 'Selected device could not be found.')
+            return
+        try:
+            self.emberhawk.set_device_access(
+                int(device_id),
+                is_authorized=not bool(device.get('is_authorized', True)),
+                actor=self._operator_actor(),
+                reason='toggle_authorized_card',
+            )
+            self._refresh_live_operations_views()
+        except Exception as e:
+            QMessageBox.critical(parent or self, 'Update Failed', f'Could not update authorization: {e}')
+
+    def _toggle_live_device_linked(self, device_id, parent=None):
+        if not self._ensure_operator_identity(parent or self, action='link toggle'):
+            return
+        device = self._get_emberhawk_device_by_id(device_id)
+        if not device:
+            QMessageBox.warning(parent or self, 'Device Missing', 'Selected device could not be found.')
+            return
+        try:
+            self.emberhawk.set_device_access(
+                int(device_id),
+                is_linked=not bool(device.get('is_linked', True)),
+                actor=self._operator_actor(),
+                reason='toggle_linked_card',
+            )
+            self._refresh_live_operations_views()
+        except Exception as e:
+            QMessageBox.critical(parent or self, 'Update Failed', f'Could not update link state: {e}')
+
+    def _set_live_device_location(self, device_id, parent=None):
+        if not self._ensure_operator_identity(parent or self, action='updating location'):
+            return
+        loc_id, ok = QInputDialog.getItem(parent or self, 'Set Location', 'Location Id', self._location_choices_for_live_devices(), 0, True)
+        if not ok:
+            return
+        loc_id = self._normalize_loc_key(loc_id)
+        if not loc_id:
+            QMessageBox.warning(parent or self, 'Missing Location', 'Location Id is required.')
+            return
+        try:
+            self.emberhawk.update_device_location(int(device_id), loc_id)
+            self._refresh_live_operations_views()
+        except Exception as e:
+            QMessageBox.critical(parent or self, 'Update Failed', f'Could not update location: {e}')
+
+    def _set_live_device_poll_seconds(self, device_id, parent=None):
+        if not self._ensure_operator_identity(parent or self, action='updating poll period'):
+            return
+        poll, ok = QInputDialog.getInt(parent or self, 'Set Poll', 'Poll seconds', 10, 1, 3600)
+        if not ok:
+            return
+        try:
+            self.emberhawk.update_device_poll_seconds(int(device_id), int(poll))
+            self._refresh_live_operations_views()
+        except Exception as e:
+            QMessageBox.critical(parent or self, 'Update Failed', f'Could not update poll period: {e}')
+
+    def _remove_live_device(self, device_id, parent=None):
+        if not self._ensure_operator_identity(parent or self, action='removing PFDS device'):
+            return
+        reply = QMessageBox.question(
+            parent or self,
+            'Remove Device',
+            'Remove selected PFDS device from the active registry?',
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            self.emberhawk.remove_device(int(device_id))
+            self._refresh_live_operations_views()
+        except Exception as e:
+            QMessageBox.critical(parent or self, 'Remove Failed', f'Could not remove device: {e}')
+
+    def _assign_pending_identity_to_room_from_info(self, pending_info, parent=None):
+        if not self._ensure_operator_identity(parent or self, action='assign pending identity'):
+            return
+        serial = self._normalize_serial_key((pending_info or {}).get('serial_number'))
+        peer_ip = str((pending_info or {}).get('client_ip') or '').strip()
+        if not serial:
+            QMessageBox.warning(parent or self, 'Invalid Serial', 'Selected pending identity has no serial number.')
+            return
+
+        loc_id, ok = QInputDialog.getItem(parent or self, 'Assign Room', 'Location Id', self._location_choices_for_live_devices(), 0, True)
+        if not ok:
+            return
+        loc_id = self._normalize_loc_key(loc_id)
+        if not loc_id:
+            QMessageBox.warning(parent or self, 'Missing Location', 'Location Id is required.')
+            return
+
+        existing = self.emberhawk.get_device_by_serial(serial)
+        try:
+            if existing:
+                did = int(existing.get('id'))
+                self.emberhawk.update_device_location(did, loc_id)
+                self.emberhawk.set_device_access(
+                    did,
+                    is_authorized=True,
+                    is_linked=True,
+                    actor=self._operator_actor(),
+                    reason='assign_pending_identity_existing_card',
+                )
+                self.emberhawk.touch_device_seen(serial, peer_ip or None)
+            else:
+                default_name = f'PFDS {serial}'
+                name, ok_name = QInputDialog.getText(parent or self, 'Device Name', 'Name', text=default_name)
+                if not ok_name:
+                    return
+                name = str(name or '').strip() or default_name
+
+                mode, ok_mode = QInputDialog.getItem(parent or self, 'Device Mode', 'Mode', ['Continuous', 'On Demand'], 0, False)
+                if not ok_mode:
+                    return
+
+                poll, ok_poll = QInputDialog.getInt(parent or self, 'Poll (seconds)', 'Poll seconds', 10, 1, 3600)
+                if not ok_poll:
+                    return
+
+                port_value = int(getattr(self, 'tcp_server_port', self.config.get('tcp_server_port', 5001)) or 5001)
+                ip_host = peer_ip or '127.0.0.1'
+                did = self.emberhawk.add_device(name, f'{ip_host}:{port_value}', loc_id, mode, int(poll))
+                self.emberhawk.set_device_access(
+                    did,
+                    is_authorized=True,
+                    is_linked=True,
+                    actor=self._operator_actor(),
+                    reason='assign_pending_identity_create_card',
+                )
+                self.emberhawk.bind_serial_to_device(did, serial, peer_ip or None)
+
+            self._loc_by_serial[serial] = loc_id
+            self._pending_device_by_serial.pop(serial, None)
+            self._refresh_live_operations_views()
+            QMessageBox.information(parent or self, 'Assigned', f'Serial {serial} assigned to {loc_id}.')
+        except Exception as e:
+            QMessageBox.critical(parent or self, 'Assign Failed', f'Could not assign pending identity: {e}')
+
     def show_pfds_view_dialog(self):
-        """View configured PFDS devices (loaded from SQLite)."""
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHBoxLayout, QPushButton, QMessageBox
+        """View configured live PFDS devices and pending serial identities."""
+        from PyQt5.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QTableWidget,
+            QTableWidgetItem,
+            QHBoxLayout,
+            QPushButton,
+            QMessageBox,
+            QLabel,
+            QInputDialog,
+        )
+        from datetime import datetime
+
         dlg = QDialog(self)
-        dlg.setWindowTitle("PFDS Devices")
+        dlg.setWindowTitle("Live PFDS Devices")
         layout = QVBoxLayout(dlg)
 
-        table = QTableWidget(0, 6)
-        table.setHorizontalHeaderLabels(["ID", "Name", "IP", "Location Id", "Mode", "Poll (s)"])
+        table = QTableWidget(0, 12)
+        table.setHorizontalHeaderLabels([
+            "ID", "Name", "IP", "Location Id", "Serial", "Authorized", "Linked",
+            "State", "Mode", "Poll (s)", "Last Seen IP", "Last Seen At"
+        ])
         layout.addWidget(table)
+
+        layout.addWidget(QLabel("Pending Identities (serial seen but not linked or not mapped to location)", dlg))
+        pending_table = QTableWidget(0, 4)
+        pending_table.setHorizontalHeaderLabels(["Serial", "Client IP", "Last Seen", "State"])
+        layout.addWidget(pending_table)
 
         def load_rows():
             table.setRowCount(0)
+            pending_table.setRowCount(0)
             try:
                 devices = self.emberhawk.list_devices()
+                now_ts = time.time()
                 for d in devices:
                     row = table.rowCount()
                     table.insertRow(row)
-                    vals = [d['id'], d['name'], d['ip'], d.get('location_id') or '', d['mode'], d['poll_seconds']]
+                    state = self._get_device_lifecycle_state(d, now_ts=now_ts)
+                    vals = [
+                        d['id'],
+                        d['name'],
+                        d['ip'],
+                        d.get('location_id') or '',
+                        d.get('serial_number') or '',
+                        'Yes' if d.get('is_authorized', True) else 'No',
+                        'Yes' if d.get('is_linked', True) else 'No',
+                        state,
+                        d['mode'],
+                        d['poll_seconds'],
+                        d.get('last_seen_ip') or '',
+                        d.get('last_seen_at') or '',
+                    ]
                     for c, val in enumerate(vals):
                         table.setItem(row, c, QTableWidgetItem(str(val)))
+
+                pending = dict(self._pending_device_by_serial)
+                for d in devices:
+                    serial = self._normalize_serial_key(d.get('serial_number'))
+                    if not serial or serial in pending:
+                        continue
+                    missing_location = not self._normalize_loc_key(d.get('location_id'))
+                    not_linked = not bool(d.get('is_linked', True))
+                    not_authorized = not bool(d.get('is_authorized', True))
+                    if missing_location or not_linked or not_authorized:
+                        if missing_location:
+                            pending_state = 'pending_location'
+                        elif not_linked:
+                            pending_state = 'unlinked'
+                        else:
+                            pending_state = 'unauthorized'
+                        pending[serial] = {
+                            'serial_number': serial,
+                            'client_ip': d.get('last_seen_ip') or '',
+                            'last_seen': d.get('last_seen_at') or '',
+                            'state': pending_state,
+                            'device_id': d.get('id'),
+                        }
+
+                for serial, info in sorted(pending.items(), key=lambda kv: kv[0]):
+                    prow = pending_table.rowCount()
+                    pending_table.insertRow(prow)
+                    ts = info.get('last_seen')
+                    ts_text = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') if isinstance(ts, (int, float)) else ''
+                    state = self._get_pending_identity_state(info, now_ts=now_ts)
+                    pending_table.setItem(prow, 0, QTableWidgetItem(str(serial)))
+                    pending_table.setItem(prow, 1, QTableWidgetItem(str(info.get('client_ip') or '')))
+                    pending_table.setItem(prow, 2, QTableWidgetItem(ts_text))
+                    pending_table.setItem(prow, 3, QTableWidgetItem(state))
+                self._refresh_live_operations_views()
             except Exception as e:
                 QMessageBox.critical(dlg, "Load Failed", f"Could not load devices: {e}")
 
@@ -3400,31 +6431,416 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         btn_row = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
-        remove_btn = QPushButton("Remove Selected")
+        bind_btn = QPushButton("Bind Serial")
+        assign_pending_btn = QPushButton("Assign Room")
+        bulk_reconcile_btn = QPushButton("Bulk Reconcile")
+        set_loc_btn = QPushButton("Set Location")
+
+        more_btn = QToolButton()
+        more_btn.setText("More")
+        more_btn.setPopupMode(QToolButton.InstantPopup)
+        more_menu = QMenu(more_btn)
+        dry_run_action = more_menu.addAction("Dry Run Pending")
+        export_report_action = more_menu.addAction("Export Reconcile Report")
+        more_menu.addSeparator()
+        auth_action = more_menu.addAction("Toggle Authorized")
+        link_action = more_menu.addAction("Toggle Linked")
+        set_poll_selected_action = more_menu.addAction("Set Poll (Selected)")
+        set_poll_all_action = more_menu.addAction("Set Poll (All)")
+        more_menu.addSeparator()
+        remove_action = more_menu.addAction("Remove Selected")
+        more_btn.setMenu(more_menu)
+
         close_btn = QPushButton("Close")
         btn_row.addWidget(refresh_btn)
-        btn_row.addWidget(remove_btn)
+        btn_row.addWidget(bind_btn)
+        btn_row.addWidget(assign_pending_btn)
+        btn_row.addWidget(bulk_reconcile_btn)
+        btn_row.addWidget(set_loc_btn)
+        btn_row.addWidget(more_btn)
+        btn_row.addStretch(1)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+        last_reconcile_summary = {}
+
         refresh_btn.clicked.connect(load_rows)
-        def remove_selected():
+
+        def _selected_device_id():
             row = table.currentRow()
             if row < 0:
-                QMessageBox.information(dlg, "No Selection", "Select a device row to remove.")
-                return
+                return None
             did_item = table.item(row, 0)
             if not did_item:
+                return None
+            try:
+                return int(did_item.text())
+            except Exception:
+                return None
+
+        def bind_pending_serial():
+            if not self._ensure_operator_identity(dlg, action="binding pending serial"):
                 return
-            did = int(did_item.text())
+            did = _selected_device_id()
+            prow = pending_table.currentRow()
+            if did is None or prow < 0:
+                QMessageBox.information(dlg, "Selection Required", "Select one device and one pending serial row.")
+                return
+            serial_item = pending_table.item(prow, 0)
+            ip_item = pending_table.item(prow, 1)
+            if not serial_item:
+                return
+            serial = self._normalize_serial_key(serial_item.text())
+            peer_ip = ip_item.text().strip() if ip_item else None
+            try:
+                self.emberhawk.bind_serial_to_device(did, serial, peer_ip)
+                self._pending_device_by_serial.pop(serial, None)
+                load_rows()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Bind Failed", f"Could not bind serial: {e}")
+
+        def _location_choices():
+            loc_ids = set()
+            try:
+                for g in self.config.get('groups', []):
+                    streams = self.config.get('streams', {}).get(g, []) if isinstance(self.config.get('streams'), dict) else self.config.get('streams', [])
+                    for s in streams:
+                        lid = s.get('location_id') or s.get('loc_id') or s.get('name')
+                        if lid:
+                            loc_ids.add(str(lid).strip())
+            except Exception:
+                pass
+            if not loc_ids:
+                loc_ids.add('demo_room')
+            return sorted(loc_ids)
+
+        def assign_pending_to_room():
+            if not self._ensure_operator_identity(dlg, action="assign pending identity"):
+                return
+            prow = pending_table.currentRow()
+            if prow < 0:
+                QMessageBox.information(dlg, "Selection Required", "Select one pending identity row.")
+                return
+
+            serial_item = pending_table.item(prow, 0)
+            ip_item = pending_table.item(prow, 1)
+            if not serial_item:
+                return
+            serial = self._normalize_serial_key(serial_item.text())
+            peer_ip = ip_item.text().strip() if ip_item else ''
+            if not serial:
+                QMessageBox.warning(dlg, "Invalid Serial", "Selected pending row has no serial.")
+                return
+
+            loc_options = _location_choices()
+            loc_id, ok = QInputDialog.getItem(dlg, "Assign Room", "Location Id", loc_options, 0, True)
+            if not ok:
+                return
+            loc_id = self._normalize_loc_key(loc_id)
+            if not loc_id:
+                QMessageBox.warning(dlg, "Missing Location", "Location Id is required.")
+                return
+
+            existing = self.emberhawk.get_device_by_serial(serial)
+            try:
+                if existing:
+                    did = int(existing.get('id'))
+                    self.emberhawk.update_device_location(did, loc_id)
+                    self.emberhawk.set_device_access(
+                        did,
+                        is_authorized=True,
+                        is_linked=True,
+                        actor=self._operator_actor(),
+                        reason="assign_pending_to_room_existing",
+                    )
+                    self.emberhawk.touch_device_seen(serial, peer_ip or None)
+                else:
+                    default_name = f"PFDS {serial}"
+                    name, ok_name = QInputDialog.getText(dlg, "Device Name", "Name", text=default_name)
+                    if not ok_name:
+                        return
+                    name = str(name or '').strip() or default_name
+
+                    mode, ok_mode = QInputDialog.getItem(dlg, "Device Mode", "Mode", ["Continuous", "On Demand"], 0, False)
+                    if not ok_mode:
+                        return
+
+                    poll, ok_poll = QInputDialog.getInt(dlg, "Poll (seconds)", "Poll seconds", 10, 1, 3600)
+                    if not ok_poll:
+                        return
+
+                    ip_host = peer_ip or '127.0.0.1'
+                    ip_endpoint = f"{ip_host}:{int(self.tcp_server_port)}"
+                    did = self.emberhawk.add_device(name, ip_endpoint, loc_id, mode, int(poll))
+                    self.emberhawk.set_device_access(
+                        did,
+                        is_authorized=True,
+                        is_linked=True,
+                        actor=self._operator_actor(),
+                        reason="assign_pending_to_room_create",
+                    )
+                    self.emberhawk.bind_serial_to_device(did, serial, peer_ip or None)
+
+                self._loc_by_serial[serial] = loc_id
+                self._pending_device_by_serial.pop(serial, None)
+                load_rows()
+                QMessageBox.information(dlg, "Assigned", f"Serial {serial} assigned to {loc_id}.")
+            except Exception as e:
+                QMessageBox.critical(dlg, "Assign Failed", f"Could not assign pending identity: {e}")
+
+        def bulk_reconcile_pending():
+            nonlocal last_reconcile_summary
+            if not self._ensure_operator_identity(dlg, action="bulk reconcile"):
+                return
+            pending = dict(self._pending_device_by_serial)
+            if not pending:
+                QMessageBox.information(dlg, "No Pending", "No pending identities to reconcile.")
+                return
+            try:
+                summary = self.emberhawk.bulk_reconcile_pending_serials(
+                    pending,
+                    auto_link=True,
+                    actor=self._operator_actor(),
+                )
+                last_reconcile_summary = dict(summary)
+                for serial in summary.get('bound_serials', []):
+                    self._pending_device_by_serial.pop(serial, None)
+                    self._emit_device_telemetry(
+                        'bulk_reconcile_bound',
+                        serial=serial,
+                        state='active',
+                    )
+                for serial in summary.get('unmatched_serials', []):
+                    self._emit_device_telemetry(
+                        'bulk_reconcile_unmatched',
+                        serial=serial,
+                        state='pending_identity',
+                        drop_reason='no_matching_device',
+                    )
+
+                attempted = int(summary.get('attempted', 0))
+                bound = int(summary.get('bound', 0))
+                already_bound = int(summary.get('already_bound', 0))
+                unmatched = int(summary.get('unmatched', 0))
+                errors = int(summary.get('errors', 0))
+                message = (
+                    f"Attempted: {attempted}\n"
+                    f"Bound: {bound}\n"
+                    f"Already Bound: {already_bound}\n"
+                    f"Unmatched: {unmatched}\n"
+                    f"Errors: {errors}"
+                )
+                QMessageBox.information(dlg, "Bulk Reconcile Complete", message)
+                load_rows()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Bulk Reconcile Failed", f"Could not reconcile pending identities: {e}")
+
+        def dry_run_reconcile_pending():
+            nonlocal last_reconcile_summary
+            if not self._ensure_operator_identity(dlg, action="reconcile dry-run"):
+                return
+            pending = dict(self._pending_device_by_serial)
+            if not pending:
+                QMessageBox.information(dlg, "No Pending", "No pending identities to preview.")
+                return
+            try:
+                summary = self.emberhawk.bulk_reconcile_pending_serials(
+                    pending,
+                    auto_link=True,
+                    actor=self._operator_actor(),
+                    dry_run=True,
+                )
+                last_reconcile_summary = dict(summary)
+                self._emit_device_telemetry(
+                    'bulk_reconcile_preview',
+                    state='pending_identity',
+                    command='dry_run',
+                    attempted=int(summary.get('attempted', 0)),
+                    would_bind=int(summary.get('would_bind', 0)),
+                    unmatched=int(summary.get('unmatched', 0)),
+                    errors=int(summary.get('errors', 0)),
+                )
+                message = (
+                    f"Dry Run Complete\n\n"
+                    f"Attempted: {int(summary.get('attempted', 0))}\n"
+                    f"Would Bind: {int(summary.get('would_bind', 0))}\n"
+                    f"Already Bound: {int(summary.get('already_bound', 0))}\n"
+                    f"Unmatched: {int(summary.get('unmatched', 0))}\n"
+                    f"Errors: {int(summary.get('errors', 0))}"
+                )
+                QMessageBox.information(dlg, "Dry Run Reconcile", message)
+            except Exception as e:
+                QMessageBox.critical(dlg, "Dry Run Failed", f"Could not run dry reconciliation preview: {e}")
+
+        def export_reconcile_report():
+            summary = dict(last_reconcile_summary or {})
+            rows = summary.get('report_rows') or []
+            if not rows:
+                QMessageBox.information(dlg, "No Report", "Run Dry Run or Bulk Reconcile first.")
+                return
+            default_name = f"reconcile_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            file_path, _ = QFileDialog.getSaveFileName(
+                dlg,
+                "Export Reconcile Report",
+                f"{default_name}.json",
+                "JSON Files (*.json);;CSV Files (*.csv)",
+            )
+            if not file_path:
+                return
+            try:
+                if file_path.lower().endswith('.csv'):
+                    import csv
+                    columns = [
+                        'serial',
+                        'status',
+                        'candidate_device_id',
+                        'candidate_device_name',
+                        'candidate_ip',
+                        'client_ip',
+                        'dry_run',
+                        'error',
+                    ]
+                    with open(file_path, 'w', encoding='utf-8', newline='') as f:
+                        writer = csv.DictWriter(f, fieldnames=columns)
+                        writer.writeheader()
+                        for r in rows:
+                            writer.writerow({k: r.get(k) for k in columns})
+                else:
+                    payload = {
+                        'generated_at': datetime.utcnow().isoformat() + 'Z',
+                        'summary': {
+                            'dry_run': bool(summary.get('dry_run', False)),
+                            'attempted': int(summary.get('attempted', 0)),
+                            'bound': int(summary.get('bound', 0)),
+                            'would_bind': int(summary.get('would_bind', 0)),
+                            'already_bound': int(summary.get('already_bound', 0)),
+                            'unmatched': int(summary.get('unmatched', 0)),
+                            'errors': int(summary.get('errors', 0)),
+                        },
+                        'report_rows': rows,
+                    }
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(payload, f, indent=2, sort_keys=True)
+                QMessageBox.information(dlg, 'Export Complete', f'Report exported to:\n{file_path}')
+            except Exception as e:
+                QMessageBox.critical(dlg, 'Export Failed', f'Could not export report: {e}')
+
+        def toggle_authorized():
+            if not self._ensure_operator_identity(dlg, action="authorization toggle"):
+                return
+            row = table.currentRow()
+            did = _selected_device_id()
+            if did is None:
+                QMessageBox.information(dlg, "No Selection", "Select a device row.")
+                return
+            current = (table.item(row, 5).text().strip().lower() == 'yes') if table.item(row, 5) else True
+            try:
+                self.emberhawk.set_device_access(
+                    did,
+                    is_authorized=not current,
+                    actor=self._operator_actor(),
+                    reason="toggle_authorized",
+                )
+                load_rows()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Update Failed", f"Could not update authorization: {e}")
+
+        def toggle_linked():
+            if not self._ensure_operator_identity(dlg, action="link toggle"):
+                return
+            row = table.currentRow()
+            did = _selected_device_id()
+            if did is None:
+                QMessageBox.information(dlg, "No Selection", "Select a device row.")
+                return
+            current = (table.item(row, 6).text().strip().lower() == 'yes') if table.item(row, 6) else True
+            try:
+                self.emberhawk.set_device_access(
+                    did,
+                    is_linked=not current,
+                    actor=self._operator_actor(),
+                    reason="toggle_linked",
+                )
+                load_rows()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Update Failed", f"Could not update link status: {e}")
+
+        def set_selected_location():
+            if not self._ensure_operator_identity(dlg, action="updating location"):
+                return
+            did = _selected_device_id()
+            if did is None:
+                QMessageBox.information(dlg, "No Selection", "Select a device row.")
+                return
+            loc_options = _location_choices()
+            loc_id, ok = QInputDialog.getItem(dlg, "Set Location", "Location Id", loc_options, 0, True)
+            if not ok:
+                return
+            loc_id = self._normalize_loc_key(loc_id)
+            if not loc_id:
+                QMessageBox.warning(dlg, "Missing Location", "Location Id is required.")
+                return
+            try:
+                self.emberhawk.update_device_location(did, loc_id)
+                load_rows()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Update Failed", f"Could not update location: {e}")
+
+        def set_poll_selected():
+            if not self._ensure_operator_identity(dlg, action="updating poll period"):
+                return
+            did = _selected_device_id()
+            if did is None:
+                QMessageBox.information(dlg, "No Selection", "Select a device row.")
+                return
+            poll, ok = QInputDialog.getInt(dlg, "Set Poll (Selected)", "Poll seconds", 10, 1, 3600)
+            if not ok:
+                return
+            try:
+                self.emberhawk.update_device_poll_seconds(did, int(poll))
+                load_rows()
+            except Exception as e:
+                QMessageBox.critical(dlg, "Update Failed", f"Could not update poll: {e}")
+
+        def set_poll_all():
+            if not self._ensure_operator_identity(dlg, action="updating all poll periods"):
+                return
+            poll, ok = QInputDialog.getInt(dlg, "Set Poll (All)", "Poll seconds", 10, 1, 3600)
+            if not ok:
+                return
+            try:
+                updated = self.emberhawk.update_all_poll_seconds(int(poll))
+                load_rows()
+                QMessageBox.information(dlg, "Updated", f"Updated poll period for {updated} device(s).")
+            except Exception as e:
+                QMessageBox.critical(dlg, "Update Failed", f"Could not update poll for all devices: {e}")
+
+        def remove_selected():
+            if not self._ensure_operator_identity(dlg, action="removing PFDS device"):
+                return
+            did = _selected_device_id()
+            if did is None:
+                QMessageBox.information(dlg, "No Selection", "Select a device row to remove.")
+                return
             try:
                 self.emberhawk.remove_device(did)
                 load_rows()
             except Exception as e:
                 QMessageBox.critical(dlg, "Remove Failed", f"Could not remove device: {e}")
-        remove_btn.clicked.connect(remove_selected)
+
+        bind_btn.clicked.connect(bind_pending_serial)
+        assign_pending_btn.clicked.connect(assign_pending_to_room)
+        bulk_reconcile_btn.clicked.connect(bulk_reconcile_pending)
+        set_loc_btn.clicked.connect(set_selected_location)
+        dry_run_action.triggered.connect(dry_run_reconcile_pending)
+        export_report_action.triggered.connect(export_reconcile_report)
+        auth_action.triggered.connect(toggle_authorized)
+        link_action.triggered.connect(toggle_linked)
+        set_poll_selected_action.triggered.connect(set_poll_selected)
+        set_poll_all_action.triggered.connect(set_poll_all)
+        remove_action.triggered.connect(remove_selected)
         close_btn.clicked.connect(dlg.accept)
-        dlg.resize(700, 400)
+        dlg.resize(1100, 650)
         dlg.exec_()
 
     def show_log_viewer_dialog(self):
@@ -4237,29 +7653,59 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             bool: True if command was sent successfully, False otherwise
         """
         from tcp_logger import log_raw_packet, log_error_packet
-        ip = cmd.get('ip')
+        serial_number = str(cmd.get('serial_number') or '').strip()
         loc = cmd.get('location_id') or ''
         name = cmd.get('name') or ''
         command = cmd.get('command')
-        if not ip or not command:
+        if not command:
             return False
 
-        # Normalize endpoint: allow configured values like "127.0.0.1:4888"
-        target_ip = str(ip).strip()
-        if ':' in target_ip:
-            target_ip = target_ip.split(':', 1)[0].strip()
+        if not serial_number:
+            self._emit_device_telemetry(
+                'command_failed',
+                command=command,
+                location_id=loc,
+                device_name=name,
+                state='pending_identity',
+                drop_reason='missing_serial',
+            )
+            log_error_packet(loc, f"PFDS_CMD_FAIL {command} ({name}) | missing serial_number")
+            return False
         
         # Send command through existing TCP server connection
         if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
-            success = self.tcp_sensor_server.send_command_to_client(target_ip, command)
+            success = self.tcp_sensor_server.send_command_to_client(serial_number, command)
             if success:
-                log_raw_packet(loc, f"PFDS_CMD {command} to {target_ip} ({name}) | sent via active connection")
+                self._emit_device_telemetry(
+                    'command_sent',
+                    command=command,
+                    serial=serial_number,
+                    location_id=loc,
+                    device_name=name,
+                )
+                log_raw_packet(loc, f"PFDS_CMD {command} to serial={serial_number} ({name}) | sent via active connection")
                 return True
             else:
-                log_error_packet(loc, f"PFDS_CMD_FAIL {command} to {target_ip} ({name}) | no active connection")
+                self._emit_device_telemetry(
+                    'command_failed',
+                    command=command,
+                    serial=serial_number,
+                    location_id=loc,
+                    device_name=name,
+                    drop_reason='no_active_connection',
+                )
+                log_error_packet(loc, f"PFDS_CMD_FAIL {command} to serial={serial_number} ({name}) | no active connection")
                 return False
         else:
-            log_error_packet(loc, f"PFDS_CMD_FAIL {command} to {ip} ({name}) | TCP server not available")
+            self._emit_device_telemetry(
+                'command_failed',
+                command=command,
+                serial=serial_number,
+                location_id=loc,
+                device_name=name,
+                drop_reason='tcp_server_unavailable',
+            )
+            log_error_packet(loc, f"PFDS_CMD_FAIL {command} to serial={serial_number} ({name}) | TCP server not available")
             return False
 
     def dispatch_emberhawk_command(self, cmd: dict) -> bool:
@@ -4274,41 +7720,81 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """
         try:
             command = cmd.get('command')
-            ip = cmd.get('ip') or cmd.get('IP')  # Support both cases
+            serial_number = str(cmd.get('serial_number') or '').strip()
             
-            if not command or not ip:
-                print(f"❌ dispatch_emberhawk_command: missing command={command} or IP={ip}")
+            if not command or not serial_number:
+                print(f"❌ dispatch_emberhawk_command: missing command={command} or serial_number")
+                self._emit_device_telemetry(
+                    'command_failed',
+                    command=command,
+                    serial=serial_number or None,
+                    location_id=cmd.get('location_id'),
+                    drop_reason='missing_command_or_serial',
+                )
                 return False
-
-            # Normalize endpoint: allow configured values like "127.0.0.1:4888"
-            target_ip = str(ip).strip()
-            if ':' in target_ip:
-                target_ip = target_ip.split(':', 1)[0].strip()
             
             # Map EmberHawk commands to PFDS format
             # PFDS expects raw command strings like "PERIOD_ON", "EEPROM1", "REQUEST1", "PERIOD_OFF"
             if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
-                success = self.tcp_sensor_server.send_command_to_client(target_ip, command)
+                success = self.tcp_sensor_server.send_command_to_client(serial_number, command)
                 
                 if success:
-                    print(f"✅ dispatch_emberhawk_command: '{command}' sent to {target_ip}")
+                    print(f"✅ dispatch_emberhawk_command: '{command}' sent to serial={serial_number}")
+                    self._emit_device_telemetry(
+                        'command_sent',
+                        command=command,
+                        serial=serial_number,
+                        location_id=cmd.get('location_id'),
+                        device_id=cmd.get('device_id'),
+                    )
                     return True
                 else:
                     now = time.time()
                     if not hasattr(self, '_dispatch_no_conn_warn_ts'):
                         self._dispatch_no_conn_warn_ts = {}
-                    warn_key = f"{target_ip}|{command}"
+                    warn_key = f"{serial_number}|{command}"
                     last_warn = float(self._dispatch_no_conn_warn_ts.get(warn_key, 0.0))
                     if now - last_warn >= 30.0:
-                        print(f"⚠️  dispatch_emberhawk_command: '{command}' failed for {target_ip} (no active connection, repeated logs suppressed)")
+                        # Keep telemetry, but avoid repeated console noise during reconnect windows.
                         self._dispatch_no_conn_warn_ts[warn_key] = now
+                    self._emit_device_telemetry(
+                        'command_failed',
+                        command=command,
+                        serial=serial_number,
+                        location_id=cmd.get('location_id'),
+                        device_id=cmd.get('device_id'),
+                        drop_reason='no_active_connection',
+                    )
                     return False
             else:
-                print(f"❌ dispatch_emberhawk_command: TCP server unavailable, cannot send '{command}'")
+                now = time.time()
+                if not hasattr(self, '_dispatch_tcp_unavailable_warn_ts'):
+                    self._dispatch_tcp_unavailable_warn_ts = {}
+                warn_key = f"{serial_number}|{command}"
+                last_warn = float(self._dispatch_tcp_unavailable_warn_ts.get(warn_key, 0.0))
+                if now - last_warn >= 30.0:
+                    # Keep telemetry, but avoid repeated console noise during startup when TCP is down.
+                    self._dispatch_tcp_unavailable_warn_ts[warn_key] = now
+                self._emit_device_telemetry(
+                    'command_failed',
+                    command=command,
+                    serial=serial_number,
+                    location_id=cmd.get('location_id'),
+                    device_id=cmd.get('device_id'),
+                    drop_reason='tcp_server_unavailable',
+                )
                 return False
                 
         except Exception as e:
             print(f"❌ dispatch_emberhawk_command exception: {e}")
+            self._emit_device_telemetry(
+                'command_failed',
+                command=cmd.get('command') if isinstance(cmd, dict) else None,
+                serial=str(cmd.get('serial_number') or '').strip() if isinstance(cmd, dict) else None,
+                location_id=cmd.get('location_id') if isinstance(cmd, dict) else None,
+                drop_reason='dispatch_exception',
+                error=str(e),
+            )
             import traceback
             traceback.print_exc()
             return False
@@ -4441,10 +7927,66 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         rtsp_tab = QWidget()
         if is_modern:
-            rtsp_tab.setStyleSheet("background: #1a1a1a;")
+            rtsp_tab.setStyleSheet("background: #0f1820;")
         layout = QVBoxLayout(rtsp_tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        command_frame = QFrame()
+        command_frame.setObjectName("VideoWallCommandFrame")
+        command_frame.setStyleSheet("""
+            QFrame#VideoWallCommandFrame {
+                background-color: #11171d;
+                border-bottom: 1px solid #38444f;
+            }
+            QLabel#VideoWallHeadline {
+                color: #ffdc00;
+                font-size: 13px;
+                font-weight: 800;
+                letter-spacing: 0.5px;
+            }
+            QLabel#VideoWallSubline {
+                color: #8e98a4;
+                font-size: 11px;
+            }
+            QLabel#VideoWallChip {
+                color: #d8dde4;
+                background-color: #1a222a;
+                border: 1px solid #495563;
+                border-radius: 3px;
+                padding: 5px 10px;
+                font-family: "Roboto Mono", "Menlo", "Consolas", monospace;
+                font-size: 11px;
+                font-weight: 700;
+            }
+        """)
+        command_layout = QHBoxLayout(command_frame)
+        command_layout.setContentsMargins(16, 10, 16, 10)
+        command_layout.setSpacing(10)
+
+        command_copy = QVBoxLayout()
+        self.videowall_headline = QLabel("VIDEOWALL > TACTICAL OVERWATCH")
+        self.videowall_headline.setObjectName("VideoWallHeadline")
+        self.videowall_subline = QLabel("Awaiting active feed map")
+        self.videowall_subline.setObjectName("VideoWallSubline")
+        command_copy.addWidget(self.videowall_headline)
+        command_copy.addWidget(self.videowall_subline)
+        command_layout.addLayout(command_copy)
+        command_layout.addStretch(1)
+
+        self.videowall_group_chip = QLabel("GROUP --")
+        self.videowall_group_chip.setObjectName("VideoWallChip")
+        command_layout.addWidget(self.videowall_group_chip)
+
+        self.videowall_feed_chip = QLabel("FEEDS 0")
+        self.videowall_feed_chip.setObjectName("VideoWallChip")
+        command_layout.addWidget(self.videowall_feed_chip)
+
+        self.videowall_page_chip = QLabel("PAGE 0/0")
+        self.videowall_page_chip.setObjectName("VideoWallChip")
+        command_layout.addWidget(self.videowall_page_chip)
+
+        layout.addWidget(command_frame)
         
         # Container with position: relative for absolute positioning of nav buttons
         grid_container = QWidget()
@@ -4452,7 +7994,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if is_modern:
             grid_container.setStyleSheet("""
                 #gridContainer {
-                    background: #0a0a0a;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 #0c141b, stop:0.65 #0b1116, stop:1 #091016);
+                    border-top: 1px solid #1e323f;
                 }
             """)
         container_layout = QVBoxLayout(grid_container)
@@ -4508,19 +8052,19 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if is_modern:
             self.prev_rtsp.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(0, 0, 0, 0.7);
-                    border: 2px solid rgba(0, 188, 212, 0.5);
+                    background-color: rgba(11, 21, 29, 0.92);
+                    border: 1px solid #3f6a82;
                     border-radius: 25px;
-                    color: #00bcd4;
+                    color: #7fd6e6;
                     font-size: 18px;
                     font-weight: bold;
                 }
                 QPushButton:hover {
-                    background-color: rgba(0, 188, 212, 0.3);
-                    border-color: #00bcd4;
+                    background-color: rgba(26, 44, 57, 0.95);
+                    border-color: #66b4c8;
                 }
                 QPushButton:pressed {
-                    background-color: rgba(0, 188, 212, 0.5);
+                    background-color: rgba(41, 64, 79, 0.95);
                 }
             """)
         # Position at left edge, centered vertically
@@ -4534,19 +8078,19 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if is_modern:
             self.next_rtsp.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(0, 0, 0, 0.7);
-                    border: 2px solid rgba(0, 188, 212, 0.5);
+                    background-color: rgba(11, 21, 29, 0.92);
+                    border: 1px solid #3f6a82;
                     border-radius: 25px;
-                    color: #00bcd4;
+                    color: #7fd6e6;
                     font-size: 18px;
                     font-weight: bold;
                 }
                 QPushButton:hover {
-                    background-color: rgba(0, 188, 212, 0.3);
-                    border-color: #00bcd4;
+                    background-color: rgba(26, 44, 57, 0.95);
+                    border-color: #66b4c8;
                 }
                 QPushButton:pressed {
-                    background-color: rgba(0, 188, 212, 0.5);
+                    background-color: rgba(41, 64, 79, 0.95);
                 }
             """)
         # Position at right edge, centered vertically
@@ -4563,6 +8107,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def init_grafana_tab(self):
         """Initialize Grafana dashboard tab with embedded web view"""
+        has_webengine = bool(HAS_WEBENGINE)
+        self._grafana_has_webengine = has_webengine
+        self._grafana_external_fallback_triggered = False
         grafana_tab = QWidget()
         layout = QVBoxLayout(grafana_tab)
         
@@ -4586,37 +8133,327 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         control_layout.addStretch()
         
         layout.addLayout(control_layout)
+        self.grafana_open_btn = None
         
         # Web view for Grafana (only if WebEngine is available)
-        if HAS_WEBENGINE:
+        if has_webengine:
             try:
                 self.grafana_webview = QWebEngineView()
                 self.grafana_webview.setMinimumHeight(600)
+                self.grafana_webview.loadFinished.connect(self._on_grafana_webview_load_finished)
                 # Load initial URL
                 if grafana_url:
-                    self.grafana_webview.setUrl(QUrl(grafana_url))
+                    if self._grafana_url_reachable(grafana_url):
+                        self._grafana_last_requested_url = grafana_url
+                        self.grafana_webview.setUrl(QUrl(grafana_url))
+                    else:
+                        self._show_grafana_unavailable_view(grafana_url)
                 layout.addWidget(self.grafana_webview)
-                # Connect buttons
-                load_btn.clicked.connect(self.load_grafana_dashboard)
-                refresh_btn.clicked.connect(lambda: self.grafana_webview.reload())
+                # Connect refresh button for embedded mode
+                refresh_btn.clicked.connect(self.refresh_grafana_dashboard)
             except Exception as e:
-                HAS_WEBENGINE = False
-        if not HAS_WEBENGINE:
-            # Fallback if QWebEngineView is not available
-            error_label = QLabel(
-                f"Grafana Dashboard\n\n"
-                f"QWebEngine not available.\n\n"
-                f"To view metrics:\n"
-                f"1. Install Grafana: https://grafana.com/grafana/download\n"
-                f"2. Configure Prometheus datasource: http://localhost:9090\n"
-                f"3. Import dashboard JSON from ADAPTIVE_FPS_METRICS_GUIDE.md\n"
-                f"4. Access at: http://localhost:3000"
+                has_webengine = False
+                self._grafana_has_webengine = False
+        if not has_webengine:
+            refresh_btn.setEnabled(False)
+
+            # Route load action to browser when embedded WebEngine is unavailable.
+            load_btn.setText("Open in Browser")
+            load_btn.clicked.connect(self.open_grafana_in_browser)
+
+            fallback_host = QWidget()
+            fallback_host.setObjectName("grafanaFallbackHost")
+            fallback_layout = QVBoxLayout(fallback_host)
+            fallback_layout.setContentsMargins(0, 0, 0, 0)
+            fallback_layout.setSpacing(0)
+
+            fallback_layout.addStretch()
+
+            card = QWidget()
+            card.setObjectName("grafanaFallbackCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(28, 22, 28, 22)
+            card_layout.setSpacing(10)
+
+            title = QLabel("Grafana Embed Not Available")
+            title.setAlignment(Qt.AlignCenter)
+            title.setStyleSheet("color: #a8dff0; font-size: 18px; font-weight: 700;")
+
+            subtitle = QLabel(
+                "This build does not include QWebEngine. You can still open the dashboard externally."
             )
-            error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("color: #666; font-size: 12px; padding: 20px;")
-            layout.addWidget(error_label)
+            subtitle.setWordWrap(True)
+            subtitle.setAlignment(Qt.AlignCenter)
+            subtitle.setStyleSheet("color: #8ea4b1; font-size: 12px;")
+
+            steps = QLabel(
+                "1. Start Grafana (default: http://localhost:3000)\n"
+                "2. Configure Prometheus datasource (http://localhost:9090)\n"
+                "3. Import dashboard from ADAPTIVE_FPS_METRICS_GUIDE.md"
+            )
+            steps.setAlignment(Qt.AlignCenter)
+            steps.setStyleSheet("color: #7f95a1; font-size: 12px; line-height: 1.5;")
+
+            actions = QHBoxLayout()
+            actions.setContentsMargins(0, 4, 0, 0)
+            actions.setSpacing(10)
+
+            self.grafana_open_btn = QPushButton("Open Grafana")
+            self.grafana_open_btn.clicked.connect(self.open_grafana_in_browser)
+
+            copy_url_btn = QPushButton("Copy URL")
+            copy_url_btn.clicked.connect(self.copy_grafana_url)
+
+            actions.addStretch()
+            actions.addWidget(self.grafana_open_btn)
+            actions.addWidget(copy_url_btn)
+            actions.addStretch()
+
+            card_layout.addWidget(title)
+            card_layout.addWidget(subtitle)
+            card_layout.addWidget(steps)
+            card_layout.addLayout(actions)
+
+            card.setStyleSheet(
+                "QWidget#grafanaFallbackCard {"
+                "background: #121d25;"
+                "border: 1px solid #2c4452;"
+                "border-radius: 12px;"
+                "}"
+            )
+
+            card.setMaximumWidth(760)
+            fallback_layout.addWidget(card, alignment=Qt.AlignHCenter)
+            fallback_layout.addStretch()
+
+            layout.addWidget(fallback_host)
+        else:
+            load_btn.clicked.connect(self.load_grafana_dashboard)
         
         self.tabs.addTab(grafana_tab, "📊 Metrics Dashboard")
+
+    def show_observability_settings(self):
+        """Edit observability settings separately from stream configuration."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Observability Settings")
+        dialog.setMinimumWidth(420)
+
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+
+        enable_grafana_cb = QCheckBox("Enable Metrics Dashboard tab")
+        enable_grafana_cb.setChecked(bool(self.config.get('enable_grafana', False)))
+
+        grafana_url_input = QLineEdit()
+        grafana_url_input.setText(str(self.config.get('grafana_url', 'http://localhost:3000')))
+        grafana_url_input.setPlaceholderText("http://localhost:3000/d/emberye-metrics")
+
+        metrics_port_input = QLineEdit()
+        metrics_port_input.setText(str(self.config.get('metrics_port', 9090)))
+        metrics_port_input.setPlaceholderText("9090")
+
+        reduced_motion_cb = QCheckBox("Reduce motion (disable dashboard fade-in)")
+        reduced_motion_cb.setChecked(bool(self.config.get('reduced_motion', False)))
+
+        enable_grafana_cb.toggled.connect(grafana_url_input.setEnabled)
+        grafana_url_input.setEnabled(enable_grafana_cb.isChecked())
+
+        form.addRow("Dashboard", enable_grafana_cb)
+        form.addRow("Grafana URL", grafana_url_input)
+        form.addRow("Metrics Port", metrics_port_input)
+        form.addRow("UI Motion", reduced_motion_cb)
+
+        grafana_service_row = QWidget(dialog)
+        service_layout = QHBoxLayout(grafana_service_row)
+        service_layout.setContentsMargins(0, 0, 0, 0)
+        service_layout.setSpacing(8)
+
+        grafana_service_status = QLabel("Checking...")
+        grafana_start_btn = QPushButton("Start Grafana")
+        grafana_stop_btn = QPushButton("Stop Grafana")
+
+        service_layout.addWidget(grafana_service_status, 1)
+        service_layout.addWidget(grafana_start_btn)
+        service_layout.addWidget(grafana_stop_btn)
+        form.addRow("Grafana Service", grafana_service_row)
+        layout.addLayout(form)
+
+        def _effective_url():
+            raw = (grafana_url_input.text() or '').strip() or 'http://localhost:3000'
+            if not raw.startswith('http'):
+                raw = 'http://' + raw
+            return raw
+
+        def _refresh_grafana_service_state():
+            target = _effective_url()
+            is_local = self._is_local_grafana_url(target)
+            running = self._grafana_url_reachable(target)
+            if running:
+                grafana_service_status.setText("Running")
+                grafana_service_status.setStyleSheet("color:#6fd6a7;font-weight:600;")
+            else:
+                grafana_service_status.setText("Stopped / Unreachable")
+                grafana_service_status.setStyleSheet("color:#e6b36f;font-weight:600;")
+            grafana_start_btn.setEnabled(is_local and not running)
+            grafana_stop_btn.setEnabled(is_local and running)
+            if not is_local:
+                grafana_service_status.setText("Manual (non-local URL)")
+                grafana_service_status.setStyleSheet("color:#8aa1ad;font-weight:600;")
+
+        def _start_grafana():
+            target = _effective_url()
+            ok, message = self._start_local_grafana_service(target)
+            if ok:
+                self.statusBar().showMessage("Grafana start command completed", 3500)
+            else:
+                QMessageBox.warning(dialog, "Start Grafana", message)
+            QTimer.singleShot(1200, _refresh_grafana_service_state)
+
+        def _stop_grafana():
+            target = _effective_url()
+            ok, message = self._stop_local_grafana_service(target)
+            if ok:
+                self.statusBar().showMessage("Grafana stop command completed", 3500)
+            else:
+                QMessageBox.warning(dialog, "Stop Grafana", message)
+            QTimer.singleShot(1200, _refresh_grafana_service_state)
+
+        grafana_start_btn.clicked.connect(_start_grafana)
+        grafana_stop_btn.clicked.connect(_stop_grafana)
+        grafana_url_input.textChanged.connect(lambda _: _refresh_grafana_service_state())
+        _refresh_grafana_service_state()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        self.config['enable_grafana'] = bool(enable_grafana_cb.isChecked())
+        self.config['grafana_url'] = grafana_url_input.text().strip() or 'http://localhost:3000'
+        self.config['reduced_motion'] = bool(reduced_motion_cb.isChecked())
+        try:
+            metrics_port = int(metrics_port_input.text().strip())
+            if metrics_port < 1 or metrics_port > 65535:
+                raise ValueError('out of range')
+            self.config['metrics_port'] = metrics_port
+        except Exception:
+            QMessageBox.warning(self, "Invalid Metrics Port", "Metrics port must be between 1 and 65535.")
+            return
+
+        StreamConfig.save_config(self.config)
+        self._set_grafana_tab_visibility(bool(self.config.get('enable_grafana', False)))
+        self._animate_dashboard_entry()
+        self.statusBar().showMessage("Observability settings updated", 4000)
+
+    def _is_local_grafana_url(self, url):
+        try:
+            parsed = urlparse(str(url or ''))
+            host = (parsed.hostname or '').strip().lower()
+            return host in ('localhost', '127.0.0.1', '::1')
+        except Exception:
+            return False
+
+    def _run_control_commands(self, commands):
+        """Run first available control command and return execution status."""
+        last_error = "No control command available"
+        for cmd in commands:
+            if not cmd:
+                continue
+            exe = cmd[0]
+            if os.path.sep not in exe and shutil.which(exe) is None:
+                continue
+            try:
+                completed = subprocess.run(
+                    cmd,
+                    text=True,
+                    capture_output=True,
+                    timeout=45,
+                    check=False,
+                )
+                if completed.returncode == 0:
+                    return True, ""
+                err = (completed.stderr or completed.stdout or '').strip()
+                last_error = f"{' '.join(cmd)} failed: {err or 'exit code ' + str(completed.returncode)}"
+            except Exception as exc:
+                last_error = f"{' '.join(cmd)} failed: {exc}"
+        return False, last_error
+
+    def _start_local_grafana_service(self, url):
+        if not self._is_local_grafana_url(url):
+            return False, "Grafana service controls are available only for localhost URLs."
+        if self._grafana_url_reachable(url):
+            return True, "Grafana already running"
+
+        if sys.platform == 'darwin':
+            commands = [
+                ['brew', 'services', 'start', 'grafana'],
+                ['brew', 'services', 'start', 'grafana-full'],
+            ]
+        elif sys.platform.startswith('win'):
+            commands = [
+                ['powershell', '-NoProfile', '-Command', 'Start-Service -Name grafana'],
+                ['sc', 'start', 'grafana'],
+                ['sc', 'start', 'grafana-server'],
+            ]
+        else:
+            commands = [
+                ['systemctl', '--user', 'start', 'grafana-server'],
+                ['systemctl', 'start', 'grafana-server'],
+                ['service', 'grafana-server', 'start'],
+            ]
+
+        ok, msg = self._run_control_commands(commands)
+        if not ok:
+            if sys.platform == 'darwin' and ('not installed' in msg.lower() or 'no available formula' in msg.lower()):
+                return False, (
+                    "Grafana is not installed on this machine.\n"
+                    "Install with: brew install grafana\n"
+                    "Then click Start Grafana again."
+                )
+            return False, f"Could not start Grafana automatically.\n{msg}"
+
+        for _ in range(8):
+            if self._grafana_url_reachable(url):
+                return True, "Grafana started"
+            time.sleep(1)
+        return False, "Start command ran, but Grafana is still unreachable."
+
+    def _stop_local_grafana_service(self, url):
+        if not self._is_local_grafana_url(url):
+            return False, "Grafana service controls are available only for localhost URLs."
+        if not self._grafana_url_reachable(url):
+            return True, "Grafana already stopped"
+
+        if sys.platform == 'darwin':
+            commands = [
+                ['brew', 'services', 'stop', 'grafana'],
+                ['brew', 'services', 'stop', 'grafana-full'],
+            ]
+        elif sys.platform.startswith('win'):
+            commands = [
+                ['powershell', '-NoProfile', '-Command', 'Stop-Service -Name grafana'],
+                ['sc', 'stop', 'grafana'],
+                ['sc', 'stop', 'grafana-server'],
+            ]
+        else:
+            commands = [
+                ['systemctl', '--user', 'stop', 'grafana-server'],
+                ['systemctl', 'stop', 'grafana-server'],
+                ['service', 'grafana-server', 'stop'],
+            ]
+
+        ok, msg = self._run_control_commands(commands)
+        if not ok:
+            return False, f"Could not stop Grafana automatically.\n{msg}"
+
+        for _ in range(8):
+            if not self._grafana_url_reachable(url):
+                return True, "Grafana stopped"
+            time.sleep(1)
+        return False, "Stop command ran, but Grafana endpoint is still reachable."
 
     def load_grafana_dashboard(self):
         """Load Grafana dashboard from URL input"""
@@ -4635,10 +8472,157 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Load in webview
             if hasattr(self, 'grafana_webview'):
-                self.grafana_webview.setUrl(QUrl(url))
-                self.statusBar().showMessage(f"Loading Grafana dashboard: {url}", 3000)
+                if self._grafana_url_reachable(url):
+                    self._grafana_external_fallback_triggered = False
+                    self._grafana_last_requested_url = url
+                    self.grafana_webview.setUrl(QUrl(url))
+                    self.statusBar().showMessage(f"Loading Grafana dashboard: {url}", 3000)
+                else:
+                    self._show_grafana_unavailable_view(url)
+                    self.statusBar().showMessage("Grafana is not reachable. Start Grafana and retry.", 4000)
+            else:
+                self.open_grafana_in_browser()
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load Grafana dashboard:\n{str(e)}")
+
+    def refresh_grafana_dashboard(self):
+        """Reload embedded dashboard with graceful unreachable handling."""
+        try:
+            if not hasattr(self, 'grafana_webview'):
+                return
+            url = self.grafana_url_input.text().strip() if hasattr(self, 'grafana_url_input') else ''
+            if not url:
+                url = str(self.config.get('grafana_url', 'http://localhost:3000'))
+            if not url.startswith('http'):
+                url = 'http://' + url
+            if self._grafana_url_reachable(url):
+                self._grafana_external_fallback_triggered = False
+                self._grafana_last_requested_url = url
+                self.grafana_webview.setUrl(QUrl(url))
+            else:
+                self._show_grafana_unavailable_view(url)
+                self.statusBar().showMessage("Grafana is not reachable. Start Grafana and retry.", 3500)
+        except Exception:
+            pass
+
+    def _on_grafana_webview_load_finished(self, ok):
+        """Detect embedded runtime failures and auto-fallback to external browser."""
+        if not hasattr(self, 'grafana_webview'):
+            return
+
+        current_url = ''
+        try:
+            current_url = self.grafana_webview.url().toString()
+        except Exception:
+            current_url = ''
+        if not current_url:
+            current_url = str(getattr(self, '_grafana_last_requested_url', '') or self.config.get('grafana_url', 'http://localhost:3000'))
+
+        if not ok:
+            self._handle_grafana_embed_runtime_failure(current_url, "Embedded page load failed.")
+            return
+
+        # Grafana may render an in-page failure screen even when HTTP load succeeds.
+        def _inspect_loaded_page(text):
+            lowered = str(text or '').lower()
+            markers = (
+                'failed to load its application files',
+                'reverse proxy settings',
+                'serve_from_sub_path',
+            )
+            if any(marker in lowered for marker in markers):
+                self._handle_grafana_embed_runtime_failure(
+                    current_url,
+                    "Embedded browser is not compatible with this Grafana frontend build.",
+                )
+
+        try:
+            self.grafana_webview.page().toPlainText(_inspect_loaded_page)
+        except Exception:
+            pass
+
+    def _handle_grafana_embed_runtime_failure(self, url, detail):
+        """Show a stable fallback view and open external browser once per load attempt."""
+        self._show_grafana_unavailable_view(url, detail=detail)
+        already_opened = bool(getattr(self, '_grafana_external_fallback_triggered', False))
+        if already_opened:
+            return
+        self._grafana_external_fallback_triggered = True
+        try:
+            webbrowser.open(url)
+            self.statusBar().showMessage("Grafana opened in browser due to embedded compatibility issue.", 5000)
+        except Exception:
+            pass
+
+    def _grafana_url_reachable(self, url):
+        """Best-effort reachability check before embedding URL."""
+        try:
+            target = str(url or '').strip()
+            if not target:
+                return False
+            if not target.startswith('http'):
+                target = 'http://' + target
+            req = urllib.request.Request(target, method='GET')
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                code = int(getattr(resp, 'status', 200) or 200)
+                return 200 <= code < 500
+        except Exception:
+            return False
+
+    def _show_grafana_unavailable_view(self, attempted_url, detail=None):
+        """Render a styled in-app placeholder when Grafana endpoint is down."""
+        if not hasattr(self, 'grafana_webview'):
+            return
+        safe_url = str(attempted_url or 'http://localhost:3000').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        safe_detail = str(detail or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        detail_html = ""
+        if safe_detail:
+            detail_html = f"<div style=\"font-size:13px;color:#f0b37a;margin-bottom:10px;\">{safe_detail}</div>"
+        html = f"""
+        <html>
+        <body style=\"margin:0;background:#0f1820;color:#d8e5ec;font-family:'Segoe UI','Avenir Next',sans-serif;\">
+            <div style=\"height:100vh;display:flex;align-items:center;justify-content:center;\">
+                <div style=\"width:min(760px,88vw);background:#121d25;border:1px solid #2c4452;border-radius:12px;padding:26px 30px;\">
+                    <div style=\"font-size:24px;font-weight:700;color:#9adff0;margin-bottom:10px;\">Grafana Not Reachable</div>
+                    <div style=\"font-size:14px;color:#9eb2bf;margin-bottom:12px;\">Could not connect to <b>{safe_url}</b>.</div>
+                    {detail_html}
+                    <div style=\"font-size:13px;color:#869ca9;line-height:1.6;\">
+                        1. Start Grafana server.<br/>
+                        2. Verify URL and port in Observability settings.<br/>
+                        3. If this is a browser compatibility issue, use <b>Open Grafana</b>.
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        self.grafana_webview.setHtml(html, QUrl("about:blank"))
+
+    def open_grafana_in_browser(self):
+        """Open configured Grafana URL in external browser."""
+        try:
+            url = self.grafana_url_input.text().strip() if hasattr(self, 'grafana_url_input') else ''
+            if not url:
+                url = str(self.config.get('grafana_url', 'http://localhost:3000'))
+            if not url.startswith('http'):
+                url = 'http://' + url
+            webbrowser.open(url)
+            self.statusBar().showMessage(f"Opened Grafana in browser: {url}", 3500)
+        except Exception as e:
+            QMessageBox.critical(self, "Open Browser Failed", f"Could not open Grafana URL:\n{e}")
+
+    def copy_grafana_url(self):
+        """Copy configured Grafana URL to clipboard."""
+        try:
+            url = self.grafana_url_input.text().strip() if hasattr(self, 'grafana_url_input') else ''
+            if not url:
+                url = str(self.config.get('grafana_url', 'http://localhost:3000'))
+            if not url.startswith('http'):
+                url = 'http://' + url
+            QApplication.clipboard().setText(url)
+            self.statusBar().showMessage("Grafana URL copied", 2500)
+        except Exception as e:
+            QMessageBox.critical(self, "Copy Failed", f"Could not copy URL:\n{e}")
 
     def init_graph_tab(self):
         graph_tab = QWidget()
@@ -4732,6 +8716,90 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     
     # ==================== X-RAY EFFECT FEATURES ====================
+
+    def _xray_fade_widget(self, widget, visible, slot_name, duration_ms=180):
+        """Fade a widget in/out for smoother X-ray transitions."""
+        try:
+            if widget is None:
+                return
+
+            from PyQt5.QtWidgets import QGraphicsOpacityEffect
+            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
+
+            effect_attr = f"_xray_{slot_name}_opacity_effect"
+            anim_attr = f"_xray_{slot_name}_fade_anim"
+
+            effect = getattr(self, effect_attr, None)
+            if effect is None or widget.graphicsEffect() is not effect:
+                effect = QGraphicsOpacityEffect(widget)
+                widget.setGraphicsEffect(effect)
+                effect.setOpacity(1.0 if widget.isVisible() else 0.0)
+                setattr(self, effect_attr, effect)
+
+            running = getattr(self, anim_attr, None)
+            if running is not None:
+                try:
+                    running.stop()
+                except Exception:
+                    pass
+
+            start = float(effect.opacity())
+            end = 1.0 if visible else 0.0
+
+            if visible:
+                if not widget.isVisible():
+                    widget.show()
+                widget.raise_()
+
+            if abs(start - end) < 0.01:
+                if not visible:
+                    widget.hide()
+                return
+
+            anim = QPropertyAnimation(effect, b"opacity", self)
+            anim.setDuration(max(80, int(duration_ms)))
+            anim.setStartValue(start)
+            anim.setEndValue(end)
+            anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+            def _finish():
+                try:
+                    if not visible:
+                        widget.hide()
+                except Exception:
+                    pass
+
+            anim.finished.connect(_finish)
+            anim.start()
+            setattr(self, anim_attr, anim)
+        except Exception:
+            # Fallback to instant behavior when animation setup fails.
+            try:
+                widget.setVisible(bool(visible))
+            except Exception:
+                pass
+
+    def _show_header_xray(self):
+        if hasattr(self, 'overlay_header') and self.overlay_header is not None:
+            self._xray_fade_widget(self.overlay_header, True, 'header', 170)
+            self.header_visible = True
+
+    def _hide_header_xray(self):
+        if hasattr(self, 'overlay_header') and self.overlay_header is not None:
+            self._xray_fade_widget(self.overlay_header, False, 'header', 180)
+            self.header_visible = False
+
+    def _show_statusbar_xray(self):
+        sb = self.statusBar() if hasattr(self, 'statusBar') else None
+        if sb is not None:
+            self._xray_fade_widget(sb, True, 'status', 170)
+            self.statusbar_visible = True
+
+    def _hide_statusbar_xray(self):
+        sb = self.statusBar() if hasattr(self, 'statusBar') else None
+        if sb is not None:
+            self._xray_fade_widget(sb, False, 'status', 180)
+            self.statusbar_visible = False
     
     def eventFilter(self, obj, event):
         """
@@ -4782,19 +8850,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
                     # Show header if mouse within 50px of top OR bottom zone is active
                     if (window_pos.y() < 50 or window_pos.y() > (self.height() - 50)) and not self.header_visible:
-                        try:
-                            self.overlay_header.show()
-                            self.overlay_header.raise_()
-                        except Exception:
-                            pass
-                        self.header_visible = True
+                        self._show_header_xray()
                     # Hide header if mouse moves away and not in maximized view
                     elif window_pos.y() > 150 and self.header_visible and self.maximized_widget is None:
-                        try:
-                            self.overlay_header.hide()
-                        except Exception:
-                            pass
-                        self.header_visible = False
+                        self._hide_header_xray()
                 
                 # X-ray effect: Show status bar when mouse near bottom (also show header)
                 # Skip toggling when cursor is over the status bar itself
@@ -4817,16 +8876,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                                 pass
                             self.status_hide_timer = None
                         if not self.statusbar_visible:
-                            self.statusBar().show()
-                            self.statusbar_visible = True
+                            self._show_statusbar_xray()
                             # Also ensure header is visible when bottom bar shows
                             if hasattr(self, 'overlay_header') and hasattr(self, 'header_visible') and not self.header_visible:
-                                try:
-                                    self.overlay_header.show()
-                                    self.overlay_header.raise_()
-                                except Exception:
-                                    pass
-                                self.header_visible = True
+                                self._show_header_xray()
                         self._was_in_bottom_zone = True
                     else:
                         # Debounce hide with hysteresis to reduce flicker near boundary
@@ -4867,8 +8920,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """Hide the status bar via debounced timer."""
         try:
             if hasattr(self, 'statusBar') and self.statusbar_visible:
-                self.statusBar().hide()
-                self.statusbar_visible = False
+                self._hide_statusbar_xray()
         except Exception:
             pass
         finally:
@@ -4881,6 +8933,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         Comprehensive cleanup of all background workers and threads.
         Used for resource cleanup before window destruction.
         """
+        if bool(getattr(self, '_cleanup_done', False)):
+            return
         print("Starting comprehensive resource cleanup...")
         
         # Stop video widgets
@@ -4926,6 +8980,22 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 self.metrics_server.stop()
         except Exception as e:
             print(f"Metrics server cleanup error: {e}")
+
+        # Stop device alert monitor timer
+        try:
+            if hasattr(self, '_device_alert_timer') and self._device_alert_timer:
+                self._device_alert_timer.stop()
+                self._device_alert_timer = None
+        except Exception as e:
+            print(f"Device alert monitor cleanup error: {e}")
+
+        # Stop scheduled reconcile timer
+        try:
+            if hasattr(self, '_reconcile_timer') and self._reconcile_timer:
+                self._reconcile_timer.stop()
+                self._reconcile_timer = None
+        except Exception as e:
+            print(f"Scheduled reconcile cleanup error: {e}")
         
         # Stop cursor hide timer
         try:
@@ -4933,6 +9003,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 self.cursor_hide_timer.stop()
         except Exception as e:
             print(f"Cursor timer cleanup error: {e}")
+
+        self._cleanup_done = True
         
         print("Resource cleanup complete")
     
@@ -4947,11 +9019,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def closeEvent(self, event):
         """Ensure all background threads and resources stop cleanly before window closes"""
-        # Use comprehensive cleanup first
-        try:
-            self.cleanup_all_workers()
-        except Exception as e:
-            print(f"Comprehensive cleanup error: {e}")
+        # Skip blocking duplicate cleanup when logout already handled async cleanup.
+        if not bool(getattr(self, '_skip_close_cleanup', False)):
+            try:
+                self.cleanup_all_workers()
+            except Exception as e:
+                print(f"Comprehensive cleanup error: {e}")
         
         # Save baselines/events
         try:
@@ -5035,6 +9108,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             start = (self.current_rtsp_page - 1) * feeds_per_page
             end = min(start + feeds_per_page, total_streams)
 
+            if hasattr(self, 'videowall_subline'):
+                self.videowall_subline.setText(f"Live camera matrix for {self.current_group} with real-time fusion overlays")
+            if hasattr(self, 'videowall_group_chip'):
+                self.videowall_group_chip.setText(f"GROUP {str(self.current_group).upper()}")
+            if hasattr(self, 'videowall_feed_chip'):
+                self.videowall_feed_chip.setText(f"FEEDS {total_streams}")
+            if hasattr(self, 'videowall_page_chip'):
+                self.videowall_page_chip.setText(f"PAGE {self.current_rtsp_page}/{total_pages}")
+
             for idx in range(start, end):
                 stream = filtered_streams[idx]
                 position = idx - start
@@ -5058,26 +9140,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     self.video_widgets[stream['loc_id']] = video_widget
                     video_widget.setToolTip(f"{stream['name']}\n{stream['url']}")
                     
-                    # Modern: Cleaner name label overlay
-                    name_label = QLabel(stream["name"], video_widget)
-                    if is_modern:
-                        name_label.setStyleSheet("""
-                            background-color: rgba(0, 0, 0, 0.65);
-                            color: #00bcd4;
-                            padding: 4px 8px;
-                            border-radius: 4px;
-                            font-weight: 600;
-                            font-size: 11px;
-                            border: 1px solid rgba(0, 188, 212, 0.3);
-                        """)
-                    else:
-                        name_label.setStyleSheet("""
-                            background-color: rgba(0, 0, 0, 150);
-                            color: white;
-                            padding: 2px;
-                            border-radius: 3px;
-                        """)
-                    name_label.move(5, 5)
+                    # Room/status labeling is rendered by the fusion overlay cards.
 
                     # Connect signals
                     # video_widget.maximize_requested.connect(self.handle_maximize)
@@ -5090,8 +9153,18 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         self.handle_minimize, 
                         Qt.QueuedConnection
                     )
+                    if hasattr(video_widget, 'alarm_raise_requested'):
+                        video_widget.alarm_raise_requested.connect(
+                            self.handle_alarm_raise_from_widget,
+                            Qt.QueuedConnection,
+                        )
+                    if hasattr(video_widget, 'alarm_ack_requested'):
+                        video_widget.alarm_ack_requested.connect(
+                            self.handle_alarm_ack_from_widget,
+                            Qt.QueuedConnection,
+                        )
                     # Update status
-                    video_widget.update_fire_alarm(True)
+                    video_widget.update_fire_alarm(False)
                     video_widget.set_temperature(22.5)
 
 
@@ -5118,6 +9191,298 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             QMessageBox.critical(self, "Error", f"Grid update failed: {str(e)}")
             self.current_rtsp_page = 1
             self.update_rtsp_grid()
+
+    def init_live_pfds_tab(self):
+        """Create tactical live PFDS device tab with collapsible pending sidebar."""
+        live_tab = QWidget()
+        live_tab.setStyleSheet("background-color: #0d1319;")
+        root = QVBoxLayout(live_tab)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        header = QFrame()
+        header.setObjectName("LiveSurfaceHeader")
+        header.setStyleSheet("""
+            QFrame#LiveSurfaceHeader {
+                background-color: #141a22;
+                border: 1px solid #45505d;
+                border-radius: 4px;
+            }
+            QLabel#LiveSurfaceTitle {
+                color: #ffdc00;
+                font-size: 14px;
+                font-weight: 800;
+                letter-spacing: 0.5px;
+            }
+            QLabel#LiveSurfaceSubline {
+                color: #96a1ad;
+                font-size: 11px;
+            }
+            QLabel#LiveSurfaceLegend {
+                color: #8f99a5;
+                font-size: 10px;
+                font-family: "Roboto Mono", "Menlo", "Consolas", monospace;
+            }
+            QPushButton#LiveSurfaceFilter {
+                color: #d5dbe3;
+                background-color: #1a222a;
+                border: 1px solid #4b5664;
+                border-radius: 3px;
+                padding: 6px 10px;
+                font-family: "Roboto Mono", "Menlo", "Consolas", monospace;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QPushButton#LiveSurfaceFilter:hover {
+                border-color: #ffdc00;
+                color: #ffdc00;
+            }
+            QPushButton#LiveSurfaceFilter:checked {
+                background-color: #26333f;
+                border-color: #ffdc00;
+                color: #ffdc00;
+            }
+            QPushButton {
+                background-color: #27313b;
+                color: #edf1f5;
+                border: 1px solid #566273;
+                border-radius: 3px;
+                padding: 7px 12px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                border-color: #ffdc00;
+                color: #ffdc00;
+            }
+            QPushButton#LivePrimaryButton {
+                background-color: #ffdc00;
+                color: #171b21;
+                border-color: #d4b200;
+            }
+        """)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(14, 12, 14, 12)
+        header_layout.setSpacing(8)
+
+        copy_col = QVBoxLayout()
+        title = QLabel("LIVE PFDS DEVICES")
+        title.setObjectName("LiveSurfaceTitle")
+        subtitle = QLabel("Merged operational view for live, offline, and pending PFDS identities")
+        subtitle.setObjectName("LiveSurfaceSubline")
+        legend = QLabel("Legend: LIVE=solid yellow | OFFLINE=red tone | PENDING=dashed")
+        legend.setObjectName("LiveSurfaceLegend")
+        copy_col.addWidget(title)
+        copy_col.addWidget(subtitle)
+        copy_col.addWidget(legend)
+        header_layout.addLayout(copy_col)
+        header_layout.addStretch(1)
+
+        self._live_pfds_filter = 'all'
+
+        self.live_pfds_filter_all_btn = QPushButton("ALL 0")
+        self.live_pfds_filter_all_btn.setObjectName("LiveSurfaceFilter")
+        self.live_pfds_filter_all_btn.setCheckable(True)
+        self.live_pfds_filter_all_btn.clicked.connect(lambda _=False: self._set_live_pfds_filter('all'))
+        header_layout.addWidget(self.live_pfds_filter_all_btn)
+
+        self.live_pfds_filter_live_btn = QPushButton("LIVE 0")
+        self.live_pfds_filter_live_btn.setObjectName("LiveSurfaceFilter")
+        self.live_pfds_filter_live_btn.setCheckable(True)
+        self.live_pfds_filter_live_btn.clicked.connect(lambda _=False: self._set_live_pfds_filter('live'))
+        header_layout.addWidget(self.live_pfds_filter_live_btn)
+
+        self.live_pfds_filter_pending_btn = QPushButton("PENDING 0")
+        self.live_pfds_filter_pending_btn.setObjectName("LiveSurfaceFilter")
+        self.live_pfds_filter_pending_btn.setCheckable(True)
+        self.live_pfds_filter_pending_btn.clicked.connect(lambda _=False: self._set_live_pfds_filter('pending'))
+        header_layout.addWidget(self.live_pfds_filter_pending_btn)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_live_operations_views)
+        header_layout.addWidget(refresh_btn)
+
+        add_btn = QPushButton("Add Device")
+        add_btn.setObjectName("LivePrimaryButton")
+        add_btn.clicked.connect(self.show_pfds_add_dialog)
+        header_layout.addWidget(add_btn)
+
+        self.live_pfds_sidebar_toggle = QPushButton("Hide Pending")
+        self.live_pfds_sidebar_toggle.clicked.connect(self._toggle_live_pfds_sidebar)
+        header_layout.addWidget(self.live_pfds_sidebar_toggle)
+        root.addWidget(header)
+
+        body = QHBoxLayout()
+        body.setSpacing(12)
+
+        self.live_pfds_scroll = QScrollArea()
+        self.live_pfds_scroll.setWidgetResizable(True)
+        self.live_pfds_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.live_pfds_grid_host = QWidget()
+        self.live_pfds_grid = QGridLayout(self.live_pfds_grid_host)
+        self.live_pfds_grid.setContentsMargins(0, 0, 0, 0)
+        self.live_pfds_grid.setHorizontalSpacing(12)
+        self.live_pfds_grid.setVerticalSpacing(12)
+        self.live_pfds_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.live_pfds_grid_host.setLayout(self.live_pfds_grid)
+        self.live_pfds_scroll.setWidget(self.live_pfds_grid_host)
+        body.addWidget(self.live_pfds_scroll, 1)
+
+        self.live_pfds_sidebar = QFrame()
+        self.live_pfds_sidebar.setObjectName("LivePFDSSidebar")
+        self.live_pfds_sidebar.setStyleSheet("""
+            QFrame#LivePFDSSidebar {
+                background-color: #141a22;
+                border: 1px solid #4b5664;
+                border-radius: 4px;
+            }
+            QLabel#PendingSidebarTitle {
+                color: #ffdc00;
+                font-size: 12px;
+                font-weight: 800;
+            }
+            QLabel#PendingSidebarSubtitle {
+                color: #8f9aa6;
+                font-size: 11px;
+            }
+        """)
+        self.live_pfds_sidebar.setMinimumWidth(0)
+        self.live_pfds_sidebar.setMaximumWidth(340)
+        sidebar_layout = QVBoxLayout(self.live_pfds_sidebar)
+        sidebar_layout.setContentsMargins(12, 12, 12, 12)
+        sidebar_layout.setSpacing(10)
+        sidebar_title = QLabel("PENDING & UNMAPPED")
+        sidebar_title.setObjectName("PendingSidebarTitle")
+        sidebar_layout.addWidget(sidebar_title)
+        sidebar_copy = QLabel("Newly seen serial identities and incomplete room mappings")
+        sidebar_copy.setObjectName("PendingSidebarSubtitle")
+        sidebar_copy.setWordWrap(True)
+        sidebar_layout.addWidget(sidebar_copy)
+        self.live_pfds_pending_scroll = QScrollArea()
+        self.live_pfds_pending_scroll.setWidgetResizable(True)
+        self.live_pfds_pending_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.live_pfds_pending_host = QWidget()
+        self.live_pfds_pending_layout = QVBoxLayout(self.live_pfds_pending_host)
+        self.live_pfds_pending_layout.setContentsMargins(0, 0, 0, 0)
+        self.live_pfds_pending_layout.setSpacing(10)
+        self.live_pfds_pending_layout.setAlignment(Qt.AlignTop)
+        self.live_pfds_pending_layout.addStretch(1)
+        self.live_pfds_pending_scroll.setWidget(self.live_pfds_pending_host)
+        sidebar_layout.addWidget(self.live_pfds_pending_scroll, 1)
+        body.addWidget(self.live_pfds_sidebar)
+
+        root.addLayout(body, 1)
+
+        self.live_pfds_sidebar_expanded = True
+        self._live_pfds_sidebar_width = 340
+        self._live_pfds_sidebar_anim = QPropertyAnimation(self.live_pfds_sidebar, b"maximumWidth", self)
+        self._live_pfds_sidebar_anim.setDuration(220)
+        self._live_pfds_sidebar_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._live_pfds_sidebar_anim.finished.connect(self._on_live_pfds_sidebar_anim_finished)
+
+        original_resize = self.live_pfds_scroll.resizeEvent
+        def _live_pfds_resize(event, orig=original_resize):
+            orig(event)
+            QTimer.singleShot(0, self._refresh_live_pfds_tab)
+        self.live_pfds_scroll.resizeEvent = _live_pfds_resize
+
+        self.tabs.addTab(live_tab, "LIVE PFDS")
+        self._sync_live_pfds_filter_buttons()
+        self._refresh_live_pfds_tab()
+
+    def init_live_assets_tab(self):
+        """Create tactical live assets tab backed by configured streams and PFDS mappings."""
+        assets_tab = QWidget()
+        root = QVBoxLayout(assets_tab)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        header = QFrame()
+        header.setObjectName("LiveAssetsHeader")
+        header.setStyleSheet("""
+            QFrame#LiveAssetsHeader {
+                background-color: #141a22;
+                border: 1px solid #45505d;
+                border-radius: 4px;
+            }
+            QLabel#LiveAssetsTitle {
+                color: #ffdc00;
+                font-size: 14px;
+                font-weight: 800;
+            }
+            QLabel#LiveAssetsSubline {
+                color: #96a1ad;
+                font-size: 11px;
+            }
+            QLabel#LiveAssetsStat {
+                color: #d5dbe3;
+                background-color: #1a222a;
+                border: 1px solid #4b5664;
+                border-radius: 3px;
+                padding: 6px 10px;
+                font-family: "Roboto Mono", "Menlo", "Consolas", monospace;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QPushButton {
+                background-color: #27313b;
+                color: #edf1f5;
+                border: 1px solid #566273;
+                border-radius: 3px;
+                padding: 7px 12px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                border-color: #ffdc00;
+                color: #ffdc00;
+            }
+        """)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(14, 12, 14, 12)
+        header_layout.setSpacing(8)
+
+        copy_col = QVBoxLayout()
+        title = QLabel("LIVE ASSETS")
+        title.setObjectName("LiveAssetsTitle")
+        subtitle = QLabel("Mission asset cards linking video rooms to PFDS lifecycle and control state")
+        subtitle.setObjectName("LiveAssetsSubline")
+        copy_col.addWidget(title)
+        copy_col.addWidget(subtitle)
+        header_layout.addLayout(copy_col)
+        header_layout.addStretch(1)
+
+        self.live_assets_count_chip = QLabel("ASSETS 0")
+        self.live_assets_count_chip.setObjectName("LiveAssetsStat")
+        header_layout.addWidget(self.live_assets_count_chip)
+
+        self.live_assets_healthy_chip = QLabel("READY 0")
+        self.live_assets_healthy_chip.setObjectName("LiveAssetsStat")
+        header_layout.addWidget(self.live_assets_healthy_chip)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_live_operations_views)
+        header_layout.addWidget(refresh_btn)
+        root.addWidget(header)
+
+        self.live_assets_scroll = QScrollArea()
+        self.live_assets_scroll.setWidgetResizable(True)
+        self.live_assets_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.live_assets_host = QWidget()
+        self.live_assets_grid = QGridLayout(self.live_assets_host)
+        self.live_assets_grid.setContentsMargins(0, 0, 0, 0)
+        self.live_assets_grid.setHorizontalSpacing(12)
+        self.live_assets_grid.setVerticalSpacing(12)
+        self.live_assets_host.setLayout(self.live_assets_grid)
+        self.live_assets_scroll.setWidget(self.live_assets_host)
+        root.addWidget(self.live_assets_scroll, 1)
+
+        original_resize = self.live_assets_scroll.resizeEvent
+        def _live_assets_resize(event, orig=original_resize):
+            orig(event)
+            QTimer.singleShot(0, self._refresh_live_assets_tab)
+        self.live_assets_scroll.resizeEvent = _live_assets_resize
+
+        self.tabs.addTab(assets_tab, "LIVE ASSETS")
+        self._refresh_live_assets_tab()
 
     def update_graph(self):
         try:
@@ -5203,6 +9568,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     sender.maximize_btn.setVisible(False)  # Hide maximize
                 if hasattr(sender, 'minimize_btn'):
                     sender.minimize_btn.setVisible(True)   # Show minimize
+                if hasattr(sender, 'handle_maximize_state'):
+                    sender.handle_maximize_state()
             except Exception as e:
                 print(f"Button visibility error in maximize: {e}")
 
@@ -5229,6 +9596,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             sender.setFocus()
             self.rtsp_grid.update()
 
+            # Force a redraw after layout settles so fusion overlay appears in maximized mode.
+            try:
+                QTimer.singleShot(0, lambda w=sender: self._refresh_widget_after_layout(w))
+            except Exception:
+                pass
+
         except Exception as e:
             print(f"Maximize error: {str(e)}")
             import traceback
@@ -5239,6 +9612,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         try:
             if not self.maximized_widget or not self.original_layout:
                 return
+
+            restored_items = list(self.original_layout.get('grid_items', []))
             
             # Restore button visibility for the previously maximized widget
             try:
@@ -5246,6 +9621,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     self.maximized_widget.maximize_btn.setVisible(True)  # Show maximize
                 if hasattr(self.maximized_widget, 'minimize_btn'):
                     self.maximized_widget.minimize_btn.setVisible(False)  # Hide minimize
+                if hasattr(self.maximized_widget, 'handle_minimize_state'):
+                    self.maximized_widget.handle_minimize_state()
             except Exception as e:
                 print(f"Button visibility error: {e}")
 
@@ -5285,6 +9662,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.rtsp_grid.setSpacing(0)
             self.rtsp_grid.update()
 
+            # Refresh all restored widgets after geometry settles.
+            try:
+                for item in restored_items:
+                    widget = item.get('widget')
+                    if widget:
+                        QTimer.singleShot(0, lambda w=widget: self._refresh_widget_after_layout(w))
+            except Exception:
+                pass
+
         except Exception as e:
             print(f"Minimize error: {str(e)}")
             import traceback
@@ -5307,6 +9693,20 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.rtsp_grid.update()
         except Exception as e:
             print(f"Restore layout error: {str(e)}")
+
+    def _refresh_widget_after_layout(self, widget):
+        """Best-effort overlay refresh after maximize/minimize geometry changes."""
+        try:
+            if not widget:
+                return
+            if hasattr(widget, 'position_controls'):
+                widget.position_controls()
+            if hasattr(widget, '_redraw_with_grid'):
+                widget._redraw_with_grid()
+            elif hasattr(widget, 'update'):
+                widget.update()
+        except Exception:
+            pass
 
     def toggle_ui_visibility(self):
         """Toggle visibility of overlay header and tabs widget"""
@@ -5355,14 +9755,39 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.update_rtsp_grid()
 
     def configure_streams(self):
+        old_grafana_enabled = bool(self.config.get('enable_grafana', False))
         dialog = StreamConfigDialog(self.config, self)
         if dialog.exec_() == QDialog.Accepted:
             self.config = dialog.get_config()
             StreamConfig.save_config(self.config)
+            self._set_grafana_tab_visibility(bool(self.config.get('enable_grafana', False)))
             self.group_combo.clear()
             self.group_combo.addItems(self.config["groups"])
             # Defer grid rebuild to avoid blocking UI during cleanup
             self.schedule_grid_rebuild()
+
+            # Notify user when dashboard visibility changed at runtime.
+            new_grafana_enabled = bool(self.config.get('enable_grafana', False))
+            if old_grafana_enabled != new_grafana_enabled:
+                state = "enabled" if new_grafana_enabled else "disabled"
+                self.statusBar().showMessage(f"Metrics Dashboard {state}", 4000)
+
+    def _set_grafana_tab_visibility(self, enabled: bool):
+        if not hasattr(self, 'tabs'):
+            return
+
+        metrics_idx = -1
+        for i in range(self.tabs.count()):
+            if "Metrics Dashboard" in self.tabs.tabText(i):
+                metrics_idx = i
+                break
+
+        if enabled and metrics_idx == -1:
+            self.init_grafana_tab()
+            return
+
+        if not enabled and metrics_idx >= 0:
+            self.tabs.removeTab(metrics_idx)
 
     def reset_streams(self):
         """Clear all configured streams and reset to default group layout."""
@@ -5417,7 +9842,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def logout(self):
         """Perform non-blocking shutdown before closing and returning to login."""
+        if bool(getattr(self, '_is_logging_out', False)):
+            return
+        self._is_logging_out = True
+        self._skip_close_cleanup = False
+        self._cleanup_done = False
+
         print("Logout initiated - starting async shutdown...")
+        self.statusBar().showMessage("Signing out...", 3000)
+        self.setEnabled(False)
         
         def _shutdown_in_thread():
             """Perform shutdown in background thread to avoid blocking UI."""
@@ -5448,21 +9881,57 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         self.parent().server.stop()
                     except Exception as e:
                         print(f"Parent sensor server stop error: {e}")
+
+                # Stop optional background managers used by field runtime.
+                try:
+                    if hasattr(self, 'emberhawk') and self.emberhawk:
+                        self.emberhawk.stop_scheduler()
+                except Exception as e:
+                    print(f"EmberHawk scheduler stop error: {e}")
+
+                try:
+                    if hasattr(self, 'metrics_server') and self.metrics_server:
+                        self.metrics_server.stop()
+                except Exception as e:
+                    print(f"Metrics server stop error: {e}")
+
+                self._cleanup_done = True
                 
                 print("Cleanup complete, returning to login...")
             except Exception as e:
                 print(f"Shutdown error: {e}")
             finally:
-                # Schedule close on main thread
-                self.close()
-                from ee_loginwindow import EELoginWindow
-                login_window = EELoginWindow()
-                login_window.show()
+                # UI operations must run on the GUI thread.
+                try:
+                    QMetaObject.invokeMethod(self, "_finalize_logout_on_ui_thread", Qt.QueuedConnection)
+                except Exception as e:
+                    print(f"Logout finalize invoke error: {e}")
+                    self._is_logging_out = False
         
         # Run shutdown in daemon thread (won't block UI)
         import threading
         shutdown_thread = threading.Thread(target=_shutdown_in_thread, daemon=True)
         shutdown_thread.start()
+
+    @pyqtSlot()
+    def _finalize_logout_on_ui_thread(self):
+        """Finalize logout by closing this window and opening login on GUI thread."""
+        try:
+            from ee_loginwindow import EELoginWindow
+
+            self._skip_close_cleanup = True
+            self._login_window = EELoginWindow()
+            self._login_window.show()
+            self.hide()
+            self.close()
+        except Exception as e:
+            print(f"Finalize logout error: {e}")
+            try:
+                self.setEnabled(True)
+            except Exception:
+                pass
+        finally:
+            self._is_logging_out = False
 
     def shutdown_video_widgets(self):
         """Iterate all video widgets and ensure their worker threads stop (with timeout)."""

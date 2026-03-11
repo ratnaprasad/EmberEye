@@ -46,6 +46,8 @@ class TCPSensorSimulatorV3:
         # Streaming state
         self.streaming = False
         self.streaming_lock = threading.Lock()
+        self.siren_active = False
+        self.siren_acknowledged = False
         
         # Logging
         self.log_file = log_file
@@ -228,6 +230,20 @@ class TCPSensorSimulatorV3:
             except Exception as e:
                 self._log(f"❌ EEPROM1 send error: {e}")
                 return False
+
+        elif cmd == 'ALARM_ON':
+            self.siren_active = True
+            self.siren_acknowledged = False
+            self._log("🚨 Received ALARM_ON command - siren state ACTIVE")
+            return True
+
+        elif cmd == 'ACK_ON':
+            if self.siren_active:
+                self.siren_acknowledged = True
+                self._log("✅ Received ACK_ON command - siren acknowledged")
+            else:
+                self._log("ℹ️  Received ACK_ON command with no active alarm")
+            return True
         
         else:
             self._log(f"⚠️  Unknown command: {command}")

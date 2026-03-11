@@ -54,6 +54,7 @@ class PFDSSimulator:
         host: str = "127.0.0.1",
         port: int = 9001,
         loc_id: str = "demo_room",
+        serial_number: Optional[str] = None,
         data_file: str = "data/NEW DATA 10 MINS.txt",
         speed: float = 1.0,
         pair_window_ms: int = 1000,
@@ -62,6 +63,7 @@ class PFDSSimulator:
         self.host = host
         self.port = port
         self.loc_id = loc_id
+        self.serial_number = str(serial_number or "").strip() or f"SIM{int(time.time()) % 1000000}"
         self.data_file = Path(__file__).parent / data_file
         self.speed = max(0.1, float(speed))
         self.pair_window_ms = max(50, int(pair_window_ms))
@@ -76,6 +78,8 @@ class PFDSSimulator:
         self.streaming = False
         self.stop_event = threading.Event()
         self.streaming_thread: Optional[threading.Thread] = None
+        self.siren_active = False
+        self.siren_acknowledged = False
 
     def _log(self, message: str) -> None:
         logger.info(message)
@@ -90,6 +94,10 @@ class PFDSSimulator:
         return "UNKNOWN"
 
     def _normalize_packet(self, packet: str) -> str:
+        if packet.startswith("#serialno"):
+            return f"#serialno:{self.serial_number}!"
+        if packet.startswith("#locid"):
+            return f"#locid:{self.loc_id}!"
         if packet.startswith("#frame"):
             # Normalize frame payload by keeping only hex chars and trimming to valid sizes.
             match = re.search(r"^#frame[^:]*:(.*)", packet, re.DOTALL)
@@ -295,6 +303,16 @@ class PFDSSimulator:
                     self.stop_event.set()
                 elif command == "REQUEST1":
                     self._send_next_event()
+                elif command == "ALARM_ON":
+                    self.siren_active = True
+                    self.siren_acknowledged = False
+                    logger.info("Received ALARM_ON command - siren state ACTIVE")
+                elif command == "ACK_ON":
+                    if self.siren_active:
+                        self.siren_acknowledged = True
+                        logger.info("Received ACK_ON command - siren acknowledged")
+                    else:
+                        logger.info("Received ACK_ON command with no active alarm")
 
             except socket.timeout:
                 continue
@@ -332,7 +350,7 @@ class PFDSSimulator:
             cmd_thread = threading.Thread(target=self.handle_commands, daemon=True)
             cmd_thread.start()
 
-            self.send_packet(f"#serialno:SIM{int(time.time()) % 1000000}!")
+            self.send_packet(f"#serialno:{self.serial_number}!")
             self.send_packet(f"#locid:{self.loc_id}!")
             time.sleep(0.5)
 
@@ -354,6 +372,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="TCP server host")
     parser.add_argument("--port", type=int, default=9001, help="TCP server port")
     parser.add_argument("--loc-id", default="demo_room", help="Location ID")
+    parser.add_argument("--serial", default="", help="Device serial to emit via #serialno (optional)")
     parser.add_argument("--data", default="data/NEW DATA 10 MINS.txt", help="PFDS log file")
     parser.add_argument("--speed", type=float, default=1.0, help="Replay speed factor")
     parser.add_argument("--pair-window-ms", type=int, default=1000, help="Frame/sensor pairing window (ms)")
@@ -365,6 +384,7 @@ if __name__ == "__main__":
         host=args.host,
         port=args.port,
         loc_id=args.loc_id,
+        serial_number=args.serial,
         data_file=args.data,
         speed=args.speed,
         pair_window_ms=args.pair_window_ms,

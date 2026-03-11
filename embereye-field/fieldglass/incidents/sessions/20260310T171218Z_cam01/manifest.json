@@ -1,0 +1,20 @@
+{
+  "token": "20260310T171218Z_cam01",
+  "location_id": "cam01",
+  "reason": "ui_raise",
+  "start_ts": 1773162738.563364,
+  "end_ts": null,
+  "acked": false,
+  "feedback": "pending",
+  "counts": {
+    "video_frames": 0,
+    "thermal_frames": 0,
+    "sensor_packets": 0,
+    "fusion_events": 0,
+    "vision_events": 0,
+    "video_recording_frames": 0
+  },
+  "thumbnail_path": "",
+  "video_recording_path": "/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/embereye-field/fieldglass/incidents/sessions/20260310T171218Z_cam01/incident_capture.mp4",
+  "video_recording_fps": 8.0
+}

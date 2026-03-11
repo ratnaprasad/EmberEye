@@ -200,25 +200,8 @@ class VideoWorker(QObject):
             return frame
 
     def _draw_detection_counter(self, frame):
-        """Draw a small per-stream detection counter for live debugging."""
-        try:
-            with self._detections_lock:
-                count = self._detection_counter
-
-            label = f"DET:{count}"
-            cv2.putText(
-                frame,
-                label,
-                (8, 22),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 0),
-                2
-            )
-            return frame
-        except Exception as e:
-            log_debug(f"Detection counter overlay error: {e}")
-            return frame
+        """Detection counter overlay disabled for production UI."""
+        return frame
 
     def start_stream(self):
         try:

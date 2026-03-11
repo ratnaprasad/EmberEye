@@ -36,6 +36,8 @@ class TCPAsyncSensorServer:
         self._active_connections = 0
         self._client_period_on_sent: Dict[str, bool] = {}  # Track PERIOD_ON sent per client IP (one-time)
         self._client_writers: Dict[str, asyncio.StreamWriter] = {}  # Active client connections for command sending
+        self._serial_to_ip: Dict[str, str] = {}  # serial -> client ip
+        self._ip_to_serial: Dict[str, str] = {}  # client ip -> serial
         self._loop: asyncio.AbstractEventLoop | None = None  # Store event loop reference
         self._client_eeprom_hex: Dict[str, str] = {}  # Latest valid EEPROM1 payload per client
         self._client_eeprom_requested: Dict[str, bool] = {}  # Track one-time EEPROM1 request per client
@@ -79,31 +81,39 @@ class TCPAsyncSensorServer:
                 pass
         log_info("TCP Server stopped")
 
-    def send_command_to_client(self, ip: str, command: str) -> bool:
-        """Send a command to a connected client by IP address.
+    def send_command_to_client(self, target: str, command: str) -> bool:
+        """Send a command to a connected client by IP address or serial.
         Returns True if sent successfully, False otherwise.
         Thread-safe: can be called from any thread."""
-        if ip not in self._client_writers:
-            log_warning(f"No active connection for IP {ip}. Connected clients: {list(self._client_writers.keys())}")
+        token = str(target or "").strip()
+        target_ip = token
+        if token not in self._client_writers and token in self._serial_to_ip:
+            target_ip = self._serial_to_ip[token]
+
+        if target_ip not in self._client_writers:
+            log_warning(
+                f"No active connection for target {token}. "
+                f"Connected clients: {list(self._client_writers.keys())} serials: {list(self._serial_to_ip.keys())}"
+            )
             return False
         
         if not self._loop:
             log_warning("Event loop not available")
             return False
         
-        writer = self._client_writers[ip]
+        writer = self._client_writers[target_ip]
         try:
             # Schedule the command send in the event loop (thread-safe)
-            print(f"📤 Scheduling command '{command}' to {ip}")
+            print(f"📤 Scheduling command '{command}' to {target_ip} (target={token})")
             asyncio.run_coroutine_threadsafe(
-                self._send_command_async(writer, command, ip),
+                self._send_command_async(writer, command, target_ip),
                 self._loop
             )
-            if (command or "").strip().upper() == "EEPROM1":
-                self._client_eeprom_requested[ip] = True
+            if str(command or "").strip().upper() == "EEPROM1":
+                self._client_eeprom_requested[target_ip] = True
             return True
         except Exception as e:
-            log_server_error(f"Failed to schedule command {command} to {ip}: {e}")
+            log_server_error(f"Failed to schedule command {command} to {target_ip}: {e}")
             return False
 
     def request_eeprom1(self, ip: str) -> bool:
@@ -115,7 +125,7 @@ class TCPAsyncSensorServer:
     async def _send_command_async(self, writer: asyncio.StreamWriter, command: str, ip: str):
         """Actually send the command asynchronously."""
         try:
-            writer.write((command + "\n").encode('utf-8'))
+            writer.write(str(command).encode('ascii', errors='ignore'))
             await writer.drain()
             log_raw_packet(f"SENT_CMD {command} to {ip}", locationId=ip)
         except Exception as e:
@@ -133,13 +143,13 @@ class TCPAsyncSensorServer:
         try:
             if not self._client_period_on_sent.get(client_ip, False):
                 # Start continuous streaming (one-time per connection)
-                writer.write(b"PERIODIC_ON")
+                writer.write(b"PERIOD_ON")
                 await writer.drain()
                 self._client_period_on_sent[client_ip] = True
                 log_debug(f"Sent PERIOD_ON command to {client_ip} for continuous streaming [ONE-TIME]")
 
             if self.auto_request_eeprom_on_connect and not self._client_eeprom_requested.get(client_ip, False):
-                writer.write(b"EEPROM1\n")
+                writer.write(b"EEPROM1")
                 await writer.drain()
                 self._client_eeprom_requested[client_ip] = True
                 self._client_last_eeprom_request[client_ip] = asyncio.get_running_loop().time()
@@ -169,7 +179,7 @@ class TCPAsyncSensorServer:
                     if not self._client_period_on_sent.get(client_ip, False):
                         try:
                             # Failsafe: ensure streaming is active
-                            writer.write(b"PERIODIC_ON")
+                            writer.write(b"PERIOD_ON")
                             await writer.drain()
                             self._client_period_on_sent[client_ip] = True
                             log_debug(f"Auto-sent PERIOD_ON to {client_ip} on first frame [FAILSAFE]")
@@ -205,6 +215,9 @@ class TCPAsyncSensorServer:
             # Clean up client PERIOD_ON gate state
             if client_ip in self._client_period_on_sent:
                 del self._client_period_on_sent[client_ip]
+            serial = self._ip_to_serial.pop(client_ip, None)
+            if serial and self._serial_to_ip.get(serial) == client_ip:
+                del self._serial_to_ip[serial]
             if client_ip in self._client_eeprom_hex:
                 del self._client_eeprom_hex[client_ip]
             if client_ip in self._client_eeprom_requested:
@@ -230,7 +243,7 @@ class TCPAsyncSensorServer:
             last_sent = float(self._client_last_eeprom_request.get(client_ip, 0.0))
             if loop.time() - last_sent >= self.eeprom_retry_interval_seconds:
                 try:
-                    writer.write(b"EEPROM1\n")
+                    writer.write(b"EEPROM1")
                     await writer.drain()
                     self._client_eeprom_requested[client_ip] = True
                     self._client_last_eeprom_request[client_ip] = loop.time()
@@ -270,9 +283,18 @@ class TCPAsyncSensorServer:
     def _parse_packet(self, line: str, client_ip: str | None):
         result = None
         try:
-            if line.startswith('#serialno:'):
+            if line.startswith('#DEVICE_ID:'):
+                serial = line.split(':', 1)[1].rstrip('!').strip()
+                result = {'type': 'device_id', 'serial_number': serial, 'client_ip': client_ip}
+                if client_ip and serial:
+                    self._serial_to_ip[serial] = client_ip
+                    self._ip_to_serial[client_ip] = serial
+            elif line.startswith('#serialno:'):
                 serial = line.split(':', 1)[1].rstrip('!').strip()
                 result = {'type': 'serialno', 'serialno': serial, 'client_ip': client_ip}
+                if client_ip and serial:
+                    self._serial_to_ip[serial] = client_ip
+                    self._ip_to_serial[client_ip] = serial
             elif line.startswith('#locid:'):
                 loc_id = line.split(':', 1)[1].rstrip('!').strip()
                 result = {'type': 'locid', 'loc_id': loc_id, 'client_ip': client_ip}
@@ -286,6 +308,9 @@ class TCPAsyncSensorServer:
                         'blocks': eeprom_result.get('blocks'),
                         'client_ip': client_ip
                     }
+                    serial = self._ip_to_serial.get(client_ip or '')
+                    if serial:
+                        result['serial_number'] = serial
                     log_debug(f"EEPROM calibration loaded from {client_ip}")
                 else:
                     log_error_packet(reason=f"EEPROM parse error: {eeprom_result.get('error')}", raw=line[:80], loc_id=client_ip)
@@ -312,6 +337,9 @@ class TCPAsyncSensorServer:
                         if len(hex_values) == 32*24:
                             matrix = [[int(hex_values[r*32+c], 16) for c in range(32)] for r in range(24)]
                             result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id, 'client_ip': client_ip}
+                            serial = self._ip_to_serial.get(client_ip or '')
+                            if serial:
+                                result['serial_number'] = serial
                         else:
                             log_error_packet(reason=f"frame count {len(hex_values)}", raw=line[:80], loc_id=loc_id or client_ip)
                     else:
@@ -340,6 +368,9 @@ class TCPAsyncSensorServer:
                                     'loc_id': loc_id,
                                     'client_ip': client_ip
                                 }
+                                serial = self._ip_to_serial.get(client_ip or '')
+                                if serial:
+                                    result['serial_number'] = serial
                             else:
                                 # Fallback to parser that can handle raw 834-word frame without EEPROM1
                                 try:
@@ -384,6 +415,9 @@ class TCPAsyncSensorServer:
                             k = k.strip().rstrip(':'); v = v.strip()
                             sensors[k] = float(v) if '.' in v else int(v)
                     result = {'type': 'sensor', 'loc_id': loc_id, 'client_ip': client_ip, **sensors}
+                    serial = self._ip_to_serial.get(client_ip or '')
+                    if serial:
+                        result['serial_number'] = serial
             else:
                 log_error_packet(reason="unknown packet type", raw=line[:80], loc_id=client_ip)
         except Exception as e:

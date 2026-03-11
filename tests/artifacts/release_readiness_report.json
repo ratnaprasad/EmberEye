@@ -1,0 +1,66 @@
+{
+  "checks": [
+    {
+      "detail": "PASS",
+      "name": "test:tests/field/run_device_access_audit_test.py",
+      "passed": true
+    },
+    {
+      "detail": "PASS",
+      "name": "test:tests/field/run_bulk_reconcile_test.py",
+      "passed": true
+    },
+    {
+      "detail": "PASS",
+      "name": "test:tests/field/run_bulk_reconcile_dry_run_test.py",
+      "passed": true
+    },
+    {
+      "detail": "PASS",
+      "name": "test:tests/field/run_device_gating_matrix_test.py",
+      "passed": true
+    },
+    {
+      "detail": "PASS",
+      "name": "test:tests/field/run_pfds_tcp_fusion_e2e_test.py",
+      "passed": true
+    },
+    {
+      "detail": "PASS",
+      "name": "test:tests/field/run_identity_churn_soak_test.py",
+      "passed": true
+    },
+    {
+      "detail": "PASS",
+      "name": "test:tests/smoke_simulator_commands.py",
+      "passed": true
+    },
+    {
+      "detail": "unreachable url=http://127.0.0.1:9108/metrics error=<urlopen error [Errno 61] Connection refused>",
+      "name": "metrics:endpoint_reachable",
+      "passed": true
+    },
+    {
+      "detail": "rows=96 path=/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/logs/device_telemetry.jsonl",
+      "name": "log:device_telemetry_present",
+      "passed": true
+    },
+    {
+      "detail": "rows=12 path=/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/logs/device_audit.jsonl",
+      "name": "log:device_audit_present",
+      "passed": true
+    },
+    {
+      "detail": "requires actor/reason + old/new auth/link fields on device_access_changed",
+      "name": "log:audit_schema_sane",
+      "passed": true
+    },
+    {
+      "detail": "ops_alert_count=0 window_hours=1.00 rate_per_hour=0.00 threshold=2.00",
+      "name": "slo:ops_alert_rate",
+      "passed": true
+    }
+  ],
+  "decision": "GO",
+  "generated_at": "2026-03-08T19:09:17.519086+00:00"
+}

@@ -36,6 +36,8 @@ class TCPSensorServer:
         self.packet_callback = packet_callback  # Function to call with parsed packet
         self.disconnect_callback = disconnect_callback  # Function to call when client disconnects
         self._client_sockets = {}  # Track active client connections: {ip: socket}
+        self._serial_to_ip = {}  # Track latest serial -> client ip binding
+        self._ip_to_serial = {}  # Track latest client ip -> serial binding
         self._socket_lock = threading.Lock()  # Lock for thread-safe socket access
         self._client_eeprom_hex = {}  # Track latest valid EEPROM1 payload per client
         self._client_eeprom_requested = {}  # Track EEPROM1 command sent per client
@@ -123,7 +125,7 @@ class TCPSensorServer:
         time.sleep(0.1)
         try:
             print(f"📤 Auto-sending PERIOD_ON to device at IP: {client_ip}", flush=True)
-            client_sock.sendall("PERIOD_ON\n".encode('utf-8'))
+            client_sock.sendall("PERIOD_ON".encode('ascii'))
             print(f"✅ PERIOD_ON successfully sent to device IP: {client_ip}", flush=True)
         except Exception as e:
             print(f"⚠️  Failed to auto-send PERIOD_ON to device IP {client_ip}: {e}", flush=True)
@@ -131,7 +133,7 @@ class TCPSensorServer:
         if self.auto_request_eeprom_on_connect:
             try:
                 print(f"📤 Auto-sending EEPROM1 to device at IP: {client_ip}", flush=True)
-                client_sock.sendall("EEPROM1\n".encode('utf-8'))
+                client_sock.sendall("EEPROM1".encode('ascii'))
                 self._client_eeprom_requested[client_ip] = True
                 self._client_last_eeprom_request[client_ip] = now_time()
                 print(f"✅ EEPROM1 request sent to device IP: {client_ip}", flush=True)
@@ -195,6 +197,9 @@ class TCPSensorServer:
             with self._socket_lock:
                 if client_ip in self._client_sockets:
                     del self._client_sockets[client_ip]
+                serial = self._ip_to_serial.pop(client_ip, None)
+                if serial and self._serial_to_ip.get(serial) == client_ip:
+                    self._serial_to_ip.pop(serial, None)
             self._client_eeprom_hex.pop(client_ip, None)
             self._client_eeprom_requested.pop(client_ip, None)
             self._client_last_eeprom_request.pop(client_ip, None)
@@ -212,8 +217,8 @@ class TCPSensorServer:
                 pass
             print(f"Client handler stopped for {client_ip}")
 
-    def send_command_to_client(self, ip: str, command: str) -> bool:
-        """Send a command to a connected client by IP address.
+    def send_command_to_client(self, target: str, command: str) -> bool:
+        """Send a command to a connected client by IP address or serial number.
         Returns True if sent successfully, False otherwise.
         Thread-safe.
         
@@ -222,31 +227,29 @@ class TCPSensorServer:
         with self._socket_lock:
             client_sock = None
             matched_ip = None
+            token = str(target or "").strip()
             
             # Try exact match first
-            if ip in self._client_sockets:
-                client_sock = self._client_sockets[ip]
-                matched_ip = ip
+            if token in self._client_sockets:
+                client_sock = self._client_sockets[token]
+                matched_ip = token
+            elif token in self._serial_to_ip and self._serial_to_ip[token] in self._client_sockets:
+                matched_ip = self._serial_to_ip[token]
+                client_sock = self._client_sockets[matched_ip]
             else:
-                # Try to match if there's only one connected client (common case)
-                if len(self._client_sockets) == 1:
-                    matched_ip = list(self._client_sockets.keys())[0]
-                    client_sock = self._client_sockets[matched_ip]
-                    print(f"🔄 IP mismatch: configured={ip}, actual={matched_ip}. Using actual IP (single client).")
-                else:
-                    now = now_time()
-                    if not hasattr(self, '_no_connection_warn_ts'):
-                        self._no_connection_warn_ts = {}
-                    warn_key = str(ip).strip()
-                    last_warn = float(self._no_connection_warn_ts.get(warn_key, 0.0))
-                    if now - last_warn >= 30.0:
-                        print(f"❌ No active connection for IP {ip}. Connected clients: {list(self._client_sockets.keys())} (repeated logs suppressed)")
-                        self._no_connection_warn_ts[warn_key] = now
-                    return False
+                now = now_time()
+                if not hasattr(self, '_no_connection_warn_ts'):
+                    self._no_connection_warn_ts = {}
+                warn_key = token
+                last_warn = float(self._no_connection_warn_ts.get(warn_key, 0.0))
+                if now - last_warn >= 30.0:
+                    print(f"❌ No active connection for target {token}. Connected clients: {list(self._client_sockets.keys())} serials: {list(self._serial_to_ip.keys())} (repeated logs suppressed)")
+                    self._no_connection_warn_ts[warn_key] = now
+                return False
         
         try:
-            print(f"📤 Sending command '{command}' to device IP: {matched_ip} (configured as {ip})")
-            client_sock.sendall((command + "\n").encode('utf-8'))
+            print(f"📤 Sending command '{command}' to device IP: {matched_ip} (target={token})")
+            client_sock.sendall(str(command).encode('ascii', errors='ignore'))
             print(f"✅ Command '{command}' successfully sent to device IP: {matched_ip}")
             cmd = (command or "").strip().upper()
             if cmd == "EEPROM1":
@@ -260,8 +263,8 @@ class TCPSensorServer:
                     del self._client_sockets[matched_ip]
             return False
 
-    def request_eeprom1(self, ip: str) -> bool:
-        return self.send_command_to_client(ip, "EEPROM1")
+    def request_eeprom1(self, ip_or_serial: str) -> bool:
+        return self.send_command_to_client(ip_or_serial, "EEPROM1")
 
     def _eeprom_collect_loop(self, client_sock, client_ip: str, stop_event: threading.Event):
         while self.running and not stop_event.is_set():
@@ -271,7 +274,7 @@ class TCPSensorServer:
             last_sent = float(self._client_last_eeprom_request.get(client_ip, 0.0))
             if now_time() - last_sent >= self.eeprom_retry_interval_seconds:
                 try:
-                    client_sock.sendall("EEPROM1\n".encode('utf-8'))
+                    client_sock.sendall("EEPROM1".encode('ascii'))
                     self._client_eeprom_requested[client_ip] = True
                     self._client_last_eeprom_request[client_ip] = now_time()
                 except Exception:
@@ -279,8 +282,17 @@ class TCPSensorServer:
 
             stop_event.wait(timeout=1.0)
 
-    def request_one_time_frame(self, ip: str) -> bool:
-        return self.send_command_to_client(ip, "REQUEST1")
+    def request_one_time_frame(self, ip_or_serial: str) -> bool:
+        return self.send_command_to_client(ip_or_serial, "REQUEST1")
+
+    def _bind_serial_to_client(self, serial: str, client_ip: str) -> None:
+        serial_key = str(serial or "").strip()
+        ip_key = str(client_ip or "").strip()
+        if not serial_key or not ip_key:
+            return
+        with self._socket_lock:
+            self._serial_to_ip[serial_key] = ip_key
+            self._ip_to_serial[ip_key] = serial_key
 
     def handle_packet(self, line, client_ip=None):
         """Parse incoming sensor packets and invoke callback with structured data.
@@ -298,11 +310,27 @@ class TCPSensorServer:
                 # Add client IP as fallback identifier
                 if client_ip:
                     result['client_ip'] = client_ip
+                    self._bind_serial_to_client(serial, client_ip)
             except Exception as e:
                 print(f"Serialno parse error: {e}")
                 try:
                     from tcp_logger import log_error_packet
                     log_error_packet(reason=f"serialno parse error: {e}", raw=line, loc_id=client_ip)
+                except Exception:
+                    pass
+        elif line.startswith('#DEVICE_ID:'):
+            # Example: #DEVICE_ID:1829602101142!
+            try:
+                serial = line.split(':', 1)[1].rstrip('!').strip()
+                result = {'type': 'device_id', 'serial_number': serial}
+                if client_ip:
+                    result['client_ip'] = client_ip
+                    self._bind_serial_to_client(serial, client_ip)
+            except Exception as e:
+                print(f"DEVICE_ID parse error: {e}")
+                try:
+                    from tcp_logger import log_error_packet
+                    log_error_packet(reason=f"DEVICE_ID parse error: {e}", raw=line, loc_id=client_ip)
                 except Exception:
                     pass
         elif line.startswith('#locid:'):
@@ -330,6 +358,9 @@ class TCPSensorServer:
                         'blocks': parsed.get('blocks'),
                         'client_ip': client_ip,
                     }
+                    serial = self._ip_to_serial.get(client_ip)
+                    if serial:
+                        result['serial_number'] = serial
                     print(f"✅ EEPROM cached for {client_ip}: {parsed.get('blocks')} blocks")
                 else:
                     print(f"⚠️ EEPROM parse failed from {client_ip}: {parsed.get('error')}")
@@ -389,6 +420,9 @@ class TCPSensorServer:
                         }
                         if client_ip:
                             result['client_ip'] = client_ip
+                            serial = self._ip_to_serial.get(client_ip)
+                            if serial:
+                                result['serial_number'] = serial
                     else:
                         # Fallback for grid-only/legacy packets
                         if ' ' in frame_data:
@@ -398,12 +432,18 @@ class TCPSensorServer:
                                 result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id}
                                 if client_ip:
                                     result['client_ip'] = client_ip
+                                    serial = self._ip_to_serial.get(client_ip)
+                                    if serial:
+                                        result['serial_number'] = serial
                         elif len(frame_data_clean) == 32 * 24 * 4:
                             hex_values = [frame_data_clean[i:i + 4] for i in range(0, len(frame_data_clean), 4)]
                             matrix = [[int(hex_values[row * 32 + col], 16) for col in range(32)] for row in range(24)]
                             result = {'type': 'frame', 'matrix': matrix, 'loc_id': loc_id}
                             if client_ip:
                                 result['client_ip'] = client_ip
+                                serial = self._ip_to_serial.get(client_ip)
+                                if serial:
+                                    result['serial_number'] = serial
                         elif len(frame_data_clean) >= 32 * 24 * 4 + 66 * 4:
                             # Fallback: parse 834-word raw frame without EEPROM1 (best-effort rendering)
                             try:
@@ -421,6 +461,9 @@ class TCPSensorServer:
                                     }
                                     if client_ip:
                                         result['client_ip'] = client_ip
+                                        serial = self._ip_to_serial.get(client_ip)
+                                        if serial:
+                                            result['serial_number'] = serial
                             except Exception as parse_exc:
                                 print(f"Frame fallback parse error: {parse_exc}")
                         else:
@@ -477,10 +520,22 @@ class TCPSensorServer:
                             # Handle malformed entries like "ADC3:=905" (extra colon)
                             k = k.strip().rstrip(':')
                             v = v.strip()
-                            sensors[k] = float(v) if '.' in v else int(v)
+                            key_lower = k.lower()
+                            if key_lower in ('serial', 'serialno', 'serial_number', 'device_id'):
+                                sensors['serial_number'] = str(v)
+                                continue
+                            try:
+                                sensors[k] = float(v) if '.' in v else int(v)
+                            except Exception:
+                                # Keep parser resilient to mixed string fields in sensor payloads.
+                                sensors[k] = str(v)
                     result = {'type': 'sensor', 'loc_id': loc_id, **sensors}
                     if client_ip:
                         result['client_ip'] = client_ip
+                        serial = result.get('serial_number') or self._ip_to_serial.get(client_ip)
+                        if serial:
+                            result['serial_number'] = serial
+                            self._bind_serial_to_client(serial, client_ip)
                 else:
                     print(f"Sensor parse error: no colon separator")
                     try:

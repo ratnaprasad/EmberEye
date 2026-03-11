@@ -17,7 +17,10 @@ hiddenimports = [
     'device_status_manager', 'error_logger', 'crash_logger', 'theme_manager',
     'auto_updater', 'calibrationcapture', 'CalibrationWindow', 'camera_calibrator',
     'annotation_tool', 'adaptive_fps', 'metrics', 'vision_detector',
-    'vision_logger', 'video_worker'
+    'vision_logger', 'video_worker',
+    # Force Qt WebEngine modules into frozen build.
+    'PyQt5.QtWebEngineWidgets', 'PyQt5.QtWebEngineCore', 'PyQt5.QtWebChannel',
+    'PyQt5.QtPrintSupport', 'PyQt5.QtNetwork'
 ]
 
 # Collect embereye package (ensures all submodules and embereye.app.* are available)
@@ -27,6 +30,14 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # Collect OpenCV assets/hooks
 tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# Collect Qt WebEngine runtime payload (WebEngineProcess + resources/locales).
+for pkg_name in ('PyQt5.QtWebEngineWidgets', 'PyQt5.QtWebEngineCore', 'PyQt5.QtWebChannel'):
+    try:
+        tmp_ret = collect_all(pkg_name)
+        datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+    except Exception:
+        pass
 
 
 a = Analysis(

@@ -44,6 +44,17 @@ def ensure_modules():
         print("[INFO] All required modules present.")
 
 
+def verify_webengine_runtime():
+    """Fail fast if QtWebEngine runtime is not importable in current environment."""
+    try:
+        from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+        print("[INFO] PyQtWebEngine runtime import: OK")
+    except Exception as exc:
+        print(f"[ERROR] PyQtWebEngine runtime import failed: {exc}")
+        print("[ERROR] Build aborted to avoid generating an .exe without embedded Metrics support.")
+        sys.exit(3)
+
+
 def generate_icon():
     """Generate logo.ico from logo.png if not exists."""
     if os.path.exists('logo.ico'):
@@ -91,4 +102,5 @@ def build():
 
 if __name__ == '__main__':
     ensure_modules()
+    verify_webengine_runtime()
     build()

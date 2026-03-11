@@ -37,6 +37,19 @@ class MetricsCollector:
         self.fusion_alarms_total = 0
         self.fusion_latency_sum = 0.0
         self.fusion_count = 0
+
+        # Device lifecycle/command observability metrics
+        self.device_lifecycle_events_total: Dict[str, int] = {}
+        self.device_packet_drops_total: Dict[str, int] = {}
+        self.device_commands_total: Dict[str, int] = {}
+        self.device_command_failures_total: Dict[str, int] = {}
+
+        # Scheduled reconciliation metrics
+        self.scheduled_reconcile_runs_total: Dict[str, int] = {}
+        self.scheduled_reconcile_bound_total = 0
+        self.scheduled_reconcile_unmatched_total = 0
+        self.scheduled_reconcile_errors_total = 0
+        self.scheduled_reconcile_disabled_total = 0
         
         # System metrics
         self.start_time = time.time()
@@ -89,6 +102,38 @@ class MetricsCollector:
             if latency_ms > 0:
                 self.fusion_latency_sum += latency_ms
                 self.fusion_count += 1
+
+    def record_device_lifecycle_event(self, event: str, state: str = ""):
+        with self._lock:
+            key = f"event={event}|state={state or 'unknown'}"
+            self.device_lifecycle_events_total[key] = self.device_lifecycle_events_total.get(key, 0) + 1
+
+    def record_device_packet_drop(self, drop_reason: str, state: str = ""):
+        with self._lock:
+            key = f"reason={drop_reason or 'unknown'}|state={state or 'unknown'}"
+            self.device_packet_drops_total[key] = self.device_packet_drops_total.get(key, 0) + 1
+
+    def record_device_command(self, event: str, command: str = ""):
+        with self._lock:
+            key = f"event={event}|command={command or 'unknown'}"
+            self.device_commands_total[key] = self.device_commands_total.get(key, 0) + 1
+
+    def record_device_command_failure(self, drop_reason: str, command: str = ""):
+        with self._lock:
+            key = f"reason={drop_reason or 'unknown'}|command={command or 'unknown'}"
+            self.device_command_failures_total[key] = self.device_command_failures_total.get(key, 0) + 1
+
+    def record_scheduled_reconcile_run(self, outcome: str, bound: int = 0, unmatched: int = 0, errors: int = 0):
+        with self._lock:
+            key = str(outcome or 'unknown')
+            self.scheduled_reconcile_runs_total[key] = self.scheduled_reconcile_runs_total.get(key, 0) + 1
+            self.scheduled_reconcile_bound_total += max(0, int(bound))
+            self.scheduled_reconcile_unmatched_total += max(0, int(unmatched))
+            self.scheduled_reconcile_errors_total += max(0, int(errors))
+
+    def record_scheduled_reconcile_disabled(self):
+        with self._lock:
+            self.scheduled_reconcile_disabled_total += 1
     
     def export_prometheus(self) -> str:
         """Generate Prometheus-format metrics text."""
@@ -201,6 +246,77 @@ class MetricsCollector:
                 lines.append(f"emberye_fusion_latency_avg_ms {avg:.2f}")
             else:
                 lines.append("emberye_fusion_latency_avg_ms 0")
+
+            lines.extend([
+                "",
+                "# HELP emberye_device_lifecycle_events_total Device lifecycle telemetry events",
+                "# TYPE emberye_device_lifecycle_events_total counter",
+            ])
+            for key, count in self.device_lifecycle_events_total.items():
+                parts = dict(item.split("=", 1) for item in key.split("|"))
+                lines.append(
+                    f'embereye_device_lifecycle_events_total{{event="{parts.get("event", "unknown")}",state="{parts.get("state", "unknown")}"}} {count}'
+                )
+
+            lines.extend([
+                "",
+                "# HELP emberye_device_packet_drops_total Device packet drops by reason",
+                "# TYPE emberye_device_packet_drops_total counter",
+            ])
+            for key, count in self.device_packet_drops_total.items():
+                parts = dict(item.split("=", 1) for item in key.split("|"))
+                lines.append(
+                    f'embereye_device_packet_drops_total{{reason="{parts.get("reason", "unknown")}",state="{parts.get("state", "unknown")}"}} {count}'
+                )
+
+            lines.extend([
+                "",
+                "# HELP emberye_device_commands_total Device command telemetry events",
+                "# TYPE emberye_device_commands_total counter",
+            ])
+            for key, count in self.device_commands_total.items():
+                parts = dict(item.split("=", 1) for item in key.split("|"))
+                lines.append(
+                    f'embereye_device_commands_total{{event="{parts.get("event", "unknown")}",command="{parts.get("command", "unknown")}"}} {count}'
+                )
+
+            lines.extend([
+                "",
+                "# HELP emberye_device_command_failures_total Device command failures by reason",
+                "# TYPE emberye_device_command_failures_total counter",
+            ])
+            for key, count in self.device_command_failures_total.items():
+                parts = dict(item.split("=", 1) for item in key.split("|"))
+                lines.append(
+                    f'embereye_device_command_failures_total{{reason="{parts.get("reason", "unknown")}",command="{parts.get("command", "unknown")}"}} {count}'
+                )
+
+            lines.extend([
+                "",
+                "# HELP emberye_scheduled_reconcile_runs_total Scheduled reconcile runs by outcome",
+                "# TYPE emberye_scheduled_reconcile_runs_total counter",
+            ])
+            for outcome, count in self.scheduled_reconcile_runs_total.items():
+                lines.append(f'embereye_scheduled_reconcile_runs_total{{outcome="{outcome}"}} {count}')
+
+            lines.extend([
+                "",
+                "# HELP emberye_scheduled_reconcile_bound_total Total serials bound by scheduled reconcile",
+                "# TYPE emberye_scheduled_reconcile_bound_total counter",
+                f"embereye_scheduled_reconcile_bound_total {self.scheduled_reconcile_bound_total}",
+                "",
+                "# HELP emberye_scheduled_reconcile_unmatched_total Total unmatched serials seen by scheduled reconcile",
+                "# TYPE emberye_scheduled_reconcile_unmatched_total counter",
+                f"embereye_scheduled_reconcile_unmatched_total {self.scheduled_reconcile_unmatched_total}",
+                "",
+                "# HELP emberye_scheduled_reconcile_errors_total Total scheduled reconcile errors",
+                "# TYPE emberye_scheduled_reconcile_errors_total counter",
+                f"embereye_scheduled_reconcile_errors_total {self.scheduled_reconcile_errors_total}",
+                "",
+                "# HELP emberye_scheduled_reconcile_disabled_total Total times scheduled reconcile auto-disabled",
+                "# TYPE emberye_scheduled_reconcile_disabled_total counter",
+                f"embereye_scheduled_reconcile_disabled_total {self.scheduled_reconcile_disabled_total}",
+            ])
             
             return "\n".join(lines) + "\n"
 

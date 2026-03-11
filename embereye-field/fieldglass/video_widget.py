@@ -4,10 +4,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vigilstream'))
 
 from video_worker import VideoWorker
 from PyQt5.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy, QApplication
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QObject, QMutexLocker, pyqtSlot
+from PyQt5.QtCore import Qt, QRect, QRectF, pyqtSignal, QThread, QTimer, QObject, QMutexLocker, pyqtSlot
 from PyQt5.QtGui import QColor, QImage
 from debug_config import debug_print, is_debug_enabled
 from PyQt5.QtCore import QSettings
+from util.fusionbanner import draw_fusion_overlay as render_fusion_overlay
 import json
 import tempfile
 
@@ -18,6 +19,8 @@ class VideoWidget(QWidget):
     maximize_requested = pyqtSignal()
     minimize_requested = pyqtSignal()
     thermal_data_received = pyqtSignal(list)  # Signal for thermal matrix from background thread
+    alarm_raise_requested = pyqtSignal(str)
+    alarm_ack_requested = pyqtSignal(str)
 
     def __init__(self, rtsp_url, name, loc_id, parent=None, start_worker=True):
         super().__init__(parent)
@@ -49,6 +52,7 @@ class VideoWidget(QWidget):
         self._last_overlay_size = None  # Track last overlay size for invalidation
         self._last_thermal_update_time = 0
         self._thermal_update_interval = 0.2  # Minimum 200ms between thermal updates
+        self._thermal_last_packet_ts = 0.0
         self.thermal_render_mode = "fixed_scale_inferno"
         self.thermal_emissivity = 0.95
         self.thermal_auto_window = True
@@ -59,6 +63,10 @@ class VideoWidget(QWidget):
         
         # Alarm state and frame freeze
         self.alarm_active = False
+        self._remote_alarm_active = False
+        self._manual_alarm_override = None
+        self._alarm_silenced = False
+        self.alarm_acknowledged = False
         self.frozen_frame = None
         self.freeze_on_alarm = False
         self.current_temp = 22.5
@@ -75,12 +83,27 @@ class VideoWidget(QWidget):
         self._latest_detection_frame_size = None
         self._detection_overlay_ttl_ms = 1500
         self._last_frame_size_from_pixmap = None
+        self._alarm_highlight_color = "#ff5252"
         
         # Fusion data display
         self.fusion_data = None
+        self._fusion_last_packet_ts = 0.0
+        self._sensor_stale_timeout_s = 3.0
         self.show_fusion_overlay = True
+        self.fusion_advanced_view = False
+        self.fusion_drawer_collapsed = False
+        self._manual_action_state = None  # None | normal | raised
+        self._ack_count = 0
+        self._action_card_rect = None
+        # Legacy view-state flags referenced by overlay layout paths.
+        self.is_minimized = False
+        self.maximized = False
+        self.grid_view = False
         # Display mode: default (camera), thermal (heatmap), grid (numeric)
         self.display_mode = "default"
+        self._last_base_pixmap = None  # Keep an unpainted base frame for stable overlay redraws.
+        self._rtsp_connected = False
+        self.setFocusPolicy(Qt.StrongFocus)
 
         # Expand to fill grid cell
         self.setMinimumSize(160, 120)
@@ -102,8 +125,11 @@ class VideoWidget(QWidget):
         self.sensor_handler.data_received.connect(self.update_sensor_display)
 
         self.create_controls()
-        # Default to camera view with fusion overlay
-        self.thermal_grid_view_enabled = False
+        # Restore persisted display preference (camera/grid) after controls exist.
+        try:
+            self.set_display_mode("grid" if self._load_grid_pref() else "default")
+        except Exception:
+            self.set_display_mode("default")
         self.maximize_requested.connect(self.handle_maximize_state)
         self.minimize_requested.connect(self.handle_minimize_state)
         self.thermal_data_received.connect(self._handle_thermal_data)
@@ -115,6 +141,8 @@ class VideoWidget(QWidget):
         self.detection_overlay.raise_()
         self.top_left_controls.raise_()
         self.right_overlay_controls.raise_()
+        self.fusion_drawer_toggle_btn.raise_()
+        self.fusion_alarm_btn.raise_()
         self.bottom_right_status.raise_()
         # Reflect loaded state in overlay buttons without double-triggering
         self._sync_overlay_buttons_from_state(initial=True)
@@ -133,6 +161,7 @@ class VideoWidget(QWidget):
         try:
             import time
             current_time = time.time()
+            self._thermal_last_packet_ts = current_time
             
             # Throttle thermal updates to reduce flickering
             if current_time - self._last_thermal_update_time < self._thermal_update_interval:
@@ -278,7 +307,8 @@ class VideoWidget(QWidget):
     def _redraw_with_grid(self):
         """Redraw current frame with fusion data overlay only."""
         try:
-            base_pixmap = self.video_label.pixmap()
+            self._expire_stale_sensor_overlay()
+            base_pixmap = self._last_base_pixmap or self.video_label.pixmap()
             if not base_pixmap or base_pixmap.isNull():
                 return
             
@@ -313,9 +343,10 @@ class VideoWidget(QWidget):
 
             painter = QPainter(result)
             
-            # Draw fusion data overlay if enabled
-            if self.show_fusion_overlay and self.fusion_data:
-                self._draw_fusion_overlay(painter, base_pixmap.width(), base_pixmap.height())
+            # Draw fusion overlay using the rendered tile dimensions so banner
+            # stays consistent across stream resolutions and grid changes.
+            if self.show_fusion_overlay:
+                self._draw_fusion_overlay(painter, result.width(), result.height())
             
             painter.end()
             self.video_label.setPixmap(result)
@@ -324,6 +355,32 @@ class VideoWidget(QWidget):
             print(f"Grid overlay error: {e}")
             from error_logger import get_error_logger
             get_error_logger().log('ThermalGrid', f'Redraw error: {e}')
+
+    def _render_no_video_fallback(self):
+        """Render thermal/fusion overlay even when RTSP frame is unavailable."""
+        try:
+            self._expire_stale_sensor_overlay()
+            from PyQt5.QtGui import QPixmap
+
+            base = None
+            if self.display_mode == "grid" and self._last_thermal_matrix is not None:
+                base = self._build_temperature_grid_pixmap(self._last_thermal_matrix)
+            elif self._last_thermal_matrix is not None:
+                # In default/thermal mode, prefer thermal heatmap when camera feed is down.
+                base = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
+
+            if not base or base.isNull():
+                w = max(1, self.video_label.width())
+                h = max(1, self.video_label.height())
+                base = QPixmap(w, h)
+                base.fill(Qt.black)
+
+            self._last_base_pixmap = base
+            self.video_label.setPixmap(base)
+            if self.show_fusion_overlay:
+                self._redraw_with_grid()
+        except Exception as e:
+            print(f"No-video fallback render error: {e}")
 
     def _apply_thermal_overlay_internal(self, matrix):
         """Process thermal matrix (no longer applies visual overlay in grid view mode)."""
@@ -756,7 +813,7 @@ class VideoWidget(QWidget):
             }
         """)
         
-        top_left_layout = QHBoxLayout(self.top_left_controls)
+        top_left_layout = QVBoxLayout(self.top_left_controls)
         top_left_layout.setContentsMargins(2, 2, 2, 2)
         top_left_layout.setSpacing(2)
 
@@ -768,29 +825,86 @@ class VideoWidget(QWidget):
         top_left_layout.addWidget(self.maximize_btn)
         top_left_layout.addWidget(self.reload_btn)
 
-        # Right-side overlay mode stack (vertical)
+        # Integrated view-mode toolbar (glassmorphism style)
         self.right_overlay_controls = QWidget(self)
         self.right_overlay_controls.setObjectName("overlay_controls")
         self.right_overlay_controls.setStyleSheet("""
             QWidget#overlay_controls {
-                background-color: transparent;
-                border: none;
+                background-color: rgba(18, 24, 32, 0.56);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 12px;
             }
         """)
-        overlay_layout = QVBoxLayout(self.right_overlay_controls)
-        overlay_layout.setContentsMargins(2, 2, 2, 2)
-        overlay_layout.setSpacing(2)
+        overlay_layout = QHBoxLayout(self.right_overlay_controls)
+        overlay_layout.setContentsMargins(6, 4, 6, 4)
+        overlay_layout.setSpacing(4)
 
-        self.default_view_btn = self.create_control_button("D", "Default (camera + fusion)")
+        self.default_view_btn = self.create_control_button("📷", "Camera mode (hotkey: D)")
         self.default_view_btn.setCheckable(True)
-        self.thermal_view_btn = self.create_control_button("T", "Thermal + fusion")
+        self.thermal_view_btn = self.create_control_button("🌡", "Thermal mode (hotkey: T)")
         self.thermal_view_btn.setCheckable(True)
-        self.grid_view_btn = self.create_control_button("#", "Thermal grid + fusion")
+        self.grid_view_btn = self.create_control_button("▦", "Thermal grid mode (hotkey: #)")
         self.grid_view_btn.setCheckable(True)
 
         overlay_layout.addWidget(self.default_view_btn)
         overlay_layout.addWidget(self.thermal_view_btn)
         overlay_layout.addWidget(self.grid_view_btn)
+        # Hover & reveal: keep mode toolbar hidden until operator focuses this tile.
+        self.right_overlay_controls.setVisible(False)
+
+        # Left-edge drawer handle for fusion overlay
+        self.fusion_drawer_toggle_btn = self.create_control_button("▴", "Collapse sensor banner")
+        self.fusion_drawer_toggle_btn.setFixedSize(20, 20)
+        self.fusion_drawer_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.fusion_drawer_toggle_btn.clicked.connect(self._toggle_fusion_drawer)
+        self.fusion_drawer_toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(40, 40, 40, 0.74);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                color: #eaf1f9;
+                font-weight: 700;
+                font-size: 15px;
+                border-radius: 10px;
+                padding: 0;
+            }
+            QPushButton:hover {
+                background-color: rgba(52, 52, 52, 0.84);
+                border: 1px solid rgba(255, 255, 255, 0.24);
+                color: #ffffff;
+            }
+        """)
+        self._sync_fusion_drawer_toggle()
+
+        self.fusion_alarm_btn = QPushButton("Raise Alarm", self)
+        self.fusion_alarm_btn.setFixedHeight(28)
+        self.fusion_alarm_btn.setMinimumWidth(108)
+        self.fusion_alarm_btn.setEnabled(True)
+        self.fusion_alarm_btn.setToolTip("Raise alarm for this PFDS-mapped location")
+        self.fusion_alarm_btn.clicked.connect(self._toggle_local_alarm_override)
+        self.fusion_alarm_btn.setStyleSheet("""
+            QPushButton {
+                color: #FFDC00;
+                background-color: rgba(34, 40, 50, 0.92);
+                border: 1px solid rgba(255, 210, 0, 0.72);
+                border-radius: 9px;
+                padding: 0 10px;
+                font-size: 14px;
+                font-weight: 700;
+            }
+            QPushButton:disabled {
+                color: rgba(210, 218, 224, 0.60);
+                background-color: rgba(44, 52, 62, 0.80);
+                border: 1px solid rgba(255, 210, 0, 0.28);
+            }
+            QPushButton:hover {
+                background-color: rgba(50, 58, 72, 0.96);
+                border: 1px solid rgba(255, 220, 0, 0.92);
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 220, 0, 0.18);
+            }
+        """)
+        self.fusion_alarm_btn.setVisible(True)
 
         # Bottom-right status (fire alarm, temperature) - always visible but transparent
         self.bottom_right_status = QWidget(self)
@@ -809,8 +923,7 @@ class VideoWidget(QWidget):
         bottom_right_layout.setContentsMargins(4, 2, 4, 2)
         bottom_right_layout.setSpacing(4)
 
-        self.fire_alarm_status = QLabel()
-        self.fire_alarm_status.setFixedSize(16, 16)
+        # Initialize alarm UI after fusion controls exist.
         self.update_fire_alarm(False)
         
         self.temp_label = QLabel("--°C")
@@ -833,21 +946,33 @@ class VideoWidget(QWidget):
         # that may reference a misspelled name 'temo_label'.
         self.temo_label = self.temp_label
 
-        bottom_right_layout.addWidget(self.fire_alarm_status)
         bottom_right_layout.addWidget(self.temp_label)
+        # Temperature is shown inside fusion cards; hide legacy corner label to avoid duplicate stray text.
+        self.temp_label.setVisible(False)
+        self.bottom_right_status.setVisible(False)
 
         # Position controls initially
         self.position_controls()
 
     def handle_maximize_state(self):
         """Show minimize button when maximized"""
+        self.maximized = True
+        self.is_minimized = False
         self.minimize_btn.setVisible(True)
         self.maximize_btn.setEnabled(False)
+        # Trigger layout update to adjust fusion panel to new size
+        self.position_controls()
+        self.update()
 
     def handle_minimize_state(self):
         """Hide minimize button when minimized"""
+        self.maximized = False
+        self.is_minimized = True
         self.minimize_btn.setVisible(False)
         self.maximize_btn.setEnabled(True)
+        # Trigger layout update to adjust fusion panel to new size
+        self.position_controls()
+        self.update()
 
     maximize_requested = pyqtSignal()
     minimize_requested = pyqtSignal()
@@ -891,6 +1016,16 @@ class VideoWidget(QWidget):
         """)
         return btn
 
+    def _ui_scale(self):
+        """Compute a bounded UI scale factor from current tile size."""
+        try:
+            w = max(1, int(self.width()))
+            h = max(1, int(self.height()))
+            base = min(w / 640.0, h / 360.0)
+            return max(0.65, min(1.35, float(base)))
+        except Exception:
+            return 1.0
+
     def position_controls(self):
         """Position control widgets correctly with theme-aware margins"""
         from PyQt5.QtWidgets import QApplication
@@ -903,30 +1038,45 @@ class VideoWidget(QWidget):
         tl_x = self.width() - self.top_left_controls.width() - margin
         self.top_left_controls.move(tl_x, margin)
 
-        # Right overlay controls stacked below the top controls
-        ro_y = margin + self.top_left_controls.height() + 6
-        available_h = max(1, self.height() - ro_y - margin)
-
+        # Integrated toolbar: centered at bottom edge to avoid collision with fusion banner at top.
         def _resize_overlay_buttons(size, spacing):
             self.right_overlay_controls.layout().setSpacing(spacing)
-            for btn in [
-                self.default_view_btn,
-                self.thermal_view_btn,
-                self.grid_view_btn,
-            ]:
+            for btn in [self.default_view_btn, self.thermal_view_btn, self.grid_view_btn]:
                 if btn:
                     btn.setFixedSize(size, size)
 
+        _resize_overlay_buttons(24, 4)
         self.right_overlay_controls.adjustSize()
-        if self.right_overlay_controls.height() > available_h:
-            _resize_overlay_buttons(22, 1)
+        if self.right_overlay_controls.width() > max(90, self.width() - (margin * 2)):
+            _resize_overlay_buttons(22, 2)
             self.right_overlay_controls.adjustSize()
-        if self.right_overlay_controls.height() > available_h:
-            _resize_overlay_buttons(20, 0)
+        if self.right_overlay_controls.width() > max(90, self.width() - (margin * 2)):
+            _resize_overlay_buttons(20, 1)
             self.right_overlay_controls.adjustSize()
 
-        ro_x = self.width() - self.right_overlay_controls.width() - margin
-        self.right_overlay_controls.move(ro_x, ro_y)
+        ro_x = int((self.width() - self.right_overlay_controls.width()) / 2)
+        ro_y = self.height() - self.right_overlay_controls.height() - margin
+        self.right_overlay_controls.move(max(margin, ro_x), max(margin, ro_y))
+
+        # Resolve drawer geometry once for both handle and action controls.
+        drawer_rect, drawer_collapsed = self._fusion_drawer_rect_for_layout()
+
+        # Fusion banner toggle centered at top of the strip
+        self.fusion_drawer_toggle_btn.adjustSize()
+        btn_w = self.fusion_drawer_toggle_btn.width()
+        btn_h = self.fusion_drawer_toggle_btn.height()
+        if drawer_collapsed:
+            fd_x = drawer_rect.center().x() - int(btn_w / 2)
+            fd_y = drawer_rect.y() + max(1, int((drawer_rect.height() - btn_h) / 2))
+        else:
+            fd_x = drawer_rect.center().x() - int(btn_w / 2)
+            fd_y = drawer_rect.y() - int(btn_h * 0.45)
+        fd_x = max(0, min(fd_x, max(0, self.width() - btn_w)))
+        fd_y = max(margin, min(fd_y, max(margin, self.height() - btn_h - margin)))
+        self.fusion_drawer_toggle_btn.move(fd_x, fd_y)
+
+        # Action controls inside fusion banner
+        self._position_action_controls()
 
         # Bottom-right status
         self.bottom_right_status.adjustSize()
@@ -978,6 +1128,62 @@ class VideoWidget(QWidget):
     def mouseMoveEvent(self, event):
         """Handle mouse move without forcing repaints to avoid flicker."""
         super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        """Claim focus on click so D/T/# hotkeys reliably target this tile."""
+        try:
+            if event.button() == Qt.LeftButton:
+                self.setFocus(Qt.MouseFocusReason)
+        except Exception:
+            pass
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event):
+        """Reveal local mode toolbar when operator focuses this feed."""
+        if hasattr(self, 'right_overlay_controls'):
+            self.right_overlay_controls.setVisible(True)
+            self.right_overlay_controls.raise_()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Hide local mode toolbar to reduce visual clutter."""
+        if hasattr(self, 'right_overlay_controls'):
+            self.right_overlay_controls.setVisible(False)
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event):
+        """Fast operator shortcuts for display modes: D, T, and #."""
+        try:
+            key = int(event.key())
+            text = (event.text() or "").strip()
+            if key == Qt.Key_D:
+                self._activate_default_view()
+                event.accept()
+                return
+            if key == Qt.Key_T:
+                self._activate_thermal_view()
+                event.accept()
+                return
+            if text == "#" or key in (Qt.Key_NumberSign,):
+                self._activate_grid_view()
+                event.accept()
+                return
+        except Exception:
+            pass
+        super().keyPressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        """Double-click the fusion banner area to collapse/expand it quickly."""
+        try:
+            if event.button() == Qt.LeftButton and bool(self.show_fusion_overlay):
+                drawer_rect, _ = self._fusion_drawer_rect_for_layout()
+                if drawer_rect.contains(event.pos()):
+                    self._toggle_fusion_drawer()
+                    event.accept()
+                    return
+        except Exception:
+            pass
+        super().mouseDoubleClickEvent(event)
 
     def _start_worker_timer(self):
         """Slot to safely start the worker's timer from main thread"""
@@ -1085,32 +1291,48 @@ class VideoWidget(QWidget):
     def _apply_video_label_style(self):
         """Apply base style to video label."""
         self.video_label.setStyleSheet(
-            "QLabel { background-color: #000000; border: none; }"
+            "QLabel { background-color: #04080c; border: none; }"
         )
 
     def _apply_tile_border(self, border_color=None):
         """Apply optional detection border to the tile container."""
+        alarm_color = str(getattr(self, '_alarm_highlight_color', '#ff5252')).lower()
+        border_color_norm = str(border_color or "").lower()
         if border_color:
             border = f"{self._tile_border_px}px solid {border_color}"
             self._tile_border_inset = self._tile_border_px
+            bg_color = "#1a0d10" if border_color_norm == alarm_color else "#121417"
         else:
-            border = "none"
-            self._tile_border_inset = 0
+            border = "1px solid rgba(74, 114, 138, 0.55)"
+            self._tile_border_inset = 1
+            bg_color = "#121417"
         self.setStyleSheet(
-            f"QWidget#videoTile {{ border: {border}; }}"
+            f"QWidget#videoTile {{ border: {border}; background-color: {bg_color}; }}"
         )
         self._update_video_label_geometry()
 
     def _set_detection_highlight(self, color):
         """Highlight the tile briefly when a detection is received."""
+        # Alarm highlight takes precedence over detection colors.
+        if bool(getattr(self, 'alarm_active', False)):
+            color = getattr(self, '_alarm_highlight_color', '#ff5252')
         self._apply_tile_border(color)
         self._apply_detection_overlay(color)
         self._detection_highlight_timer.start(self._detection_highlight_ms)
 
     def _clear_detection_highlight(self):
         """Clear detection highlight border."""
-        self._apply_tile_border()
-        self._clear_detection_overlay()
+        self._refresh_tile_highlight()
+
+    def _refresh_tile_highlight(self):
+        """Apply persistent tile highlight for alarm state, otherwise restore default style."""
+        if bool(getattr(self, 'alarm_active', False)):
+            color = getattr(self, '_alarm_highlight_color', '#ff5252')
+            self._apply_tile_border(color)
+            self._apply_detection_overlay(color)
+        else:
+            self._apply_tile_border()
+            self._clear_detection_overlay()
 
     def _update_video_label_geometry(self, size=None):
         """Keep the video label inset when a border is shown."""
@@ -1142,6 +1364,8 @@ class VideoWidget(QWidget):
         self.detection_overlay.raise_()
         self.top_left_controls.raise_()
         self.right_overlay_controls.raise_()
+        self.fusion_drawer_toggle_btn.raise_()
+        self.fusion_alarm_btn.raise_()
         self.bottom_right_status.raise_()
 
     def _clear_detection_overlay(self):
@@ -1154,8 +1378,10 @@ class VideoWidget(QWidget):
             from error_logger import get_error_logger
             get_error_logger().log(self.name, "Null pixmap received")
             self.last_error_message = "Null pixmap received"
-            self.video_label.setText("No video feed\n" + self.rtsp_url)
-            self.video_label.setStyleSheet("color: yellow; background-color: black; padding: 5px;")
+            self._render_no_video_fallback()
+            if not (self._last_thermal_matrix is not None or self.fusion_data):
+                self.video_label.setText("No video feed\n" + self.rtsp_url)
+                self.video_label.setStyleSheet("color: yellow; background-color: black; padding: 5px;")
             return
         try:
             # Freeze frame on alarm if enabled
@@ -1182,24 +1408,30 @@ class VideoWidget(QWidget):
             if self.display_mode == "grid" and self._last_thermal_matrix is not None:
                 grid_pixmap = self._build_temperature_grid_pixmap(self._last_thermal_matrix)
                 if grid_pixmap:
+                    self._last_base_pixmap = grid_pixmap
                     self.video_label.setPixmap(grid_pixmap)
                     self._redraw_with_grid()
                 else:
+                    self._last_base_pixmap = scaled_video
                     self.video_label.setPixmap(scaled_video)
             elif self.display_mode == "thermal" and self._last_thermal_matrix is not None:
                 thermal_pixmap = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
                 if thermal_pixmap:
+                    self._last_base_pixmap = thermal_pixmap
                     self.video_label.setPixmap(thermal_pixmap)
                     self._redraw_with_grid()
                 else:
+                    self._last_base_pixmap = scaled_video
                     self.video_label.setPixmap(scaled_video)
-            elif self.show_fusion_overlay and self.fusion_data:
+            elif self.show_fusion_overlay:
                 # Default camera view with fusion overlay
                 overlay_pixmap = self._overlay_detection_boxes(scaled_video)
+                self._last_base_pixmap = overlay_pixmap
                 self.video_label.setPixmap(overlay_pixmap)
                 self._redraw_with_grid()
             else:
                 overlay_pixmap = self._overlay_detection_boxes(scaled_video)
+                self._last_base_pixmap = overlay_pixmap
                 self.video_label.setPixmap(overlay_pixmap)
             
             # Analyze frame luminance to adjust control colors for contrast
@@ -1266,33 +1498,24 @@ class VideoWidget(QWidget):
         self.video_label.setStyleSheet("color: red; background-color: black; padding: 5px;")
 
     def contextMenuEvent(self, event):
-        from PyQt5.QtWidgets import QMenu, QApplication
-        menu = QMenu(self)
-        if self.last_error_message:
-            menu.addAction("Copy Error Text")
-        menu.addAction("Open Error Log")
-        action = menu.exec_(event.globalPos())
-        if not action:
-            return
-        if action.text() == "Copy Error Text" and self.last_error_message:
-            QApplication.clipboard().setText(self.last_error_message)
-        elif action.text() == "Open Error Log":
-            mw = self.window()
-            if hasattr(mw, 'show_error_log_dialog'):
-                mw.show_error_log_dialog()
+        """Disable per-tile context menu to prevent white popup overlays."""
+        event.accept()
 
     def handle_connection_status(self, connected):
         """Update connection status display"""
+        self._rtsp_connected = bool(connected)
         if connected:
             self.video_label.setText("")
             self.video_label.setStyleSheet("background-color: black;")
         else:
-            self.video_label.setText("Reconnecting...\n" + self.rtsp_url)
-            self.video_label.setStyleSheet("""
-                color: yellow; 
-                background-color: black; 
-                padding: 5px;
-            """)
+            self._render_no_video_fallback()
+            if not (self._last_thermal_matrix is not None or self.fusion_data):
+                self.video_label.setText("Reconnecting...\n" + self.rtsp_url)
+                self.video_label.setStyleSheet("""
+                    color: yellow; 
+                    background-color: black; 
+                    padding: 5px;
+                """)
 
     def update_sensor_display(self, data):
         """Update UI with new sensor data"""
@@ -1302,215 +1525,298 @@ class VideoWidget(QWidget):
             
             # Update fire alarm if available
             if 'fire_alarm' in data:
-                self.update_fire_alarm(data['fire_alarm'])
+                self.update_fire_alarm(data['fire_alarm'], source="remote")
 
 
-    def update_fire_alarm(self, alarm_active):
+    def update_fire_alarm(self, alarm_active, source="remote"):
         """Update fire alarm indicator with theme-aware styling"""
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
-        
-        self.alarm_active = alarm_active  # Store alarm state
-        
-        if alarm_active:
-            self.fire_alarm_status.setObjectName("led_offline")  # Red LED
-            self.fire_alarm_status.setStyleSheet("""
-                QLabel {
-                    background-color: #ff5252;
-                    border-radius: 8px;
-                    border: 2px solid #ffffff;
-                    min-width: 16px;
-                    min-height: 16px;
-                    max-width: 16px;
-                    max-height: 16px;
-                }
-            """)
+        was_alarm_active = bool(getattr(self, 'alarm_active', False))
+
+        if source == "manual":
+            self._manual_alarm_override = bool(alarm_active)
+            effective_alarm = bool(alarm_active)
         else:
-            self.fire_alarm_status.setObjectName("led_online")  # Green LED
-            self.fire_alarm_status.setStyleSheet("""
-                QLabel {
-                    background-color: #69f0ae;
-                    border-radius: 8px;
-                    border: 2px solid rgba(105, 240, 174, 0.5);
-                    min-width: 16px;
-                    min-height: 16px;
-                    max-width: 16px;
-                    max-height: 16px;
-                }
-            """)
+            self._remote_alarm_active = bool(alarm_active)
+            if self._manual_alarm_override is not None:
+                effective_alarm = bool(self._manual_alarm_override)
+            else:
+                effective_alarm = self._remote_alarm_active
+
+        self.alarm_active = effective_alarm  # Store currently rendered alarm state
+
+        # Alarm clear always resets local silence latch.
+        if not effective_alarm:
+            self._alarm_silenced = False
+
+        if self._manual_alarm_override is None:
+            self.fusion_alarm_btn.setToolTip("Sensor-driven alarm state. Click to toggle demo override")
+        else:
+            self.fusion_alarm_btn.setToolTip("Demo override active. Click to return to sensor-driven state")
         
         # Update temperature color to sync with alarm state
         self._update_temp_color()
+        if effective_alarm and not was_alarm_active:
+            self._ack_count = 0
+            self.alarm_acknowledged = False
+        if not effective_alarm:
+            self.set_alarm_acknowledged(False)
+            self._manual_action_state = 'normal'
+            self._ack_count = 0
+        self._sync_alarm_ack_button()
+        self._update_action_pill_visual()
+        self._refresh_tile_highlight()
+        self.position_controls()
+
+    def _toggle_local_alarm_override(self):
+        """Tactical single-button flow: EMERGENCY -> SILENCE (visual threat remains)."""
+        if bool(getattr(self, 'alarm_active', False)):
+            # Active alarm click silences audible channel but keeps visual threat active.
+            if not bool(getattr(self, '_alarm_silenced', False)):
+                self.alarm_ack_requested.emit(str(self.loc_id))
+                self._alarm_silenced = True
+                self._manual_action_state = 'silenced'
+        else:
+            # Secure click raises emergency alarm.
+            self._alarm_silenced = False
+            self._manual_action_state = 'raised'
+            self.update_fire_alarm(True, source="manual")
+            self.alarm_raise_requested.emit(str(self.loc_id))
+        self._update_action_pill_visual()
+        self._sync_alarm_ack_button()
+
+    def _emit_alarm_ack(self):
+        """Emit an ACK request for this tile/device."""
+        if not bool(getattr(self, 'alarm_active', False)):
+            return
+        self.alarm_ack_requested.emit(str(self.loc_id))
+        self._ack_count = int(getattr(self, '_ack_count', 0) or 0) + 1
+        self.set_alarm_acknowledged(True)
+        self._sync_alarm_ack_button()
+        self._update_action_pill_visual()
+
+    def set_alarm_acknowledged(self, acknowledged):
+        """Update UI ACK state for the active alarm on this tile."""
+        self.alarm_acknowledged = bool(acknowledged)
+        self._sync_alarm_ack_button()
+
+    def _sync_alarm_ack_button(self):
+        if not hasattr(self, 'fusion_alarm_btn'):
+            return
+        should_show = bool(self.show_fusion_overlay) and (not bool(getattr(self, 'fusion_drawer_collapsed', False)))
+        self.fusion_alarm_btn.setVisible(should_show)
+        if not should_show:
+            return
+        self.fusion_alarm_btn.setEnabled(True)
+
+    def _update_action_pill_visual(self):
+        if not hasattr(self, 'fusion_alarm_btn'):
+            return
+        from math import sin
+        from time import time as now_time
+        label = 'SILENCED' if (self.alarm_active and bool(getattr(self, '_alarm_silenced', False))) else ('SILENCE' if self.alarm_active else 'EMERGENCY')
+
+        if self.alarm_active:
+            pulse_alpha = int(156 + 76 * ((sin(now_time() * 7.0) + 1.0) * 0.5))
+            self.fusion_alarm_btn.setStyleSheet("""
+                QPushButton {
+                    color: #ffffff;
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 rgba(68, 0, 0, 0.94),
+                        stop:0.35 rgba(88, 0, 0, 0.94),
+                        stop:0.5 rgba(110, 12, 12, 0.94),
+                        stop:0.65 rgba(88, 0, 0, 0.94),
+                        stop:1 rgba(68, 0, 0, 0.94));
+                    border: 1px solid rgba(255, 0, 0, %d);
+                    border-radius: 9px;
+                    padding: 0 10px;
+                    font-size: 14px;
+                    font-weight: 700;
+                    font-family: 'Roboto Mono';
+                }
+                QPushButton:hover {
+                    background-color: rgba(110, 0, 0, 0.96);
+                }
+            """ % pulse_alpha)
+        else:
+            self.fusion_alarm_btn.setStyleSheet("""
+                QPushButton {
+                    color: #FFD700;
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 rgba(32, 36, 46, 0.94),
+                        stop:0.33 rgba(40, 44, 56, 0.94),
+                        stop:0.5 rgba(56, 62, 76, 0.94),
+                        stop:0.66 rgba(40, 44, 56, 0.94),
+                        stop:1 rgba(32, 36, 46, 0.94));
+                    border: 1px solid rgba(255, 210, 0, 0.82);
+                    border-radius: 9px;
+                    padding: 0 10px;
+                    font-size: 14px;
+                    font-weight: 700;
+                    font-family: 'Roboto Mono';
+                }
+                QPushButton:hover {
+                    background-color: rgba(48, 54, 66, 0.96);
+                }
+            """)
+        self.fusion_alarm_btn.setText(label)
+        if self.alarm_active:
+            self.fusion_alarm_btn.setToolTip("Alarm active. Click SILENCE to mute audible alarm while visual threat stays active")
+        else:
+            self.fusion_alarm_btn.setToolTip("SECURE state. Click EMERGENCY to trigger alarm")
+
+    def _position_action_controls(self):
+        if not hasattr(self, 'fusion_alarm_btn'):
+            return
+        card = getattr(self, '_action_card_rect', None)
+        expanded = bool(self.show_fusion_overlay) and (not bool(getattr(self, 'fusion_drawer_collapsed', False)))
+        if (not expanded) or (card is None):
+            self.fusion_alarm_btn.setVisible(False)
+            return
+
+        scale = self._ui_scale()
+        pad_x = max(6, int(8 * scale))
+        top_y = card.y() + max(24, int(26 * scale))
+        available_w = max(60, card.width() - (2 * pad_x))
+
+        compact = bool(getattr(self, 'is_minimized', False)) or card.width() < int(155 * scale)
+        btn_h = max(24, min(34, int(card.height() * (0.30 if compact else 0.26))))
+        self.fusion_alarm_btn.setFixedHeight(btn_h)
+
+        if compact:
+            alarm_w = max(56, int(available_w * 0.94))
+            row_y = min(card.bottom() - btn_h - 2, top_y + max(2, int(2 * scale)))
+            self.fusion_alarm_btn.setFixedWidth(alarm_w)
+            self.fusion_alarm_btn.move(card.x() + pad_x, row_y)
+        else:
+            # Keep Raise Alarm centered so painted Normal/Ack rows can sit above/below.
+            alarm_w = max(92, available_w)
+            self.fusion_alarm_btn.setFixedWidth(alarm_w)
+            row1_y = card.y() + int((card.height() - btn_h) * 0.52)
+            row1_y = max(top_y, min(card.bottom() - btn_h - 2, row1_y))
+            x = card.x() + pad_x
+            self.fusion_alarm_btn.move(x, row1_y)
+
+        self.fusion_alarm_btn.setVisible(True)
+        self.fusion_alarm_btn.raise_()
+
+    def _fusion_drawer_rect_for_layout(self):
+        scale = self._ui_scale()
+        width = max(1, self.width())
+        height = max(1, self.height())
+        margin = int(8 * scale)
+        collapsed = bool(getattr(self, 'fusion_drawer_collapsed', False))
+        mode_gain = 1.12 if bool(getattr(self, 'maximized', False)) else (0.90 if bool(getattr(self, 'is_minimized', False)) else 1.0)
+        strip_h = max(64, int(108 * scale * mode_gain))
+        strip_h = min(strip_h, max(64, int(height * 0.36)))
+        strip_w = max(140, width - (2 * margin))
+        if collapsed:
+            rail_w = max(138, int(196 * scale * (1.06 if bool(getattr(self, 'maximized', False)) else 1.0)))
+            rail_h = max(30, int(38 * scale))
+            return QRect(margin, margin, rail_w, rail_h), collapsed
+        return QRect(margin, margin, strip_w, strip_h), collapsed
 
     def set_fusion_data(self, fusion_data):
         """Set fusion data for overlay display."""
+        import time
         self.fusion_data = fusion_data
-        # Trigger redraw if we have a current frame and grid view is OFF
-        if not self.thermal_grid_view_enabled and self.video_label.pixmap() and not self.video_label.pixmap().isNull():
+        if isinstance(fusion_data, dict):
+            self._fusion_last_packet_ts = time.time()
+        self._record_fusion_trends(fusion_data)
+        # Trigger redraw whether or not RTSP frame is currently available.
+        if self.video_label.pixmap() and not self.video_label.pixmap().isNull():
             self._redraw_with_grid()
+        elif self.show_fusion_overlay:
+            self._render_no_video_fallback()
+
+    def _expire_stale_sensor_overlay(self):
+        """Clear stale fusion/thermal state when no fresh packets arrive."""
+        try:
+            import time
+            now = time.time()
+            timeout_s = float(getattr(self, '_sensor_stale_timeout_s', 3.0) or 3.0)
+
+            fusion_ts = float(getattr(self, '_fusion_last_packet_ts', 0.0) or 0.0)
+            thermal_ts = float(getattr(self, '_thermal_last_packet_ts', 0.0) or 0.0)
+
+            stale_fusion = bool(self.fusion_data) and fusion_ts > 0.0 and (now - fusion_ts) > timeout_s
+            stale_thermal = self._last_thermal_matrix is not None and thermal_ts > 0.0 and (now - thermal_ts) > timeout_s
+
+            if stale_fusion:
+                self.fusion_data = None
+                self._fusion_trends = {}
+                # Reflect no-active-sensor state in alarm/ack widgets.
+                self._remote_alarm_active = False
+                self.update_fire_alarm(False, source="remote")
+
+            if stale_thermal:
+                self._last_thermal_matrix = None
+                self._cached_thermal_overlay = None
+                self._cached_grid_pixmap = None
+                self._cached_grid_matrix_sig = None
+        except Exception:
+            pass
+
+    def _record_fusion_trends(self, fusion_data):
+        if not isinstance(fusion_data, dict):
+            return
+        self._append_trend_value('accuracy', float(fusion_data.get('confidence', 0.0) or 0.0))
+        for trend_key, field_key in (
+            ('thermal', 'thermal_max'),
+            ('gas', 'gas_ppm'),
+            ('smoke', 'smoke_level'),
+            ('flame', 'flame_raw'),
+        ):
+            value = fusion_data.get(field_key)
+            if value is not None:
+                self._append_trend_value(trend_key, float(value or 0.0))
+
+    def _append_trend_value(self, key, value, max_len=18):
+        if not hasattr(self, '_fusion_trends') or not isinstance(getattr(self, '_fusion_trends', None), dict):
+            self._fusion_trends = {}
+        series = self._fusion_trends.setdefault(str(key), [])
+        series.append(float(value))
+        if len(series) > int(max_len):
+            del series[0:len(series) - int(max_len)]
+
+    def _trend_direction(self, key):
+        series = (getattr(self, '_fusion_trends', {}) or {}).get(str(key), [])
+        if len(series) < 2:
+            return '='
+        delta = float(series[-1]) - float(series[-2])
+        if delta > 0:
+            return '^'
+        if delta < 0:
+            return 'v'
+        return '='
+
+    def _draw_sparkline(self, painter, rect, key, color):
+        try:
+            from PyQt5.QtGui import QPen
+            from PyQt5.QtCore import QPointF
+            series = (getattr(self, '_fusion_trends', {}) or {}).get(str(key), [])
+            if len(series) < 2:
+                return
+            mn = min(series)
+            mx = max(series)
+            span = (mx - mn) if mx != mn else 1.0
+            step = rect.width() / max(1, (len(series) - 1))
+            pts = []
+            for idx, val in enumerate(series):
+                x = rect.x() + (idx * step)
+                norm = (float(val) - mn) / span
+                y = rect.y() + rect.height() - (norm * rect.height())
+                pts.append(QPointF(x, y))
+            painter.setPen(QPen(color, 1))
+            for i in range(1, len(pts)):
+                painter.drawLine(pts[i - 1], pts[i])
+        except Exception:
+            pass
     
     def _draw_fusion_overlay(self, painter, width, height):
-        """Draw fusion data overlay on the frame."""
-        try:
-            from PyQt5.QtGui import QFont, QColor, QBrush, QPen
-            from PyQt5.QtCore import Qt, QRect
-            
-            # Adaptive sizing based on tile dimensions
-            # Scale panel size based on available space
-            scale_factor = min(width / 640.0, height / 480.0)  # Assume 640x480 as baseline
-            scale_factor = max(0.5, min(scale_factor, 1.5))  # Clamp between 0.5x and 1.5x
-            
-            # Semi-transparent background for overlay panel with adaptive sizing
-            panel_height = int(180 * scale_factor)
-            panel_width = int(320 * scale_factor)
-            margin = int(10 * scale_factor)
-            panel_rect = QRect(margin, height - panel_height - margin, panel_width, panel_height)
-            painter.fillRect(panel_rect, QColor(0, 0, 0, 200))
-            
-            # Border
-            border_width = max(1, int(2 * scale_factor))
-            painter.setPen(QPen(QColor(255, 255, 255, 180), border_width))
-            painter.drawRect(panel_rect)
-            
-            # Title with adaptive font size
-            title_font_size = max(8, int(12 * scale_factor))
-            font_title = QFont("Arial", title_font_size, QFont.Bold)
-            painter.setFont(font_title)
-            painter.setPen(QColor(255, 255, 255))
-            title_x = panel_rect.x() + int(10 * scale_factor)
-            title_y = panel_rect.y() + int(20 * scale_factor)
-            painter.drawText(title_x, title_y, "Multi-Sensor Fusion")
-            
-            # Alarm status with adaptive sizing
-            alarm_status = "🔥 ALARM ACTIVE" if self.fusion_data.get('alarm') else "✓ Normal"
-            alarm_color = QColor(255, 0, 0) if self.fusion_data.get('alarm') else QColor(0, 255, 0)
-            status_font_size = max(8, int(11 * scale_factor))
-            font_status = QFont("Arial", status_font_size, QFont.Bold)
-            painter.setFont(font_status)
-            painter.setPen(alarm_color)
-            status_y = panel_rect.y() + int(45 * scale_factor)
-            painter.drawText(title_x, status_y, alarm_status)
-            
-            # Confidence/Accuracy with adaptive sizing
-            confidence = self.fusion_data.get('confidence', 0.0)
-            accuracy = min(100, int(confidence * 100))
-            painter.setPen(QColor(255, 255, 255))
-            data_font_size = max(7, int(10 * scale_factor))
-            font_data = QFont("Arial", data_font_size)
-            painter.setFont(font_data)
-            conf_y = panel_rect.y() + int(70 * scale_factor)
-            painter.drawText(title_x, conf_y, f"Prediction Accuracy: {accuracy}%")
-            
-            # Confidence bar with adaptive sizing
-            bar_width = int(280 * scale_factor)
-            bar_height = max(8, int(15 * scale_factor))
-            bar_x = panel_rect.x() + int(20 * scale_factor)
-            bar_y = panel_rect.y() + int(75 * scale_factor)
-            
-            # Background bar
-            painter.fillRect(bar_x, bar_y, bar_width, bar_height, QColor(60, 60, 60))
-            
-            # Confidence fill
-            fill_width = int(bar_width * confidence)
-            if confidence < 0.5:
-                bar_color = QColor(0, 255, 0)
-            elif confidence < 0.7:
-                bar_color = QColor(255, 255, 0)
-            else:
-                bar_color = QColor(255, 0, 0)
-            painter.fillRect(bar_x, bar_y, fill_width, bar_height, bar_color)
-            
-            # Active sources with adaptive sizing
-            sources = self.fusion_data.get('sources', [])
-            painter.setPen(QColor(255, 255, 255))
-            sensors_y = panel_rect.y() + int(110 * scale_factor)
-            painter.drawText(title_x, sensors_y, "Active Sensors:")
-            
-            y_offset = int(125 * scale_factor)
-            line_spacing = int(18 * scale_factor)
-            sensor_icons = {
-                'thermal': '🌡️ Thermal',
-                'gas': '💨 Gas',
-                'flame': '🔥 Flame',
-                'vision': '👁️ Vision'
-            }
-            
-            for source in sensor_icons:
-                color = QColor(0, 255, 0) if source in sources else QColor(100, 100, 100)
-                painter.setPen(color)
-                painter.drawText(panel_rect.x() + int(20 * scale_factor), panel_rect.y() + y_offset, sensor_icons[source])
-                y_offset += line_spacing
-            
-            # Hot cells count with adaptive sizing
-            hot_cells_count = len(self.fusion_data.get('hot_cells', []))
-            painter.setPen(QColor(255, 255, 0))
-            right_col_x = panel_rect.x() + int(180 * scale_factor)
-            painter.drawText(right_col_x, sensors_y, f"Hot Cells: {hot_cells_count}")
-            
-            # Sensor readings - Right column with adaptive sizing
-            reading_y = panel_rect.y() + int(110 * scale_factor)
-            reading_spacing = int(18 * scale_factor)
-            
-            # Thermal
-            if 'thermal_max' in self.fusion_data:
-                # thermal_max is already in Celsius (from fusion orchestrator)
-                temp_c = float(self.fusion_data['thermal_max'])
-                painter.setPen(QColor(255, 200, 0))
-                painter.drawText(right_col_x, reading_y, f"Thermal: {temp_c:.1f}°C")
-                reading_y += reading_spacing
-            
-            # Gas (ADC1)
-            if 'gas_ppm' in self.fusion_data:
-                gas_ppm = self.fusion_data['gas_ppm']
-                aqi = self.fusion_data.get('adc1_aqi', '')
-                painter.setPen(QColor(100, 255, 100))
-                if gas_ppm < 1000:
-                    painter.drawText(right_col_x, reading_y, f"Gas: {gas_ppm:.0f}PPM")
-                else:
-                    painter.drawText(right_col_x, reading_y, f"Gas: {gas_ppm/1000:.1f}K")
-                if aqi:
-                    painter.drawText(right_col_x, reading_y + int(12 * scale_factor), f"({aqi})")
-                    reading_y += int(12 * scale_factor)
-                reading_y += reading_spacing
-            
-            # ADC1 Raw
-            if 'adc1_raw' in self.fusion_data:
-                painter.setPen(QColor(150, 150, 150))
-                painter.drawText(right_col_x, reading_y, f"ADC1: {self.fusion_data['adc1_raw']}")
-                reading_y += reading_spacing
-            
-            # Smoke (ADC2)
-            if 'smoke_level' in self.fusion_data:
-                smoke = self.fusion_data['smoke_level']
-                smoke_color = QColor(255, 100, 100) if smoke > 50 else QColor(100, 200, 255)
-                painter.setPen(smoke_color)
-                painter.drawText(right_col_x, reading_y, f"Smoke: {smoke:.0f}%")
-                reading_y += reading_spacing
-            
-            # ADC2 Raw
-            if 'adc2_raw' in self.fusion_data:
-                painter.setPen(QColor(150, 150, 150))
-                painter.drawText(right_col_x, reading_y, f"ADC2: {self.fusion_data['adc2_raw']}")
-                reading_y += reading_spacing
-            
-            # Flame (MPY30)
-            if 'flame_raw' in self.fusion_data:
-                flame_active = self.fusion_data['flame_raw'] == 1
-                flame_color = QColor(255, 0, 0) if flame_active else QColor(100, 100, 100)
-                painter.setPen(flame_color)
-                flame_text = "FLAME!" if flame_active else "No Flame"
-                painter.drawText(right_col_x, reading_y, flame_text)
-                reading_y += reading_spacing
-
-            # Thermal render diagnostics
-            debug_font_size = max(6, int(8 * scale_factor))
-            painter.setFont(QFont("Arial", debug_font_size))
-            painter.setPen(QColor(120, 255, 255))
-            debug_y = panel_rect.y() + panel_rect.height() - max(6, int(8 * scale_factor))
-            painter.drawText(panel_rect.x() + int(8 * scale_factor), debug_y, str(getattr(self, '_thermal_debug_line', '')))
-            
-        except Exception as e:
-            print(f"Fusion overlay draw error: {e}")
+        """Delegate fusion banner rendering to util/fusionbanner.py."""
+        render_fusion_overlay(self, painter, width, height)
 
     def set_temperature(self, temp):
         """Set temperature display with current value and appropriate color."""
@@ -1599,9 +1905,14 @@ class VideoWidget(QWidget):
             mode = "default"
         self.display_mode = mode
         self.thermal_grid_view_enabled = (mode == "grid")
+        self.grid_view = (mode == "grid")
         self.show_fusion_overlay = True
         self._cached_thermal_overlay = None
         self._last_overlay_matrix_hash = None
+        try:
+            self._save_grid_pref(mode == "grid")
+        except Exception:
+            pass
         # Render immediately when switching modes to avoid waiting on next frame.
         try:
             if self._last_thermal_matrix is not None:
@@ -1645,6 +1956,25 @@ class VideoWidget(QWidget):
     def _activate_grid_view(self):
         """Select thermal numeric grid view with fusion overlay."""
         self.set_display_mode("grid")
+
+    def _sync_fusion_drawer_toggle(self):
+        if not hasattr(self, 'fusion_drawer_toggle_btn'):
+            return
+        collapsed = bool(getattr(self, 'fusion_drawer_collapsed', False))
+        self.fusion_drawer_toggle_btn.setText("▾" if collapsed else "▴")
+        self.fusion_drawer_toggle_btn.setToolTip(
+            "Bring down Fusion cards" if collapsed else "Move Fusion cards up"
+        )
+
+    def _toggle_fusion_drawer(self):
+        self.fusion_drawer_collapsed = not bool(getattr(self, 'fusion_drawer_collapsed', False))
+        self._sync_fusion_drawer_toggle()
+        self._sync_alarm_ack_button()
+        self.position_controls()
+        if self.video_label.pixmap() and not self.video_label.pixmap().isNull():
+            self._redraw_with_grid()
+        elif self.show_fusion_overlay:
+            self._render_no_video_fallback()
 
     def stop(self):
         """Safe thread cleanup"""
@@ -1786,7 +2116,14 @@ class VideoWidget(QWidget):
                 hover_color = "rgba(100, 220, 255, 0.9)"  # Brighter cyan
             
             # Update all control button styles
-            for btn in [self.minimize_btn, self.maximize_btn, self.default_view_btn, self.thermal_view_btn, self.grid_view_btn, self.reload_btn]:
+            for btn in [
+                self.minimize_btn,
+                self.maximize_btn,
+                self.default_view_btn,
+                self.thermal_view_btn,
+                self.grid_view_btn,
+                self.reload_btn,
+            ]:
                 if btn:
                     btn.setStyleSheet(f"""
                         QPushButton {{

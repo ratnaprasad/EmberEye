@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 import shutil
 import sys
+import json
 
 # Determine log directory - handle both normal Python and PyInstaller frozen apps
 if getattr(sys, 'frozen', False):
@@ -14,6 +15,8 @@ else:
 LOG_DIR = os.path.join(app_dir, 'logs')
 DEBUG_LOG = os.path.join(LOG_DIR, 'tcp_debug.log')
 ERROR_LOG = os.path.join(LOG_DIR, 'tcp_errors.log')
+DEVICE_TELEMETRY_LOG = os.path.join(LOG_DIR, 'device_telemetry.jsonl')
+DEVICE_AUDIT_LOG = os.path.join(LOG_DIR, 'device_audit.jsonl')
 
 # Ensure log directory exists
 try:
@@ -72,3 +75,31 @@ def log_error_packet(reason: str, raw: str, loc_id: str = None, location_id: str
     loc = loc_id or location_id or ''
     line = f"{ts}\t{loc}\tERROR\t{reason}\t{raw}"
     _write_line(ERROR_LOG, line)
+
+
+def log_device_telemetry(event: str, payload: dict):
+    """Append structured device telemetry to JSONL log with UTC timestamp."""
+    try:
+        record = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'event': str(event),
+            'payload': payload if isinstance(payload, dict) else {'value': payload},
+        }
+        _write_line(DEVICE_TELEMETRY_LOG, json.dumps(record, sort_keys=True, default=str))
+    except Exception:
+        # Never raise from runtime packet/dispatch paths.
+        pass
+
+
+def log_device_audit(event: str, payload: dict):
+    """Append device access audit events to JSONL log with UTC timestamp."""
+    try:
+        record = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'event': str(event),
+            'payload': payload if isinstance(payload, dict) else {'value': payload},
+        }
+        _write_line(DEVICE_AUDIT_LOG, json.dumps(record, sort_keys=True, default=str))
+    except Exception:
+        # Never raise from management paths.
+        pass

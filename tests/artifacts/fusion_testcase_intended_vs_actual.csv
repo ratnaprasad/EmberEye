@@ -1,0 +1,36 @@
+Test Case,Vision Score,Temp (°C),Smoke (%),Flame (%),Expected Alarm (Provided),Expected Alarm (Intended Rules),Actual Alarm (Current Logic),Provided vs Intended,Intended vs Actual,Intended Rule Path,Actual Reason,Description
+1,0.7,40.0,25.0,25.0,Y,Y,Y,PASS,PASS,independent_trigger,Smoke threshold exceeded: 25.0% >= 25.0%,Your example: smoke & flame above independent thresholds → alarm
+2,0.7,40.0,15.0,15.0,Y,Y,Y,PASS,PASS,vision>=0.70,Vision threshold met: Vision=0.70 >= 0.70,Vision alone triggers (≥0.70)
+3,0.69,55.0,15.0,15.0,Y,Y,Y,PASS,PASS,0.50<=vision<0.70 and temp>50 and flame>=10,"Vision band correlation: Vision=0.69, Thermal=55.0°C > 50, Flame=15.0% >= 10","Vision in range, temp hot, flame present (below independent)"
+4,0.69,55.0,15.0,5.0,N,N,N,PASS,PASS,0.50<=vision<0.70 but temp/flame condition failed,,"Vision in range, temp hot but flame too low"
+5,0.69,45.0,15.0,15.0,N,N,N,PASS,PASS,0.50<=vision<0.70 but temp/flame condition failed,,Vision in range but temp not hot enough
+6,0.4,55.0,15.0,15.0,Y,Y,Y,PASS,PASS,0.30<=vision<0.50 and temp>50 and flame>=10,"Vision band correlation: Vision=0.40, Thermal=55.0°C > 50, Flame=15.0% >= 10","Vision lower range, conditions met"
+7,0.4,55.0,15.0,5.0,N,N,N,PASS,PASS,0.30<=vision<0.50 but temp/flame condition failed,,"Vision lower range, flame insufficient"
+8,0.4,45.0,15.0,15.0,N,N,N,PASS,PASS,0.30<=vision<0.50 but temp/flame condition failed,,"Vision lower range, temp not hot"
+9,0.29,55.0,15.0,15.0,Y,Y,Y,PASS,PASS,vision<0.30 and temp>50 and flame>=10,"Vision low-band correlation: Vision=0.29, Thermal=55.0°C > 50, Flame=15.0% >= 10",Low vision but conditions met
+10,0.29,55.0,15.0,5.0,N,N,N,PASS,PASS,vision<0.30 and temp/flame condition failed,,"Low vision, flame insufficient"
+11,0.29,45.0,15.0,15.0,N,N,N,PASS,PASS,vision<0.30 and temp/flame condition failed,,"Low vision, temp not hot"
+12,0.7,65.0,0.0,0.0,Y,Y,Y,PASS,PASS,independent_trigger,Critical temperature: 65.0°C >= 60.0°C,Temp above independent threshold
+13,0.7,65.0,25.0,25.0,Y,Y,Y,PASS,PASS,independent_trigger,Critical temperature: 65.0°C >= 60.0°C,Multiple independent triggers
+14,0.5,65.0,0.0,0.0,Y,Y,Y,PASS,PASS,independent_trigger,Critical temperature: 65.0°C >= 60.0°C,"Temp trigger, vision irrelevant"
+15,0.5,55.0,25.0,0.0,Y,Y,Y,PASS,PASS,independent_trigger,Smoke threshold exceeded: 25.0% >= 25.0%,"Smoke trigger, vision irrelevant"
+16,0.5,55.0,0.0,25.0,Y,Y,Y,PASS,PASS,independent_trigger,Flame threshold exceeded: 25.0% >= 25.0%,Flame trigger
+17,0.5,55.0,15.0,15.0,Y,Y,Y,PASS,PASS,0.50<=vision<0.70 and temp>50 and flame>=10,"Vision band correlation: Vision=0.50, Thermal=55.0°C > 50, Flame=15.0% >= 10","No independent, vision-based triggers"
+18,0.5,55.0,15.0,5.0,N,N,N,PASS,PASS,0.50<=vision<0.70 but temp/flame condition failed,,"No independent, vision-based fails"
+19,0.3,55.0,15.0,15.0,Y,Y,Y,PASS,PASS,0.30<=vision<0.50 and temp>50 and flame>=10,"Vision band correlation: Vision=0.30, Thermal=55.0°C > 50, Flame=15.0% >= 10",Boundary at 0.3
+20,0.3,55.0,15.0,5.0,N,N,N,PASS,PASS,0.30<=vision<0.50 but temp/flame condition failed,,"Boundary at 0.3, flame low"
+21,0.29,60.0,15.0,15.0,Y,Y,Y,PASS,PASS,independent_trigger,Critical temperature: 60.0°C >= 60.0°C,Temp exactly at independent threshold
+22,0.69,50.0,15.0,15.0,N,N,N,PASS,PASS,0.50<=vision<0.70 but temp/flame condition failed,,Thermal boundary for vision (≤50)
+23,0.69,50.1,15.0,15.0,Y,Y,Y,PASS,PASS,0.50<=vision<0.70 and temp>50 and flame>=10,"Vision band correlation: Vision=0.69, Thermal=50.1°C > 50, Flame=15.0% >= 10",Slightly above 50 triggers vision
+24,0.7,50.0,19.0,19.0,Y,Y,Y,PASS,PASS,vision>=0.70,Vision threshold met: Vision=0.70 >= 0.70,Vision alone even with near-threshold sensors
+25,0.7,50.0,20.0,19.0,Y,Y,Y,PASS,PASS,independent_trigger,Vision threshold met: Vision=0.70 >= 0.70,Smoke at threshold triggers independent
+26,0.69,55.0,15.0,9.0,N,N,N,PASS,PASS,0.50<=vision<0.70 but temp/flame condition failed,,Flame boundary below intended 10% cutoff
+27,0.69,55.0,15.0,10.0,Y,Y,Y,PASS,PASS,0.50<=vision<0.70 and temp>50 and flame>=10,"Vision band correlation: Vision=0.69, Thermal=55.0°C > 50, Flame=10.0% >= 10",Flame boundary exactly intended 10% cutoff
+28,0.69,55.0,15.0,11.0,Y,Y,Y,PASS,PASS,0.50<=vision<0.70 and temp>50 and flame>=10,"Vision band correlation: Vision=0.69, Thermal=55.0°C > 50, Flame=11.0% >= 10",Flame boundary above intended 10% cutoff
+29,0.7,55.0,15.0,10.0,Y,Y,Y,PASS,PASS,vision>=0.70,Vision threshold met: Vision=0.70 >= 0.70,Vision boundary at 0.70 with supporting temp/flame
+30,0.5,55.0,15.0,10.0,Y,Y,Y,PASS,PASS,0.50<=vision<0.70 and temp>50 and flame>=10,"Vision band correlation: Vision=0.50, Thermal=55.0°C > 50, Flame=10.0% >= 10",Vision boundary at 0.50 with supporting temp/flame
+31,0.3,55.0,15.0,10.0,Y,Y,Y,PASS,PASS,0.30<=vision<0.50 and temp>50 and flame>=10,"Vision band correlation: Vision=0.30, Thermal=55.0°C > 50, Flame=10.0% >= 10",Vision boundary at 0.30 with supporting temp/flame
+32,0.69,50.0,15.0,10.0,N,N,N,PASS,PASS,0.50<=vision<0.70 but temp/flame condition failed,,Temp boundary at 50.0 with supporting vision/flame
+33,0.69,50.1,15.0,10.0,Y,Y,Y,PASS,PASS,0.50<=vision<0.70 and temp>50 and flame>=10,"Vision band correlation: Vision=0.69, Thermal=50.1°C > 50, Flame=10.0% >= 10",Temp boundary at 50.1 with supporting vision/flame
+34,0.3,45.0,25.0,0.0,Y,Y,Y,PASS,PASS,independent_trigger,Smoke threshold exceeded: 25.0% >= 25.0%,Smoke independent trigger even when vision/temp low
+35,0.5,45.0,30.0,9.0,Y,Y,Y,PASS,PASS,independent_trigger,Smoke threshold exceeded: 30.0% >= 25.0%,Smoke independent trigger with low flame

@@ -4,21 +4,29 @@
     ],
     "streams": [
         {
-            "loc_id": "demo_room",
-            "name": "Demo Room (Simulator)",
-            "url": "rtsp://localhost:8554/camera1",
+            "loc_id": "DemoRoom1",
+            "name": "Cam001",
+            "url": "0",
+            "group": "Default"
+        },
+        {
+            "loc_id": "Demo Room2",
+            "name": "Cam002",
+            "url": "0",
+            "group": "Default"
+        },
+        {
+            "loc_id": "Demo Room3",
+            "name": "Cam003",
+            "url": "0",
+            "group": "Default"
+        },
+        {
+            "loc_id": "Demo Room 4",
+            "name": "Cam004",
+            "url": "0",
             "group": "Default"
         }
     ],
-    "tcp_port": 4888,
-    "grafana_url": "http://localhost:3000",
-    "enable_grafana": false,
-    "thermal_calibration": {
-        "signed": true,
-        "scale": 0.01,
-        "offset": 0.0,
-        "description": "signed=true: interpret as two's complement. Raw values in centi-degrees. Offset is 0 because 27\u00b0C is built into the formula."
-    },
-    "thermal_use_eeprom": true,
-    "tcp_mode": "threaded"
+    "tcp_port": 5080
 }

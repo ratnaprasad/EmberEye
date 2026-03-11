@@ -70,6 +70,28 @@
 
 ## Build Commands
 
+### Phase D Release Gate (Required Before Production)
+
+```bash
+source .venv/bin/activate
+python tests/field/run_release_readiness_gate.py
+```
+
+Expected outcome:
+- `RELEASE_READINESS_DECISION: GO`
+- Report written to `tests/artifacts/release_readiness_report.json`
+
+Rollback drill:
+
+```bash
+source .venv/bin/activate
+python tests/field/run_rollback_drill.py --restart-cmd "bash start_studio.sh" --observe-seconds 15 --restore-original
+```
+
+Expected outcome:
+- `ROLLBACK_DRILL_DECISION: PASS`
+- Report written to `tests/artifacts/rollback_drill_report.json`
+
 ### EXE + ZIP (Recommended)
 
 ```powershell
