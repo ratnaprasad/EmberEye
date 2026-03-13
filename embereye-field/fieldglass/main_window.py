@@ -502,12 +502,15 @@ class BEMainWindow(QMainWindow):
         for widget in self.get_video_widgets():
             if getattr(widget, 'loc_id', None) == loc_id:
                 if not has_recent_sensor:
-                    # No fresh PFDS sensor input for this tile: clear stale sensor/fusion overlay.
+                    # No fresh PFDS sensor input for this tile.
+                    # Keep alarm latched until explicit ACK/Silence.
                     try:
                         if hasattr(widget, 'set_fusion_data'):
                             widget.set_fusion_data(None)
+                        self._handle_alarm_transition(loc_id, False, source='sensor_stale')
                         if hasattr(widget, 'update_fire_alarm'):
-                            widget.update_fire_alarm(False)
+                            effective_alarm = bool(self._alarm_state_by_loc_id.get(str(loc_id), False))
+                            widget.update_fire_alarm(effective_alarm)
                     except Exception:
                         pass
                     break
@@ -527,7 +530,8 @@ class BEMainWindow(QMainWindow):
                 if hasattr(widget, 'update_fire_alarm'):
                     try:
                         self._handle_alarm_transition(loc_id, bool(fusion_result.get('alarm')), source='vision_only')
-                        widget.update_fire_alarm(fusion_result['alarm'])
+                        effective_alarm = bool(self._alarm_state_by_loc_id.get(str(loc_id), bool(fusion_result.get('alarm'))))
+                        widget.update_fire_alarm(effective_alarm)
                         if hasattr(widget, 'set_alarm_acknowledged'):
                             acked = bool(self._alarm_ack_by_loc_id.get(str(loc_id), False))
                             widget.set_alarm_acknowledged(acked)
@@ -982,6 +986,13 @@ class BEMainWindow(QMainWindow):
 
         client_ip = self._normalize_loc_key(packet.get('client_ip'))
         serial = self._normalize_serial_key(packet.get('serial_number') or packet.get('serialno'))
+        if not serial:
+            # Some packet parsers populate loc_id with the hardware serial (e.g. EHWK005001)
+            # but may omit serial_number. Use loc_id as a safe serial fallback.
+            loc_token = self._normalize_serial_key(packet.get('loc_id'))
+            if loc_token and loc_token.upper().startswith('EHWK'):
+                serial = loc_token
+                packet['serial_number'] = serial
         if not serial and client_ip:
             serial = self._normalize_serial_key(self._serial_by_client_ip.get(client_ip))
             if serial:
@@ -1173,7 +1184,11 @@ class BEMainWindow(QMainWindow):
                 print(f"ACK state UI update failed for loc_id={key}: {e}")
 
     def _handle_alarm_transition(self, loc_id, alarm_active, source='fusion'):
-        """Track alarm transitions and send ALARM_ON once per active cycle."""
+        """Track alarm transitions and send ALARM_ON once per active cycle.
+
+        Alarm UI is latched until explicit ACK/Silence from operator.
+        Incident recording stops when live fusion clears.
+        """
         key = self._normalize_loc_key(loc_id)
         if not key:
             return
@@ -1181,18 +1196,31 @@ class BEMainWindow(QMainWindow):
         now = time.time()
         active = bool(alarm_active)
         prev_active = bool(self._alarm_state_by_loc_id.get(key, False))
-        self._alarm_state_by_loc_id[key] = active
 
         if not active:
+            # Stop capture when fusion clears, but keep the visible alarm latched
+            # until the operator explicitly acknowledges/silences it.
+            if prev_active:
+                self._finalize_incident_session(key, feedback='pending', acked=False, end_reason='fusion_clear')
+
+            if prev_active and not bool(self._alarm_ack_by_loc_id.get(key, False)):
+                self._alarm_state_by_loc_id[key] = True
+                return
+
+            self._alarm_state_by_loc_id[key] = False
             self._alarm_on_sent_by_loc_id[key] = False
             self._alarm_on_retry_ts_by_loc_id[key] = 0.0
             self._set_loc_alarm_ack_state(key, False)
             return
 
+        self._alarm_state_by_loc_id[key] = True
+
         if not prev_active:
             self._alarm_on_sent_by_loc_id[key] = False
             self._alarm_on_retry_ts_by_loc_id[key] = 0.0
             self._set_loc_alarm_ack_state(key, False)
+            self._start_incident_session(key, reason=source)
+        elif key not in self._active_incident_sessions:
             self._start_incident_session(key, reason=source)
 
         if self._alarm_on_sent_by_loc_id.get(key, False):
@@ -1228,7 +1256,7 @@ class BEMainWindow(QMainWindow):
         self._alarm_on_sent_by_loc_id[key] = False
         self._alarm_on_retry_ts_by_loc_id[key] = 0.0
         self._set_loc_alarm_ack_state(key, True)
-        self._finalize_incident_session(key, feedback='pending')
+        self._finalize_incident_session(key, feedback='pending', acked=True, end_reason='operator_ack')
         widget = self.video_widgets.get(key)
         if widget and hasattr(widget, 'update_fire_alarm'):
             try:
@@ -1420,6 +1448,7 @@ class BEMainWindow(QMainWindow):
         self._fusion_by_loc_id = {}
         self._fusion_ts_by_loc_id = {}
         self._sensor_last_packet_ts_by_loc_id = {}
+        self._last_thermal_matrix_by_loc_id = {}
         self._sensor_overlay_stale_timeout_s = float(self.config.get('sensor_overlay_stale_timeout_s', 5.0))
         self._alarm_state_by_loc_id = {}
         self._alarm_ack_by_loc_id = {}
@@ -1530,7 +1559,7 @@ class BEMainWindow(QMainWindow):
             print(f"Reusing existing TCP server on port {self.tcp_server_port}")
             self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} (reused)")
         else:
-            tcp_mode = self.config.get('tcp_mode', 'threaded')
+            tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
             try:
                 if tcp_mode == 'async':
                     from embereye.core.tcp_async_server import TCPAsyncSensorServer
@@ -1546,8 +1575,15 @@ class BEMainWindow(QMainWindow):
                     self.tcp_server = TCPAsyncSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
                     self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
                     if self.tcp_server:
-                        asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
+                        fut = asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
+                        fut.result(timeout=5)
                 else:
+                    # DEPRECATED: threaded mode causes IP-keyed identity collisions for
+                    # multi-device localhost setups (e.g. simulators). Set tcp_mode=async.
+                    log_server_error(
+                        "[DEPRECATED] tcp_mode='threaded' is retired. "
+                        "Switch stream_config.json tcp_mode to 'async' to prevent device routing failures."
+                    )
                     from embereye.core.tcp_sensor_server import TCPSensorServer
                     self.tcp_server = TCPSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
                     self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
@@ -1637,38 +1673,70 @@ class BEMainWindow(QMainWindow):
                     self._sensor_last_packet_ts_by_loc_id[str(loc_id)] = now_ts
                 # Route to specific widget by loc_id, or broadcast to all
                 target_widgets = [self.video_widgets.get(loc_id)] if loc_id and loc_id in self.video_widgets else self.get_video_widgets()
-                print(f"🔥 THERMAL FRAME: loc_id={loc_id}, widgets_available={len(self.video_widgets)}, target_widgets={len(target_widgets)}, matrix_shape={np.array(packet['matrix']).shape if packet['matrix'] else None}")
-                self._record_incident_thermal_frame(loc_id, packet.get('matrix'))
+                matrix = packet.get('matrix')
+                print(f"🔥 THERMAL FRAME: loc_id={loc_id}, widgets_available={len(self.video_widgets)}, target_widgets={len(target_widgets)}, matrix_shape={np.array(matrix).shape if matrix else None}")
+                self._record_incident_thermal_frame(loc_id, matrix)
                 for widget in target_widgets:
                     if widget and hasattr(widget, 'set_thermal_overlay'):
                         try:
-                            widget.set_thermal_overlay(packet['matrix'])
+                            widget.set_thermal_overlay(matrix)
                             print(f"  ✅ Thermal overlay set on widget")
                         except Exception as e:
                             print(f"Overlay error: {e}")
+                # Feed the thermal matrix into fusion so thermal_max is populated
+                # on the banner card. Without this, _run_fusion is only called by
+                # sensor packets and thermal_max stays 0.0 permanently.
+                if matrix is not None:
+                    if loc_id:
+                        self._last_thermal_matrix_by_loc_id[str(loc_id)] = matrix
+                    self._last_thermal_matrix_by_loc_id['_broadcast'] = matrix
+                    fusion_args['thermal_matrix'] = matrix
             elif packet.get('type') == 'sensor':
                 if loc_id:
                     self._sensor_last_packet_ts_by_loc_id[str(loc_id)] = now_ts
                 self._record_incident_sensor_packet(loc_id, packet)
+                # Keep thermal context during sensor packets so banner thermal card
+                # does not get overwritten with thermal_max=0.0 between frame packets.
+                try:
+                    widget_for_loc = self.video_widgets.get(loc_id) if loc_id else None
+                    latest_matrix = getattr(widget_for_loc, '_last_thermal_matrix', None) if widget_for_loc else None
+                    if latest_matrix is None and loc_id:
+                        latest_matrix = self._last_thermal_matrix_by_loc_id.get(str(loc_id))
+                    if latest_matrix is None:
+                        latest_matrix = self._last_thermal_matrix_by_loc_id.get('_broadcast')
+                    if latest_matrix is not None and 'thermal_matrix' not in fusion_args:
+                        fusion_args['thermal_matrix'] = latest_matrix
+                except Exception:
+                    pass
                 # Store raw sensor values
                 adc1 = packet.get('ADC1')
                 adc2 = packet.get('ADC2')
-                mpy30 = packet.get('MPY30')
+                mpy30 = packet.get('MPY30', packet.get('MPY_IN'))
+                gas_ppm_raw = packet.get('GAS_PPM')
                 
                 # ADC1 = Smoke Sensor (MQ-2/MQ-135) - 12-bit ADC (0-4095)
-                if adc1:
+                if adc1 is not None:
                     try:
                         # Calculate smoke percentage: (adc1 * 100) / 4095
                         smoke_pct = (adc1 * 100.0) / 4095.0
                         fusion_args['adc1_raw'] = adc1
                         fusion_args['smoke_pct'] = smoke_pct
                         fusion_args['smoke_level'] = smoke_pct
+                        # Keep GAS card fed from the same MQ channel when explicit gas ppm is unavailable.
+                        if gas_ppm_raw is None:
+                            fusion_args['gas_ppm'] = (adc1 * 1500.0) / 4095.0
                         print(f"Smoke (ADC1): {adc1} -> {smoke_pct:.1f}%")
                     except Exception as e:
                         print(f"Smoke calculation error: {e}")
+
+                if gas_ppm_raw is not None:
+                    try:
+                        fusion_args['gas_ppm'] = float(gas_ppm_raw)
+                    except Exception:
+                        pass
                 
                 # ADC2 = Flame Sensor (Analog) - 12-bit ADC (0-4095)
-                if adc2:
+                if adc2 is not None:
                     try:
                         # Calculate flame percentage: (adc2 * 100) / 4095
                         flame_pct = (adc2 * 100.0) / 4095.0
@@ -1714,7 +1782,8 @@ class BEMainWindow(QMainWindow):
                         # Update fire alarm status
                         if hasattr(widget, 'update_fire_alarm'):
                             try:
-                                widget.update_fire_alarm(fusion_result['alarm'])
+                                effective_alarm = bool(self._alarm_state_by_loc_id.get(str(widget_loc_id), bool(fusion_result.get('alarm'))))
+                                widget.update_fire_alarm(effective_alarm)
                                 if hasattr(widget, 'set_alarm_acknowledged'):
                                     acked = bool(self._alarm_ack_by_loc_id.get(str(widget_loc_id), False))
                                     widget.set_alarm_acknowledged(acked)
@@ -1733,7 +1802,30 @@ class BEMainWindow(QMainWindow):
                         # Update fusion data overlay
                         if hasattr(widget, 'set_fusion_data'):
                             try:
-                                widget.set_fusion_data(fusion_result)
+                                widget_fusion = dict(fusion_result or {})
+                                widget_thermal = float(widget_fusion.get('thermal_max', 0.0) or 0.0)
+                                if widget_thermal <= 0.0:
+                                    try:
+                                        latest_matrix = getattr(widget, '_last_thermal_matrix', None)
+                                        if latest_matrix is None and widget_loc_id:
+                                            latest_matrix = self._last_thermal_matrix_by_loc_id.get(str(widget_loc_id))
+                                        if latest_matrix is None:
+                                            latest_matrix = self._last_thermal_matrix_by_loc_id.get('_broadcast')
+                                        if latest_matrix is not None:
+                                            arr = np.array(latest_matrix, dtype=float)
+                                            if arr.size > 0:
+                                                widget_thermal = float(np.max(arr))
+                                    except Exception:
+                                        pass
+                                if widget_thermal <= 0.0:
+                                    try:
+                                        widget_thermal = float(getattr(widget, 'current_temp', 0.0) or 0.0)
+                                    except Exception:
+                                        pass
+                                if widget_thermal > 0.0:
+                                    widget_fusion['thermal_max'] = widget_thermal
+
+                                widget.set_fusion_data(widget_fusion)
                             except Exception as e:
                                 print(f"Fusion data update error: {e}")
                         self._record_incident_widget_snapshot(widget_loc_id, widget)
@@ -3650,6 +3742,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             'reason': str(reason or 'alarm'),
             'start_ts': time.time(),
             'end_ts': None,
+            'end_reason': None,
             'acked': False,
             'feedback': 'pending',
             'dir': session_dir,
@@ -3686,6 +3779,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 'reason': session.get('reason'),
                 'start_ts': session.get('start_ts'),
                 'end_ts': session.get('end_ts'),
+                'end_reason': session.get('end_reason'),
                 'acked': bool(session.get('acked')),
                 'feedback': session.get('feedback', 'pending'),
                 'counts': {
@@ -3951,7 +4045,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self._incident_rows_by_token[token] = {'row': row, 'session': session}
         self._refresh_incident_cards()
 
-    def _finalize_incident_session(self, loc_id, feedback='pending'):
+    def _finalize_incident_session(self, loc_id, feedback='pending', acked=True, end_reason='operator_ack'):
         key = self._normalize_loc_key(loc_id)
         if not key:
             return
@@ -3959,9 +4053,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if not session:
             return
         self._close_incident_video_writer(session)
-        session['acked'] = True
+        session['acked'] = bool(acked)
         session['feedback'] = str(feedback or 'pending')
         session['end_ts'] = time.time()
+        session['end_reason'] = str(end_reason or '')
         self._write_incident_manifest(session)
         self._append_incident_session_row(session)
 
@@ -4930,7 +5025,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _quick_restart_tcp_server(self):
         """One-click tactical restart for the TCP server using current config."""
         port = int(self.config.get('tcp_port', getattr(self, 'tcp_server_port', 4888)))
-        tcp_mode = self.config.get('tcp_mode', 'threaded')
+        tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
         self.tcp_server_port = port
         try:
             if hasattr(self, 'tcp_server') and self.tcp_server:
@@ -4958,8 +5053,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         self._async_thread = threading.Thread(target=_run_loop, args=(self._async_loop,), daemon=True)
                         self._async_thread.start()
                     import asyncio
-                    asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
+                    fut = asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
+                    fut.result(timeout=5)
             else:
+                # DEPRECATED: threaded mode causes IP-keyed identity collisions for
+                # multi-device localhost setups (e.g. simulators). Set tcp_mode=async.
+                log_server_error(
+                    "[DEPRECATED] tcp_mode='threaded' is retired. "
+                    "Switch stream_config.json tcp_mode to 'async' to prevent device routing failures."
+                )
                 from embereye.core.tcp_sensor_server import TCPSensorServer
                 self.tcp_server = TCPSensorServer(port=port, packet_callback=self._emit_tcp_packet)
                 self.tcp_sensor_server = self.tcp_server
@@ -5005,7 +5107,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Restart with new port
             try:
-                tcp_mode = self.config.get('tcp_mode', 'threaded')
+                tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
                 self.tcp_message_count = 0
                 # Always connect the signal (PyQt5 does not duplicate connections)
                 self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
@@ -5013,9 +5115,31 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     from embereye.core.tcp_async_server import TCPAsyncSensorServer
                     self.tcp_server = TCPAsyncSensorServer(port=port, packet_callback=self._emit_tcp_packet)
                 else:
+                    # DEPRECATED: threaded mode causes IP-keyed identity collisions for
+                    # multi-device localhost setups (e.g. simulators). Set tcp_mode=async.
+                    log_server_error(
+                        "[DEPRECATED] tcp_mode='threaded' is retired. "
+                        "Switch stream_config.json tcp_mode to 'async' to prevent device routing failures."
+                    )
                     from embereye.core.tcp_sensor_server import TCPSensorServer
                     self.tcp_server = TCPSensorServer(port=port, packet_callback=self._emit_tcp_packet)
-                self.tcp_server.start()
+                if tcp_mode == 'async':
+                    if self._async_loop is None:
+                        import asyncio
+                        import threading
+                        self._async_loop = asyncio.new_event_loop()
+
+                        def _run_loop(loop):
+                            asyncio.set_event_loop(loop)
+                            loop.run_forever()
+
+                        self._async_thread = threading.Thread(target=_run_loop, args=(self._async_loop,), daemon=True)
+                        self._async_thread.start()
+                    import asyncio
+                    fut = asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
+                    fut.result(timeout=5)
+                else:
+                    self.tcp_server.start()
                 self.update_tcp_status(True, f"TCP Server: Running on port {port} ({tcp_mode})")
                 QMessageBox.information(self, "TCP Server Restarted", f"TCP server successfully restarted on port {port}.")
             except Exception as e:
@@ -5653,8 +5777,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         # This covers deployments where device_status_manager is not actively registering PFDS devices.
         try:
             server = getattr(self, 'tcp_sensor_server', None) or getattr(self, 'tcp_server', None)
+            serial_to_client = dict(getattr(server, '_serial_to_client', {}) or {}) if server else {}
             serial_to_ip = dict(getattr(server, '_serial_to_ip', {}) or {}) if server else {}
-            connected_ips = set((getattr(server, '_client_sockets', {}) or {}).keys()) if server else set()
+            connected_keys = set((getattr(server, '_client_writers', {}) or {}).keys()) if server else set()
+            if not connected_keys and server:
+                connected_keys = set((getattr(server, '_client_sockets', {}) or {}).keys())
 
             existing_keys = set()
             for entry in offline_list:
@@ -5669,11 +5796,20 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 state = self._get_device_lifecycle_state(device, now_ts=now_ts)
 
                 has_live_socket = False
-                if serial and serial in serial_to_ip:
+                if serial and serial in serial_to_client:
+                    mapped_key = str(serial_to_client.get(serial) or '').strip()
+                    has_live_socket = bool(mapped_key and mapped_key in connected_keys)
+                elif serial and serial in serial_to_ip:
                     mapped_ip = str(serial_to_ip.get(serial) or '').strip()
-                    has_live_socket = bool(mapped_ip and mapped_ip in connected_ips)
+                    has_live_socket = bool(mapped_ip and (
+                        mapped_ip in connected_keys or
+                        any(str(key).startswith(f"{mapped_ip}:") for key in connected_keys)
+                    ))
                 elif host_ip:
-                    has_live_socket = host_ip in connected_ips
+                    has_live_socket = bool(
+                        host_ip in connected_keys or
+                        any(str(key).startswith(f"{host_ip}:") for key in connected_keys)
+                    )
 
                 should_mark_offline = bool(serial and not has_live_socket)
                 if state in {'ghost'}:
@@ -5702,41 +5838,80 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         return devices, pending_list, offline_list, now_ts
 
+    def _notify_live_ops_action(self, message: str, timeout_ms: int = 2500):
+        msg = str(message or '').strip()
+        if not msg:
+            return
+        try:
+            self.statusBar().showMessage(msg, int(timeout_ms))
+        except Exception:
+            pass
+        try:
+            print(f"[LIVE_OPS] {msg}")
+        except Exception:
+            pass
+
     def _reconnect_offline_device(self, ip: str, parent=None):
         target_ip = str(ip or '').strip()
         if not target_ip:
             return
         if not hasattr(self, 'device_status_manager') or not self.device_status_manager:
             QMessageBox.warning(parent or self, 'Unavailable', 'Device status manager is not available.')
+            self._notify_live_ops_action('Reconnect unavailable: device status manager is not initialized', 3000)
             return
         try:
+            self._notify_live_ops_action(f"Reconnect requested for {target_ip}", 2500)
             ok = bool(self.device_status_manager.manual_reconnect(target_ip))
             if ok:
                 QMessageBox.information(parent or self, 'Reconnect', f'Reconnect initiated for {target_ip}.')
+                self._notify_live_ops_action(f"Reconnect initiated for {target_ip}", 3000)
             else:
                 QMessageBox.warning(parent or self, 'Reconnect Failed', f'Could not trigger reconnect for {target_ip}.')
+                self._notify_live_ops_action(f"Reconnect failed for {target_ip}", 3000)
         except Exception as e:
             QMessageBox.critical(parent or self, 'Reconnect Failed', f'Could not reconnect {target_ip}: {e}')
+            self._notify_live_ops_action(f"Reconnect error for {target_ip}: {e}", 3500)
         self._refresh_live_operations_views()
 
     def _open_devices_tab(self):
-        if not hasattr(self, 'tabs') or self.tabs is None:
-            return
-        for idx in range(self.tabs.count()):
-            if str(self.tabs.tabText(idx)).strip().upper() == 'DEVICES':
-                self.tabs.setCurrentIndex(idx)
-                return
+        # Legacy cards still use "Devices Tab". If the tab isn't mounted in this layout,
+        # route users to the Live PFDS dialog instead of silently doing nothing.
+        try:
+            if hasattr(self, 'tabs') and self.tabs is not None:
+                for idx in range(self.tabs.count()):
+                    if str(self.tabs.tabText(idx)).strip().upper() == 'DEVICES':
+                        self.tabs.setCurrentIndex(idx)
+                        self._notify_live_ops_action("Opened DEVICES tab", 2000)
+                        return
+        except Exception as e:
+            print(f"Devices tab open failed: {e}")
+            self._notify_live_ops_action(f"Devices tab open failed: {e}", 3000)
+
+        try:
+            self.show_pfds_view_dialog()
+            self._notify_live_ops_action("DEVICES tab unavailable; opened PFDS dialog", 2500)
+        except Exception as e:
+            QMessageBox.critical(self, 'Devices Tab', f'Unable to open PFDS dialog: {e}')
+            self._notify_live_ops_action(f"Unable to open PFDS dialog: {e}", 3500)
 
     def _open_live_pfds_tab(self):
-        if not hasattr(self, 'tabs') or self.tabs is None:
-            return
-        for idx in range(self.tabs.count()):
-            if str(self.tabs.tabText(idx)).strip().upper() == 'LIVE PFDS':
-                self.tabs.setCurrentIndex(idx)
-                self._refresh_live_operations_views()
-                return
-        # Fallback to legacy dialog if the LIVE PFDS tab is not available.
-        self.show_pfds_view_dialog()
+        # Keep this action deterministic: always open the PFDS dialog.
+        # If LIVE PFDS tab exists, also focus it first.
+        try:
+            if hasattr(self, 'tabs') and self.tabs is not None:
+                for idx in range(self.tabs.count()):
+                    if str(self.tabs.tabText(idx)).strip().upper() == 'LIVE PFDS':
+                        self.tabs.setCurrentIndex(idx)
+                        self._refresh_live_operations_views()
+                        break
+        except Exception as e:
+            print(f"LIVE PFDS tab focus failed: {e}")
+
+        # Always present dialog as a reliable fallback/entry point.
+        try:
+            self.show_pfds_view_dialog()
+        except Exception as e:
+            QMessageBox.critical(self, 'Live PFDS', f'Unable to open Live PFDS dialog: {e}')
 
     def _collect_live_asset_entries(self):
         devices, _pending_list, _offline_list, now_ts = self._collect_live_pfds_snapshot()
@@ -6379,7 +6554,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self._loc_by_serial[serial] = loc_id
             self._pending_device_by_serial.pop(serial, None)
             self._refresh_live_operations_views()
-            QMessageBox.information(parent or self, 'Assigned', f'Serial {serial} assigned to {loc_id}.')
+            info_box = QMessageBox(parent or self)
+            info_box.setIcon(QMessageBox.Information)
+            info_box.setWindowTitle('Assigned')
+            info_box.setText(f'Serial {serial} assigned to {loc_id}.')
+            self._style_tactical_dialog(info_box)
+            info_box.exec_()
         except Exception as e:
             QMessageBox.critical(parent or self, 'Assign Failed', f'Could not assign pending identity: {e}')
 
@@ -6492,6 +6672,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         more_btn.setText("More")
         more_btn.setPopupMode(QToolButton.InstantPopup)
         more_menu = QMenu(more_btn)
+        self._style_tactical_settings_menu(more_menu)
         dry_run_action = more_menu.addAction("Dry Run Pending")
         export_report_action = more_menu.addAction("Export Reconcile Report")
         more_menu.addSeparator()
@@ -6501,6 +6682,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         set_poll_all_action = more_menu.addAction("Set Poll (All)")
         more_menu.addSeparator()
         remove_action = more_menu.addAction("Remove Selected")
+        remove_all_action = more_menu.addAction("Remove All Devices")
         more_btn.setMenu(more_menu)
 
         close_btn = QPushButton("Close")
@@ -6636,7 +6818,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 self._loc_by_serial[serial] = loc_id
                 self._pending_device_by_serial.pop(serial, None)
                 load_rows()
-                QMessageBox.information(dlg, "Assigned", f"Serial {serial} assigned to {loc_id}.")
+                info_box = QMessageBox(dlg)
+                info_box.setIcon(QMessageBox.Information)
+                info_box.setWindowTitle("Assigned")
+                info_box.setText(f"Serial {serial} assigned to {loc_id}.")
+                self._style_tactical_dialog(info_box)
+                info_box.exec_()
             except Exception as e:
                 QMessageBox.critical(dlg, "Assign Failed", f"Could not assign pending identity: {e}")
 
@@ -6880,6 +7067,51 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             except Exception as e:
                 QMessageBox.critical(dlg, "Remove Failed", f"Could not remove device: {e}")
 
+        def remove_all_devices():
+            if not self._ensure_operator_identity(dlg, action="removing all PFDS devices"):
+                return
+            try:
+                devices = list(self.emberhawk.list_devices())
+            except Exception as e:
+                QMessageBox.critical(dlg, "Load Failed", f"Could not load devices: {e}")
+                return
+
+            if not devices:
+                QMessageBox.information(dlg, "No Devices", "No PFDS devices to remove.")
+                return
+
+            reply = QMessageBox.question(
+                dlg,
+                "Remove All Devices",
+                f"Remove all {len(devices)} PFDS devices from registry?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            removed = 0
+            failed = 0
+            for d in devices:
+                try:
+                    self.emberhawk.remove_device(int(d.get('id')))
+                    removed += 1
+                except Exception:
+                    failed += 1
+
+            load_rows()
+            if failed:
+                QMessageBox.warning(
+                    dlg,
+                    "Remove All Complete",
+                    f"Removed {removed} device(s), failed {failed}.",
+                )
+            else:
+                QMessageBox.information(
+                    dlg,
+                    "Remove All Complete",
+                    f"Removed all {removed} device(s).",
+                )
+
         bind_btn.clicked.connect(bind_pending_serial)
         assign_pending_btn.clicked.connect(assign_pending_to_room)
         bulk_reconcile_btn.clicked.connect(bulk_reconcile_pending)
@@ -6891,6 +7123,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         set_poll_selected_action.triggered.connect(set_poll_selected)
         set_poll_all_action.triggered.connect(set_poll_all)
         remove_action.triggered.connect(remove_selected)
+        remove_all_action.triggered.connect(remove_all_devices)
         close_btn.clicked.connect(dlg.accept)
         dlg.resize(1100, 650)
         dlg.exec_()
@@ -9007,7 +9240,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         # Stop TCP server
         try:
             if hasattr(self, 'tcp_server') and self.tcp_server:
-                tcp_mode = self.config.get('tcp_mode', 'threaded')
+                tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
                 if tcp_mode == 'async':
                     import asyncio
                     if hasattr(self, '_async_loop') and self._async_loop:
@@ -9183,14 +9416,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                     except Exception:
                         pass
-                    # Default to camera view with fusion overlay
-                    try:
-                        if hasattr(video_widget, "set_display_mode"):
-                            video_widget.set_display_mode("default")
-                        elif hasattr(video_widget, "toggle_thermal_grid_view"):
-                            video_widget.toggle_thermal_grid_view(False)
-                    except Exception:
-                        pass
+                    # Preserve operator-selected per-tile display mode (loaded by VideoWidget).
                     self.video_widgets[stream['loc_id']] = video_widget
                     video_widget.setToolTip(f"{stream['name']}\n{stream['url']}")
                     

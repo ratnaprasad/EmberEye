@@ -290,7 +290,10 @@ class PFDSSimulator:
                 command = data.decode("utf-8").strip()
                 logger.info(f"Received command: {command}")
 
-                if command == "EEPROM1":
+                if command == "DEVICE_ID":
+                    self.send_packet(f"#DEVICE_ID:{self.serial_number}!")
+                    logger.info(f"Sent DEVICE_ID response: {self.serial_number}")
+                elif command == "EEPROM1":
                     self.send_eeprom()
                 elif command in ("PERIOD_ON", "PERIODIC_ON"):
                     if not self.streaming:

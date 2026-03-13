@@ -1,4 +1,18 @@
 
+# ============================================================
+# DEPRECATED — DO NOT USE IN NEW CODE
+# This threaded TCP server is retired as of 2026-03-13.
+# It uses an IP-keyed client map that causes identity collisions
+# when multiple devices connect from the same host (e.g. localhost
+# simulators), leading to missed packets for some rooms.
+#
+# Use embereye.core.tcp_async_server.TCPAsyncSensorServer instead.
+# The field app enforces this via tcp_mode=async in stream_config.json.
+#
+# This file is kept only for reference and legacy test compatibility.
+# It will be removed in a future cleanup pass.
+# ============================================================
+
 import socket
 import threading
 import time
@@ -7,6 +21,7 @@ import json
 import os
 import sys
 import json as jsonlib
+import warnings
 
 from embereye.core.thermal_decoder_bridge import (
     decode_frame_to_matrix,
@@ -28,6 +43,13 @@ class TCPSensorServer:
     def __init__(self, host='0.0.0.0', port=None, packet_callback=None, disconnect_callback=None,
                  auto_request_eeprom_on_connect=True, collect_eeprom_until_received=True,
                  eeprom_retry_interval_seconds=8.0):
+        warnings.warn(
+            "TCPSensorServer (threaded) is DEPRECATED and will be removed. "
+            "Use TCPAsyncSensorServer (tcp_mode=async in stream_config.json) instead. "
+            "Threaded mode causes IP-keyed identity collisions for multi-device localhost setups.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.host = host
         self.port = port if port is not None else self._get_config_port()
         self.server_socket = None
@@ -119,13 +141,19 @@ class TCPSensorServer:
         print(f"Client handler started for {client_ip}", flush=True)
         print(f"🔌 Device connected from IP: {client_ip}", flush=True)
         
-        # AUTO-SEND PERIOD_ON to start continuous streaming from thermal devices
-        # Wait a moment for socket to stabilize
+        # AUTO-SEND commands on connect to start streaming and register device identity.
+        # `\n` is required so the device's line-based command parser can delimit each command.
         import time
         time.sleep(0.1)
         try:
+            print(f"📤 Auto-sending DEVICE_ID to device at IP: {client_ip}", flush=True)
+            client_sock.sendall("DEVICE_ID\n".encode('ascii'))
+            print(f"✅ DEVICE_ID query sent to device IP: {client_ip}", flush=True)
+        except Exception as e:
+            print(f"⚠️  Failed to send DEVICE_ID to device IP {client_ip}: {e}", flush=True)
+        try:
             print(f"📤 Auto-sending PERIOD_ON to device at IP: {client_ip}", flush=True)
-            client_sock.sendall("PERIOD_ON".encode('ascii'))
+            client_sock.sendall("PERIOD_ON\n".encode('ascii'))
             print(f"✅ PERIOD_ON successfully sent to device IP: {client_ip}", flush=True)
         except Exception as e:
             print(f"⚠️  Failed to auto-send PERIOD_ON to device IP {client_ip}: {e}", flush=True)
@@ -133,7 +161,7 @@ class TCPSensorServer:
         if self.auto_request_eeprom_on_connect:
             try:
                 print(f"📤 Auto-sending EEPROM1 to device at IP: {client_ip}", flush=True)
-                client_sock.sendall("EEPROM1".encode('ascii'))
+                client_sock.sendall("EEPROM1\n".encode('ascii'))
                 self._client_eeprom_requested[client_ip] = True
                 self._client_last_eeprom_request[client_ip] = now_time()
                 print(f"✅ EEPROM1 request sent to device IP: {client_ip}", flush=True)
@@ -249,7 +277,7 @@ class TCPSensorServer:
         
         try:
             print(f"📤 Sending command '{command}' to device IP: {matched_ip} (target={token})")
-            client_sock.sendall(str(command).encode('ascii', errors='ignore'))
+            client_sock.sendall((str(command).rstrip('\n') + '\n').encode('ascii', errors='ignore'))
             print(f"✅ Command '{command}' successfully sent to device IP: {matched_ip}")
             cmd = (command or "").strip().upper()
             if cmd == "EEPROM1":
@@ -274,7 +302,7 @@ class TCPSensorServer:
             last_sent = float(self._client_last_eeprom_request.get(client_ip, 0.0))
             if now_time() - last_sent >= self.eeprom_retry_interval_seconds:
                 try:
-                    client_sock.sendall("EEPROM1".encode('ascii'))
+                    client_sock.sendall("EEPROM1\n".encode('ascii'))
                     self._client_eeprom_requested[client_ip] = True
                     self._client_last_eeprom_request[client_ip] = now_time()
                 except Exception:

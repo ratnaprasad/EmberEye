@@ -72,16 +72,16 @@ def test_simulator_startup():
     print("\n=== Test 2: Simulator V3 Startup ===")
     
     # Check simulator file exists
-    if not Path("tcp_sensor_simulator_v3.py").exists():
-        log_test("Simulator v3 file", "FAIL", "tcp_sensor_simulator_v3.py not found")
+    if not Path("simulators/emberhawk_simulator.py").exists():
+        log_test("Simulator v2.0 file", "FAIL", "simulators/emberhawk_simulator.py not found")
         return False
     
-    log_test("Simulator v3 file", "PASS", "File exists")
+    log_test("Simulator v2.0 file", "PASS", "File exists")
     
     # Test imports
     try:
         import importlib.util
-        spec = importlib.util.spec_from_file_location("simulator", "tcp_sensor_simulator_v3.py")
+        spec = importlib.util.spec_from_file_location("simulator", "simulators/emberhawk_simulator.py")
         if spec and spec.loader:
             log_test("Simulator imports", "PASS", "Module can be imported")
         return True

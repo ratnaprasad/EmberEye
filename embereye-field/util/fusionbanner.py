@@ -21,9 +21,25 @@ def draw_fusion_overlay(widget, painter, width, height):
 
         sources = set(fusion.get("sources", []) or [])
         thermal = float(fusion.get("thermal_max", 0.0) or 0.0)
+        if thermal <= 0.0:
+            try:
+                last_matrix = getattr(widget, "_last_thermal_matrix", None)
+                if last_matrix is not None:
+                    import numpy as _np
+                    arr = _np.array(last_matrix, dtype=float)
+                    if arr.size > 0:
+                        thermal = float(_np.max(arr))
+            except Exception:
+                pass
         gas = float(fusion.get("gas_ppm", 0.0) or 0.0)
         smoke = float(fusion.get("smoke_level", 0.0) or 0.0)
-        flame_raw = int(fusion.get("flame_raw", fusion.get("flame_digital", 0)) or 0)
+        flame_digital = int(fusion.get("flame_digital", 0) or 0)
+        flame_analog_pct = float(fusion.get("flame_analog_pct", 0.0) or 0.0)
+        flame_threshold_pct = 25.0
+        flame_source_active = ("flame" in sources) or ("flame_analog" in sources) or ("flame_digital" in sources)
+        flame_detected = bool(flame_digital == 1 or flame_analog_pct >= flame_threshold_pct)
+        flame_confidence = max(1.0 if flame_digital == 1 else 0.0, max(0.0, min(1.0, flame_analog_pct / 100.0)))
+        flame_conf_pct = int(flame_confidence * 100)
         hot_cells = int(len(fusion.get("hot_cells", []) or []))
 
         def metric_ratio(value, lo, hi):
@@ -48,7 +64,12 @@ def draw_fusion_overlay(widget, painter, width, height):
         sev_thermal = metric_severity(thermal, 60.0, 75.0, "thermal" in sources)
         sev_gas = metric_severity(gas, 300.0, 500.0, "gas" in sources)
         sev_smoke = metric_severity(smoke, 30.0, 50.0, ("gas" in sources or "smoke" in sources))
-        sev_flame = 3 if (flame_raw == 1 and "flame" in sources) else (1 if "flame" in sources else 0)
+        if flame_detected and flame_source_active:
+            sev_flame = 3
+        elif flame_source_active:
+            sev_flame = 1
+        else:
+            sev_flame = 0
         sev_global = max(sev_thermal, sev_gas, sev_smoke, sev_flame, 1 if alarm else 0)
 
         # Naval / submarine tactical palette.
@@ -94,6 +115,18 @@ def draw_fusion_overlay(widget, painter, width, height):
             painter.setBrush(color)
             painter.setPen(color)
             painter.drawEllipse(QRectF(cx - radius, cy - radius, radius * 2, radius * 2))
+
+        def draw_alert_pulse(card_rect, sev):
+            if sev < 2:
+                return
+            t = (sin(now_time() * 6.0) + 1.0) * 0.5
+            if sev >= 3:
+                pulse_alpha = int(52 + 82 * t)
+                pulse_color = QColor(0x88, 0x00, 0x00, pulse_alpha)
+            else:
+                pulse_alpha = int(36 + 56 * t)
+                pulse_color = QColor(0x7A, 0x54, 0x00, pulse_alpha)
+            painter.fillRect(card_rect.adjusted(2, 2, -2, -2), pulse_color)
 
         def draw_shadow_text(rect, align, text, color, font):
             painter.setFont(font)
@@ -294,6 +327,7 @@ def draw_fusion_overlay(widget, painter, width, height):
                 draw_glow_dot(card.right() - int(12 * scale), card.center().y() + int(4 * scale), _col_value, max(4, int(5 * scale)))
 
             elif key == "thermal":
+                draw_alert_pulse(card, sev_thermal)
                 draw_shadow_text(card.adjusted(int(8 * scale), int(26 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, f"{thermal:.1f}°C", value_col, value_font)
                 draw_meter(
                     QRect(card.left() + int(8 * scale), card.bottom() - int(19 * scale), card.width() - int(16 * scale), max(4, int(5 * scale))),
@@ -306,6 +340,7 @@ def draw_fusion_overlay(widget, painter, width, height):
                 draw_shadow_text(card.adjusted(int(8 * scale), int(54 * scale), 0, 0), Qt.AlignLeft | Qt.AlignTop, therm_state, _col_title, small_font)
 
             elif key == "gas":
+                draw_alert_pulse(card, sev_gas)
                 draw_shadow_text(card.adjusted(int(8 * scale), int(26 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, f"{int(gas)} PPM", value_col, value_font)
                 draw_meter(
                     QRect(card.left() + int(8 * scale), card.bottom() - int(20 * scale), card.width() - int(16 * scale), max(6, int(7 * scale))),
@@ -319,6 +354,7 @@ def draw_fusion_overlay(widget, painter, width, height):
                 draw_shadow_text(card.adjusted(int(8 * scale), int(54 * scale), 0, 0), Qt.AlignLeft | Qt.AlignTop, gas_badge, gas_col, QFont("Roboto Mono", max(11, int(11 * scale)), QFont.Bold))
 
             elif key == "smoke":
+                draw_alert_pulse(card, sev_smoke)
                 draw_shadow_text(card.adjusted(int(8 * scale), int(26 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, f"{int(smoke)}%", value_col, value_font)
                 draw_meter(
                     QRect(card.left() + int(8 * scale), card.bottom() - int(20 * scale), card.width() - int(16 * scale), max(4, int(5 * scale))),
@@ -334,7 +370,6 @@ def draw_fusion_overlay(widget, painter, width, height):
                 draw_shadow_text(card.adjusted(int(8 * scale), int(54 * scale), 0, 0), Qt.AlignLeft | Qt.AlignTop, "WARN @ 50%", _col_title, small_font)
 
             elif key == "flame":
-                flame_detected = flame_raw == 1
                 if flame_detected:
                     pulse_alpha = int(90 + 90 * ((sin(now_time() * 8.0) + 1.0) * 0.5))
                     painter.fillRect(card.adjusted(2, 2, -2, -2), QColor(_col_flame_flash.red(), _col_flame_flash.green(), _col_flame_flash.blue(), pulse_alpha))
@@ -352,7 +387,8 @@ def draw_fusion_overlay(widget, painter, width, height):
                 painter.drawRoundedRect(badge, int(6 * scale), int(6 * scale))
                 clear_text_col = QColor(0x22, 0x28, 0x32) if not flame_detected else QColor(250, 250, 250)
                 draw_shadow_text(badge, Qt.AlignCenter, "DETECTED" if flame_detected else "CLEAR", clear_text_col, QFont("Arial", max(11, int(12 * scale)), QFont.Bold))
-                draw_shadow_text(card.adjusted(int(8 * scale), int(58 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, f"Conf: {accuracy}%", value_col, QFont("Roboto Mono", max(11, int(11 * scale)), QFont.Bold))
+                draw_shadow_text(card.adjusted(int(8 * scale), int(56 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, f"Flame: {flame_conf_pct}%", value_col, QFont("Roboto Mono", max(11, int(11 * scale)), QFont.Bold))
+                draw_shadow_text(card.adjusted(int(8 * scale), int(70 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, f"A:{flame_analog_pct:.1f}% D:{flame_digital}", _col_title, QFont("Roboto Mono", max(9, int(10 * scale)), QFont.Bold))
                 draw_glow_dot(card.right() - int(14 * scale), card.top() + int(12 * scale), badge_col if flame_detected else _col_value, max(3, int(4 * scale)))
 
             elif key == "action":

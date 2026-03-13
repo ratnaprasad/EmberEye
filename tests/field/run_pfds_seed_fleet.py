@@ -1,124 +1,115 @@
 #!/usr/bin/env python3
-"""Generate per-device PFDS replay seed files and launch upgraded simulators as a fleet.
+"""Launch N EmberHawk simulators, each with its matching per-instance seed file.
+
+Expected seed naming convention:
+  simulators/pfds/data/emberhawk_fusion_seed_3min_inst001.txt
+  simulators/pfds/data/emberhawk_fusion_seed_3min_inst002.txt
+  ...
 
 Example:
-  python tests/field/run_pfds_seed_fleet.py --host 127.0.0.1 --port 5080 \
-    --devices room_101,room_102,room_103,room_104,room_105
+  python tests/field/run_pfds_seed_fleet.py --host 127.0.0.1 --port 9001 --instances 3
 """
 
+from __future__ import annotations
+
 import argparse
+import glob
+import re
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
 
 ROOT = Path(__file__).resolve().parents[2]
-SIMULATOR = ROOT / "simulators" / "pfds" / "pfds_simulator.py"
+SIMULATOR = ROOT / "simulators" / "emberhawk_simulator.py"
 
 
 @dataclass
-class DeviceSpec:
-    loc_id: str
+class FleetInstance:
+    index: int
     serial: str
+    seed_file: Path
 
 
-def _parse_devices(raw_devices: str, count: int) -> List[DeviceSpec]:
-    items = [part.strip() for part in str(raw_devices or "").split(",") if part.strip()]
-    if not items and count > 0:
-        items = [f"room_{idx:03d}" for idx in range(1, count + 1)]
-    if not items:
-        items = ["demo_room"]
-
-    specs: List[DeviceSpec] = []
-    for idx, loc_id in enumerate(items, start=1):
-        specs.append(DeviceSpec(loc_id=loc_id, serial=f"SIM{idx:06d}"))
-    return specs
+def _extract_instance_index(path: Path) -> int:
+    m = re.search(r"inst(\d{3,})", path.stem)
+    if not m:
+        raise ValueError(f"Cannot parse instance index from seed filename: {path.name}")
+    return int(m.group(1))
 
 
-def _hex_payload(length: int, seed: int) -> str:
-    chars = "0123456789ABCDEF"
-    return "".join(chars[(seed + i) % 16] for i in range(length))
+def _extract_serial_from_seed(path: Path) -> str:
+    # First preference: EEPROM packet id in seed file.
+    # Example: #EEPROMEHWK005001:....!
+    line_re = re.compile(r"#EEPROM([^:]+):")
+    with path.open("r", encoding="utf-8", errors="ignore") as f:
+        for raw in f:
+            m = line_re.search(raw)
+            if m:
+                return m.group(1).strip()
+    raise ValueError(f"No #EEPROM<serial>: packet found in {path.name}")
 
 
-def _build_seed_log(loc_id: str, serial: str, frames: int, step_ms: int) -> str:
-    base = datetime(2026, 1, 1, 10, 0, 0, 0)
-    lines: List[str] = []
-    frame_payload = _hex_payload(3336, seed=sum(ord(c) for c in loc_id) % 16)
-    eeprom_payload = _hex_payload(3328, seed=sum(ord(c) for c in serial) % 16)
+def _discover_instances(seed_pattern: str, limit: int) -> List[FleetInstance]:
+    matched = sorted(Path(p) for p in glob.glob(seed_pattern))
+    if not matched:
+        return []
 
-    lines.append(f"[{base.strftime('%H:%M:%S.%f')[:-3]}]IN #EEPROM{loc_id}:{eeprom_payload}!")
+    fleet: List[FleetInstance] = []
+    for seed_file in matched:
+        idx = _extract_instance_index(seed_file)
+        serial = _extract_serial_from_seed(seed_file)
+        fleet.append(FleetInstance(index=idx, serial=serial, seed_file=seed_file.resolve()))
 
-    for i in range(frames):
-        ts = base + timedelta(milliseconds=(i + 1) * step_ms)
-        ts2 = ts + timedelta(milliseconds=max(20, step_ms // 3))
-
-        adc1 = 900 + ((i * 47) % 900)
-        adc2 = 650 + ((i * 31) % 700)
-        gas = 180 + ((i * 13) % 240)
-
-        lines.append(f"[{ts.strftime('%H:%M:%S.%f')[:-3]}]IN #frame{loc_id}:{frame_payload}!")
-        lines.append(
-            f"[{ts2.strftime('%H:%M:%S.%f')[:-3]}]IN #Sensor{loc_id}:"
-            f"ADC1={adc1},ADC2={adc2},MPY30=0,gas={gas}!"
-        )
-
-    return "\n".join(lines) + "\n"
+    fleet.sort(key=lambda x: x.index)
+    if limit > 0:
+        fleet = fleet[:limit]
+    return fleet
 
 
-def _write_seed_files(seed_dir: Path, specs: List[DeviceSpec], frames: int, step_ms: int) -> List[Path]:
-    seed_dir.mkdir(parents=True, exist_ok=True)
-    seed_files: List[Path] = []
-    for spec in specs:
-        file_name = f"{spec.loc_id}__{spec.serial}.txt"
-        target = seed_dir / file_name
-        target.write_text(_build_seed_log(spec.loc_id, spec.serial, frames=frames, step_ms=step_ms), encoding="utf-8")
-        seed_files.append(target)
-    return seed_files
-
-
-def _start_simulators(
-    python_exe: str,
+def _start_fleet(
+    instances: List[FleetInstance],
     host: str,
     port: int,
-    specs: List[DeviceSpec],
-    seed_files: List[Path],
     speed: float,
-    no_loop: bool,
     stagger_seconds: float,
+    no_loop: bool,
+    dry_run: bool,
 ) -> List[subprocess.Popen]:
     procs: List[subprocess.Popen] = []
-    for spec, seed_file in zip(specs, seed_files):
+    for inst in instances:
         cmd = [
-            python_exe,
+            sys.executable,
             str(SIMULATOR),
             "--host",
             host,
             "--port",
             str(port),
-            "--loc-id",
-            spec.loc_id,
             "--serial",
-            spec.serial,
+            inst.serial,
             "--data",
-            str(seed_file),
+            str(inst.seed_file),
             "--speed",
             str(speed),
         ]
         if no_loop:
             cmd.append("--no-loop")
 
-        proc = subprocess.Popen(cmd, cwd=str(ROOT))
-        procs.append(proc)
-        print(
-            f"Started simulator pid={proc.pid} loc_id={spec.loc_id} serial={spec.serial} "
-            f"seed={seed_file.name} -> {host}:{port}"
-        )
-        if stagger_seconds > 0:
-            time.sleep(stagger_seconds)
+        printable = " ".join(cmd)
+        if dry_run:
+            print(f"[DRY-RUN] inst={inst.index:03d} serial={inst.serial} cmd={printable}")
+        else:
+            proc = subprocess.Popen(cmd, cwd=str(ROOT))
+            procs.append(proc)
+            print(
+                f"Started inst={inst.index:03d} pid={proc.pid} serial={inst.serial} "
+                f"seed={inst.seed_file.name} -> {host}:{port}"
+            )
+            if stagger_seconds > 0:
+                time.sleep(stagger_seconds)
     return procs
 
 
@@ -143,34 +134,33 @@ def _stop_all(procs: List[subprocess.Popen]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Seed-based PFDS fleet simulator launcher (upgraded simulator)")
+    parser = argparse.ArgumentParser(description="Launch EmberHawk fleet using per-instance seed files")
     parser.add_argument("--host", default="127.0.0.1", help="TCP server host")
-    parser.add_argument("--port", type=int, default=5080, help="TCP server port")
-    parser.add_argument("--devices", default="", help="Comma-separated location IDs (one simulator per ID)")
-    parser.add_argument("--count", type=int, default=0, help="Auto-generate N devices (room_001..room_N) when --devices is empty")
-    parser.add_argument("--frames", type=int, default=120, help="Frame events per seed file")
-    parser.add_argument("--step-ms", type=int, default=300, help="Timestamp interval between frames in seed log")
-    parser.add_argument("--speed", type=float, default=6.0, help="Replay speed multiplier")
-    parser.add_argument("--seed-dir", default="tests/field/generated_pfds_seeds", help="Directory to write seed files")
-    parser.add_argument("--no-loop", action="store_true", help="Run each simulator once then stop")
-    parser.add_argument("--stagger-seconds", type=float, default=0.2, help="Delay between process starts")
-    parser.add_argument("--generate-only", action="store_true", help="Only generate seed files, do not launch simulators")
+    parser.add_argument("--port", type=int, default=9001, help="TCP server port")
+    parser.add_argument("--instances", type=int, default=0, help="Number of instances to launch (0 = all discovered)")
+    parser.add_argument(
+        "--seed-pattern",
+        default=str(ROOT / "simulators" / "pfds" / "data" / "emberhawk_fusion_seed_3min_inst*.txt"),
+        help="Glob pattern for per-instance seed files",
+    )
+    parser.add_argument("--speed", type=float, default=1.0, help="Replay speed multiplier")
+    parser.add_argument("--stagger-seconds", type=float, default=0.05, help="Delay between process starts")
+    parser.add_argument("--no-loop", action="store_true", help="Run each simulator once and exit")
+    parser.add_argument("--dry-run", action="store_true", help="Print launch commands without starting processes")
     args = parser.parse_args()
 
     if not SIMULATOR.exists():
-        print(f"Upgraded simulator not found: {SIMULATOR}")
+        print(f"Simulator not found: {SIMULATOR}")
         return 2
 
-    specs = _parse_devices(args.devices, args.count)
-    seed_dir = (ROOT / args.seed_dir).resolve()
-    seed_files = _write_seed_files(seed_dir, specs, frames=max(1, args.frames), step_ms=max(50, args.step_ms))
+    fleet = _discover_instances(args.seed_pattern, max(0, int(args.instances)))
+    if not fleet:
+        print(f"No matching seed files found for pattern: {args.seed_pattern}")
+        return 2
 
-    print(f"Generated {len(seed_files)} seed files in {seed_dir}")
-    for sf in seed_files:
-        print(f"  - {sf.name}")
-
-    if args.generate_only:
-        return 0
+    print(f"Discovered {len(fleet)} instance seed files")
+    for inst in fleet:
+        print(f"  inst={inst.index:03d} serial={inst.serial} seed={inst.seed_file.name}")
 
     procs: List[subprocess.Popen] = []
 
@@ -182,16 +172,18 @@ def main() -> int:
     signal.signal(signal.SIGINT, _handle_shutdown)
     signal.signal(signal.SIGTERM, _handle_shutdown)
 
-    procs = _start_simulators(
-        python_exe=sys.executable,
-        host=args.host,
+    procs = _start_fleet(
+        instances=fleet,
+        host=str(args.host),
         port=int(args.port),
-        specs=specs,
-        seed_files=seed_files,
         speed=float(args.speed),
-        no_loop=bool(args.no_loop),
         stagger_seconds=max(0.0, float(args.stagger_seconds)),
+        no_loop=bool(args.no_loop),
+        dry_run=bool(args.dry_run),
     )
+
+    if args.dry_run:
+        return 0
 
     if not procs:
         print("No simulators started.")

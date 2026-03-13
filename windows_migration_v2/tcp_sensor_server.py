@@ -1,4 +1,13 @@
 
+# ============================================================
+# DEPRECATED — DO NOT USE IN NEW CODE
+# This is the windows_migration_v2 copy of the threaded TCP server,
+# retired as of 2026-03-13.
+#
+# Use embereye.core.tcp_async_server.TCPAsyncSensorServer instead.
+# See embereye/core/tcp_sensor_server.py for full deprecation notes.
+# ============================================================
+
 import socket
 import threading
 import json

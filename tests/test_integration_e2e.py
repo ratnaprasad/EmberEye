@@ -99,7 +99,7 @@ def run_integration_test():
         
         # Step 4: Start TCP simulator
         print("\n📍 Step 4: Starting TCP simulator...")
-        sim_cmd = f"{sys.executable} tcp_sensor_simulator_v3.py --host 127.0.0.1 --port {tcp_port} --interval 2 --loc-id demo_room --format embedded"
+        sim_cmd = f"{sys.executable} simulators/emberhawk_simulator.py --host 127.0.0.1 --port {tcp_port} --interval 2"
         simulator_proc = start_process(sim_cmd, "TCP Simulator")
         if not simulator_proc:
             return False

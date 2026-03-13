@@ -89,7 +89,7 @@ def main() -> int:
     log_path = get_log_path("pfds_integration")
     
     # Start PFDS simulator
-    pfds_script = root / "simulators" / "pfds" / "pfds_simulator.py"
+    pfds_script = root / "simulators" / "emberhawk_simulator.py"
     pfds_data = root / "simulators" / "pfds" / "data" / "NEW DATA 10 MINS.txt"
     
     if not pfds_script.exists():

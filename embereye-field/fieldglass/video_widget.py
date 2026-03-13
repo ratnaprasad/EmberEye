@@ -365,8 +365,8 @@ class VideoWidget(QWidget):
             base = None
             if self.display_mode == "grid" and self._last_thermal_matrix is not None:
                 base = self._build_temperature_grid_pixmap(self._last_thermal_matrix)
-            elif self._last_thermal_matrix is not None:
-                # In default/thermal mode, prefer thermal heatmap when camera feed is down.
+            elif self.display_mode == "thermal" and self._last_thermal_matrix is not None:
+                # Thermal mode may continue with heatmap when camera feed is down.
                 base = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
 
             if not base or base.isNull():
@@ -402,6 +402,48 @@ class VideoWidget(QWidget):
             return (v / 65535.0) * 100.0
         except Exception:
             return float(v)
+
+    def _compute_grid_temp_bounds(self, arr):
+        """Return robust low/high temperature bounds for grid coloring."""
+        import numpy as np
+
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return 20.0, 40.0
+
+        lo = float(np.percentile(finite, 5.0))
+        hi = float(np.percentile(finite, 95.0))
+
+        # If scene is nearly flat, fall back to absolute extrema.
+        if (hi - lo) < 2.0:
+            lo = float(np.min(finite))
+            hi = float(np.max(finite))
+
+        # Keep a non-zero range so normalization remains stable.
+        if (hi - lo) < 0.5:
+            hi = lo + 0.5
+
+        return lo, hi
+
+    def _temperature_to_grid_colors(self, temp_c, temp_lo, temp_hi, alpha=215):
+        """Map a temperature to cell/text colors for numeric grid readability."""
+        ratio = 0.0
+        if temp_hi > temp_lo:
+            ratio = (float(temp_c) - temp_lo) / (temp_hi - temp_lo)
+        ratio = max(0.0, min(1.0, ratio))
+
+        # HSV ramp: cool blue -> warm yellow/orange -> hot red.
+        hue = int(210 - (210 * ratio))
+        bg_color = QColor.fromHsv(hue, 230, 215, alpha)
+
+        # Contrast-aware text color based on luminance.
+        luminance = (
+            0.2126 * bg_color.red()
+            + 0.7152 * bg_color.green()
+            + 0.0722 * bg_color.blue()
+        )
+        text_color = QColor(250, 250, 250) if luminance < 145 else QColor(20, 20, 20)
+        return bg_color, text_color
 
     def _overlay_thermal_grid_on_frame(self, base_pixmap):
         """Overlay thermal grid with temperature values on top of camera frame."""
@@ -495,8 +537,6 @@ class VideoWidget(QWidget):
                 grid_pen.setWidth(pen_width)
                 painter.setPen(grid_pen)
 
-                vmax = float(arr.max()) if arr.size else 1.0
-
                 # Font size based on cell dimensions
                 if cell_min < 15:
                     base_font_size = max(6, int(cell_min * 0.35))
@@ -509,11 +549,18 @@ class VideoWidget(QWidget):
                 painter.setFont(font)
 
                 show_text = cell_min >= 8  # Show text if cells are large enough
-                precise = cell_min >= 26  # Show decimals on larger sizes
+                temp_lo, temp_hi = self._compute_grid_temp_bounds(arr)
 
                 # Draw grid lines and temperature values
                 for r, c, x, y, rw, rh in _iter_cell_rects(self.thermal_grid_cols, self.thermal_grid_rows, w, h):
                     rect = QRect(x, y, rw, rh)
+
+                    val = float(arr[r, c])
+                    temp_c = val
+                    bg_color, tcolor = self._temperature_to_grid_colors(temp_c, temp_lo, temp_hi, alpha=160)
+
+                    # Fill the cell to preserve hotspot contrast in numeric overlay mode.
+                    painter.fillRect(rect.adjusted(1, 1, -1, -1), bg_color)
 
                     # Draw grid cell border
                     painter.setPen(grid_pen)
@@ -521,27 +568,6 @@ class VideoWidget(QWidget):
 
                     if not show_text:
                         continue
-
-                    val = float(arr[r, c])
-                    # Matrix is already in Celsius from thermal_frame_parser
-                    temp_c = val
-
-                    # Temperature color with background for readability
-                    if temp_c >= 60:
-                        tcolor = QColor(255, 70, 70)
-                        bg_color = QColor(0, 0, 0, 180)
-                    elif temp_c >= 45:
-                        tcolor = QColor(255, 150, 60)
-                        bg_color = QColor(0, 0, 0, 160)
-                    elif temp_c >= 32:
-                        tcolor = QColor(255, 250, 120)
-                        bg_color = QColor(0, 0, 0, 140)
-                    else:
-                        tcolor = QColor(200, 220, 255)
-                        bg_color = QColor(0, 0, 0, 120)
-
-                    # Draw semi-transparent background for text
-                    painter.fillRect(rect.adjusted(2, 2, -2, -2), bg_color)
 
                     # Draw temperature text
                     painter.setPen(tcolor)
@@ -652,27 +678,21 @@ class VideoWidget(QWidget):
 
             # Decide text format based on cell size
             show_text = cell_min >= 8  # Hide if extremely small
+            temp_lo, temp_hi = self._compute_grid_temp_bounds(arr)
 
             for r, c, x, y, rw, rh in _iter_cell_rects(self.thermal_grid_cols, self.thermal_grid_rows, w, h):
                 rect = QRect(x, y, rw, rh)
+
+                val = float(arr[r, c])
+                temp_c = val
+                bg_color, tcolor = self._temperature_to_grid_colors(temp_c, temp_lo, temp_hi)
+
+                # Fill each cell so hotspots remain immediately visible in numeric mode.
+                painter.fillRect(rect.adjusted(1, 1, -1, -1), bg_color)
                 painter.drawRect(rect)
 
                 if not show_text:
                     continue
-
-                val = float(arr[r, c])
-                # Matrix is already in Celsius from thermal_frame_parser
-                temp_c = val
-
-                # Temperature color bands
-                if temp_c >= 60:
-                    tcolor = QColor(255, 70, 70)
-                elif temp_c >= 45:
-                    tcolor = QColor(255, 150, 60)
-                elif temp_c >= 32:
-                    tcolor = QColor(255, 250, 120)
-                else:
-                    tcolor = QColor(200, 220, 255)
                 painter.setPen(tcolor)
                 txt = f"{temp_c:.2f}"
                 painter.drawText(rect, Qt.AlignCenter, txt)
@@ -1538,7 +1558,11 @@ class VideoWidget(QWidget):
             self._manual_alarm_override = bool(alarm_active)
             effective_alarm = bool(alarm_active)
         else:
-            self._remote_alarm_active = bool(alarm_active)
+            remote_alarm_active = bool(alarm_active)
+            # Do not clear an active alarm from remote updates until operator ACK/Silence.
+            if (not remote_alarm_active) and was_alarm_active and (not bool(getattr(self, 'alarm_acknowledged', False))):
+                remote_alarm_active = True
+            self._remote_alarm_active = remote_alarm_active
             if self._manual_alarm_override is not None:
                 effective_alarm = bool(self._manual_alarm_override)
             else:

@@ -103,7 +103,7 @@ def _build_min_pfds_replay_log() -> str:
 
 
 def _start_pfds_simulator(host: str, port: int, loc_id: str, replay_file: str) -> subprocess.Popen:
-    script = ROOT / "simulators" / "pfds" / "pfds_simulator.py"
+    script = ROOT / "simulators" / "emberhawk_simulator.py"
     cmd = [
         sys.executable,
         str(script),
@@ -111,8 +111,6 @@ def _start_pfds_simulator(host: str, port: int, loc_id: str, replay_file: str) -
         host,
         "--port",
         str(port),
-        "--loc-id",
-        loc_id,
         "--data",
         replay_file,
         "--speed",

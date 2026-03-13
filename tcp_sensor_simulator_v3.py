@@ -244,7 +244,21 @@ class TCPSensorSimulatorV3:
             else:
                 self._log("ℹ️  Received ACK_ON command with no active alarm")
             return True
-        
+
+        elif cmd in ['PERIOD_OFF', 'PERIODIC_OFF']:
+            self._log(f"📥 Received PERIOD_OFF command - stopping streaming")
+            with self.streaming_lock:
+                self.streaming = False
+            return True
+
+        elif cmd == 'DEVICE_ID':
+            try:
+                sock.sendall(f"#DEVICE_ID:{self.serial_number}!\n".encode('utf-8'))
+                self._log(f"📤 Sent DEVICE_ID response: {self.serial_number}")
+            except Exception as e:
+                self._log(f"❌ DEVICE_ID send error: {e}")
+            return True
+
         else:
             self._log(f"⚠️  Unknown command: {command}")
             return True
