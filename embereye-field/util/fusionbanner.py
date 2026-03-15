@@ -35,7 +35,13 @@ def draw_fusion_overlay(widget, painter, width, height):
         smoke = float(fusion.get("smoke_level", 0.0) or 0.0)
         flame_digital = int(fusion.get("flame_digital", 0) or 0)
         flame_analog_pct = float(fusion.get("flame_analog_pct", 0.0) or 0.0)
-        flame_threshold_pct = 25.0
+        temp_threshold = float(fusion.get("temp_threshold", 40.0) or 40.0)
+        critical_temp_threshold = float(fusion.get("critical_temp_threshold", 60.0) or 60.0)
+        if critical_temp_threshold <= temp_threshold:
+            critical_temp_threshold = temp_threshold + 1.0
+        gas_threshold_ppm = float(fusion.get("gas_ppm_threshold", 400.0) or 400.0)
+        smoke_threshold_pct = float(fusion.get("smoke_threshold_pct", 25.0) or 25.0)
+        flame_threshold_pct = float(fusion.get("flame_threshold_pct", 25.0) or 25.0)
         flame_source_active = ("flame" in sources) or ("flame_analog" in sources) or ("flame_digital" in sources)
         flame_detected = bool(flame_digital == 1 or flame_analog_pct >= flame_threshold_pct)
         flame_confidence = max(1.0 if flame_digital == 1 else 0.0, max(0.0, min(1.0, flame_analog_pct / 100.0)))
@@ -61,10 +67,11 @@ def draw_fusion_overlay(widget, painter, width, height):
                 return 2
             return 1
 
-        sev_thermal = metric_severity(thermal, 60.0, 75.0, "thermal" in sources)
+        thermal_source_active = ("thermal" in sources) or thermal >= temp_threshold
+        sev_thermal = metric_severity(thermal, temp_threshold, critical_temp_threshold, thermal_source_active)
         sev_gas = metric_severity(gas, 300.0, 500.0, "gas" in sources)
         sev_smoke = metric_severity(smoke, 30.0, 50.0, ("gas" in sources or "smoke" in sources))
-        if flame_detected and flame_source_active:
+        if flame_detected:
             sev_flame = 3
         elif flame_source_active:
             sev_flame = 1
@@ -194,6 +201,21 @@ def draw_fusion_overlay(widget, painter, width, height):
         painter.fillPath(strip_path, QBrush(strip_grad))
         painter.setPen(QPen(QColor(255, 255, 255, 34), 1))
         painter.drawPath(strip_path)
+
+        # Runtime thresholds aid quick field validation against live fusion config.
+        threshold_line = (
+            f"THR  T:{temp_threshold:.1f}/{critical_temp_threshold:.1f}C"
+            f"  F:{flame_threshold_pct:.1f}%"
+            f"  S:{smoke_threshold_pct:.1f}%"
+            f"  G:{int(gas_threshold_ppm)}ppm"
+        )
+        draw_shadow_text(
+            QRect(strip.x() + int(10 * scale), strip.y() + int(2 * scale), strip.width() - int(20 * scale), max(12, int(14 * scale))),
+            Qt.AlignLeft | Qt.AlignTop,
+            threshold_line,
+            QColor(198, 208, 220, 220),
+            QFont("Roboto Mono", max(7, int(8 * scale)), QFont.Bold),
+        )
 
         card_gap = max(1, int(1 * scale))
         inner = strip.adjusted(int(6 * scale), int(6 * scale), -int(6 * scale), -int(6 * scale))
@@ -336,7 +358,7 @@ def draw_fusion_overlay(widget, painter, width, height):
                     QColor(255, 196, 92),
                     QColor(255, 214, 126),
                 )
-                therm_state = "OP-READY" if thermal < 60.0 else "ELEVATED"
+                therm_state = "OP-READY" if thermal < temp_threshold else ("ELEVATED" if thermal < critical_temp_threshold else "CRITICAL")
                 draw_shadow_text(card.adjusted(int(8 * scale), int(54 * scale), 0, 0), Qt.AlignLeft | Qt.AlignTop, therm_state, _col_title, small_font)
 
             elif key == "gas":

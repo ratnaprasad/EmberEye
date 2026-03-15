@@ -436,6 +436,7 @@ class BEMainWindow(QMainWindow):
 
     def _run_fusion(self, thermal_matrix=None, gas_ppm=None, flame=None, vision_score=None, **kwargs):
         self._update_fusion_engine_config()
+        cfg = self._current_fusion_config()
 
         frame_data = {}
         if thermal_matrix is not None:
@@ -482,6 +483,11 @@ class BEMainWindow(QMainWindow):
             'smoke_pct': float(kwargs.get('smoke_pct', 0.0) or 0.0),
             'flame_analog_pct': float(kwargs.get('flame_analog_pct', 0.0) or 0.0),
             'flame_digital': int(kwargs.get('flame_digital', frame_data.get('flame_digital', 0)) or 0),
+            'temp_threshold': float(cfg.get('temp_threshold', fusion_config.temp_threshold)),
+            'critical_temp_threshold': float(cfg.get('critical_temp_threshold', fusion_config.critical_temp_threshold)),
+            'gas_ppm_threshold': float(cfg.get('gas_ppm_threshold', fusion_config.gas_ppm_threshold)),
+            'smoke_threshold_pct': float(cfg.get('smoke_threshold_pct', fusion_config.smoke_threshold_pct)),
+            'flame_threshold_pct': float(cfg.get('flame_threshold_pct', fusion_config.flame_threshold_pct)),
             'severity': fusion_result.severity.name,
         }
         result.update(kwargs)
@@ -1144,6 +1150,20 @@ class BEMainWindow(QMainWindow):
         for device in devices:
             if str(device.get('name') or '').strip() == key:
                 return device
+        # Fallback: match any registered device whose serial has an active TCP connection.
+        # This handles the case where the device's registered location_id differs from
+        # the stream/widget loc_id (e.g. device registered as "TEST", stream configured
+        # as "DemoRoom1").
+        try:
+            tcp = self.tcp_sensor_server
+            if tcp is not None and hasattr(tcp, '_serial_to_client'):
+                active_serials = set(tcp._serial_to_client.keys())
+                for device in devices:
+                    device_serial = str(device.get('serial_number') or '').strip()
+                    if device_serial and device_serial in active_serials:
+                        return device
+        except Exception:
+            pass
         return None
 
     def _send_emberhawk_command_for_loc(self, loc_id, command, reason=''):
@@ -1468,6 +1488,7 @@ class BEMainWindow(QMainWindow):
         self._pending_device_by_serial = {}
         self._pending_warned_tokens = {}
         self._device_ghost_after_s = int(self.config.get('device_ghost_after_s', 120))
+        self._pending_telemetry_retention_s = int(self.config.get('pending_telemetry_retention_s', 24 * 60 * 60))
         self._device_alert_window_ms = int(self.config.get('device_alert_window_ms', 30000))
         self._device_drop_alert_per_min = float(self.config.get('device_drop_alert_per_min', 20.0))
         self._device_command_fail_alert_per_min = float(self.config.get('device_command_fail_alert_per_min', 10.0))
@@ -1560,6 +1581,7 @@ class BEMainWindow(QMainWindow):
             self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} (reused)")
         else:
             tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
+            binding_mode = self._get_tcp_binding_mode()
             try:
                 if tcp_mode == 'async':
                     from embereye.core.tcp_async_server import TCPAsyncSensorServer
@@ -1572,7 +1594,11 @@ class BEMainWindow(QMainWindow):
                             loop.run_forever()
                         self._async_thread = threading.Thread(target=_run_loop, args=(self._async_loop,), daemon=True)
                         self._async_thread.start()
-                    self.tcp_server = TCPAsyncSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
+                    self.tcp_server = TCPAsyncSensorServer(
+                        port=self.tcp_server_port,
+                        packet_callback=self._emit_tcp_packet,
+                        binding_mode=binding_mode,
+                    )
                     self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
                     if self.tcp_server:
                         fut = asyncio.run_coroutine_threadsafe(self.tcp_server.start(), self._async_loop)
@@ -1589,7 +1615,7 @@ class BEMainWindow(QMainWindow):
                     self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
                     if self.tcp_server:
                         self.tcp_server.start()
-                self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} ({tcp_mode})")
+                self.update_tcp_status(True, f"TCP Server: Running on port {self.tcp_server_port} ({tcp_mode}, {binding_mode})")
             except Exception as e:
                 import traceback
                 error_detail = traceback.format_exc()
@@ -1714,20 +1740,16 @@ class BEMainWindow(QMainWindow):
                 mpy30 = packet.get('MPY30', packet.get('MPY_IN'))
                 gas_ppm_raw = packet.get('GAS_PPM')
                 
-                # ADC1 = Smoke Sensor (MQ-2/MQ-135) - 12-bit ADC (0-4095)
+                # ADC1 = Flame Sensor (Analog) - 12-bit ADC (0-4095)
                 if adc1 is not None:
                     try:
-                        # Calculate smoke percentage: (adc1 * 100) / 4095
-                        smoke_pct = (adc1 * 100.0) / 4095.0
+                        # Calculate flame percentage: (adc1 * 100) / 4095
+                        flame_pct = (adc1 * 100.0) / 4095.0
                         fusion_args['adc1_raw'] = adc1
-                        fusion_args['smoke_pct'] = smoke_pct
-                        fusion_args['smoke_level'] = smoke_pct
-                        # Keep GAS card fed from the same MQ channel when explicit gas ppm is unavailable.
-                        if gas_ppm_raw is None:
-                            fusion_args['gas_ppm'] = (adc1 * 1500.0) / 4095.0
-                        print(f"Smoke (ADC1): {adc1} -> {smoke_pct:.1f}%")
+                        fusion_args['flame_analog_pct'] = flame_pct
+                        print(f"Flame (ADC1): {adc1} -> {flame_pct:.1f}%")
                     except Exception as e:
-                        print(f"Smoke calculation error: {e}")
+                        print(f"Flame ADC1 calculation error: {e}")
 
                 if gas_ppm_raw is not None:
                     try:
@@ -1735,16 +1757,20 @@ class BEMainWindow(QMainWindow):
                     except Exception:
                         pass
                 
-                # ADC2 = Flame Sensor (Analog) - 12-bit ADC (0-4095)
+                # ADC2 = Smoke Sensor (MQ-2/MQ-135) - 12-bit ADC (0-4095)
                 if adc2 is not None:
                     try:
-                        # Calculate flame percentage: (adc2 * 100) / 4095
-                        flame_pct = (adc2 * 100.0) / 4095.0
+                        # Calculate smoke percentage: (adc2 * 100) / 4095
+                        smoke_pct = (adc2 * 100.0) / 4095.0
                         fusion_args['adc2_raw'] = adc2
-                        fusion_args['flame_analog_pct'] = flame_pct
-                        print(f"Flame (ADC2): {adc2} -> {flame_pct:.1f}%")
+                        fusion_args['smoke_pct'] = smoke_pct
+                        fusion_args['smoke_level'] = smoke_pct
+                        # Keep GAS card fed from the same MQ channel when explicit gas ppm is unavailable.
+                        if gas_ppm_raw is None:
+                            fusion_args['gas_ppm'] = (adc2 * 1500.0) / 4095.0
+                        print(f"Smoke (ADC2): {adc2} -> {smoke_pct:.1f}%")
                     except Exception as e:
-                        print(f"Flame ADC2 calculation error: {e}")
+                        print(f"Smoke ADC2 calculation error: {e}")
                 
                 # Digital Flame sensor (DI/MPY30)
                 fusion_args['flame_digital'] = mpy30
@@ -3464,7 +3490,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     for line in fp.readlines()[-32:]:
                         obj = json.loads(line)
                         pkt = obj.get('packet', {}) if isinstance(obj, dict) else {}
-                        gas.append(float(pkt.get('ADC1', 0) or 0))
+                        gas.append(float(pkt.get('GAS_PPM', pkt.get('ADC2', 0)) or 0))
                         smoke.append(float(pkt.get('ADC2', 0) or 0))
             t_path = str((session or {}).get('thermal_log_path', '') or '')
             if t_path and os.path.exists(t_path):
@@ -4461,6 +4487,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         settings_menu.addAction("Backup Configuration", self.backup_config)
         settings_menu.addAction("Restore Configuration", self.restore_config)
         settings_menu.addAction("TCP Server Port", self._request_tcp_port_dialog)
+        settings_menu.addAction("TCP Binding Mode", self.show_tcp_binding_mode_dialog)
         settings_menu.addSeparator()
 
         self._add_settings_menu_section(settings_menu, "SENSOR GRID")
@@ -4670,6 +4697,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         menu.addAction("Restore Configuration", self.restore_config)
         menu.addSeparator()
         menu.addAction("TCP Server Port...", self._request_tcp_port_dialog)
+        menu.addAction("TCP Binding Mode...", self.show_tcp_binding_mode_dialog)
         menu.addAction("Thermal Grid Settings...", self.show_thermal_grid_config)
         # Global numeric thermal grid toggle (all streams)
         self.global_grid_action = menu.addAction("Numeric Thermal Grid (All Streams)")
@@ -5024,21 +5052,38 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def _quick_restart_tcp_server(self):
         """One-click tactical restart for the TCP server using current config."""
+        import inspect
         port = int(self.config.get('tcp_port', getattr(self, 'tcp_server_port', 4888)))
         tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
+        binding_mode = self._get_tcp_binding_mode()
         self.tcp_server_port = port
         try:
             if hasattr(self, 'tcp_server') and self.tcp_server:
                 try:
-                    self.tcp_server.stop()
+                    stop_result = self.tcp_server.stop()
+                    if inspect.isawaitable(stop_result):
+                        if self._async_loop is not None:
+                            import asyncio
+                            fut = asyncio.run_coroutine_threadsafe(stop_result, self._async_loop)
+                            fut.result(timeout=5)
+                        else:
+                            import asyncio
+                            asyncio.run(stop_result)
                 except Exception:
                     pass
+                finally:
+                    self.tcp_server = None
+                    self.tcp_sensor_server = None
             self.update_tcp_status(False, f"TCP SERVER: RESTARTING PORT {port}")
 
             self.tcp_message_count = 0
             if tcp_mode == 'async':
                 from embereye.core.tcp_async_server import TCPAsyncSensorServer
-                self.tcp_server = TCPAsyncSensorServer(port=port, packet_callback=self._emit_tcp_packet)
+                self.tcp_server = TCPAsyncSensorServer(
+                    port=port,
+                    packet_callback=self._emit_tcp_packet,
+                    binding_mode=binding_mode,
+                )
                 self.tcp_sensor_server = self.tcp_server
                 if self.tcp_server:
                     if self._async_loop is None:
@@ -5068,10 +5113,49 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if self.tcp_server:
                     self.tcp_server.start()
 
-            self.update_tcp_status(True, f"TCP SERVER: RUNNING ON PORT {port} ({tcp_mode})")
+            self.update_tcp_status(True, f"TCP SERVER: RUNNING ON PORT {port} ({tcp_mode}, {binding_mode})")
         except Exception as e:
             self.update_tcp_status(False, f"TCP SERVER: RESTART FAILED - {e}")
             QMessageBox.critical(self, "TCP Server Error", f"Failed to restart TCP server on port {port}:\n{e}")
+
+    def _get_tcp_binding_mode(self):
+        mode = str(self.config.get('tcp_binding_mode', 'auto_bind')).strip().lower()
+        if mode in ('handshake', 'device_id', 'device_id_handshake'):
+            return 'handshake'
+        return 'auto_bind'
+
+    def show_tcp_binding_mode_dialog(self):
+        from PyQt5.QtWidgets import QInputDialog
+
+        current_mode = self._get_tcp_binding_mode()
+        options = ['auto_bind', 'handshake']
+        current_index = options.index(current_mode) if current_mode in options else 0
+        selected_mode, ok = QInputDialog.getItem(
+            self,
+            "TCP Binding Mode",
+            "Select device binding strategy:",
+            options,
+            current_index,
+            False,
+        )
+        if not ok:
+            return
+
+        next_mode = str(selected_mode or '').strip().lower()
+        if next_mode not in options:
+            next_mode = 'auto_bind'
+        if next_mode == current_mode:
+            return
+
+        self.config['tcp_binding_mode'] = next_mode
+        from stream_config import StreamConfig
+        StreamConfig.save_config(self.config)
+        self._quick_restart_tcp_server()
+        QMessageBox.information(
+            self,
+            "TCP Binding Mode Updated",
+            f"TCP binding mode set to '{next_mode}'.",
+        )
 
     def _request_tcp_port_dialog(self):
         """Allow TCP port prompt only for explicit menu actions."""
@@ -5079,6 +5163,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.show_tcp_port_dialog()
 
     def show_tcp_port_dialog(self):
+        import inspect
         from PyQt5.QtWidgets import QInputDialog
 
         # Safety gate: non-menu invocations should perform direct restart,
@@ -5094,10 +5179,21 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             # Stop existing server
             if hasattr(self, 'tcp_server') and self.tcp_server:
                 try:
-                    self.tcp_server.stop()
+                    stop_result = self.tcp_server.stop()
+                    if inspect.isawaitable(stop_result):
+                        if self._async_loop is not None:
+                            import asyncio
+                            fut = asyncio.run_coroutine_threadsafe(stop_result, self._async_loop)
+                            fut.result(timeout=5)
+                        else:
+                            import asyncio
+                            asyncio.run(stop_result)
                     self.update_tcp_status(False, "TCP Server: Stopped for restart")
                 except Exception as e:
                     print(f"TCP server stop error: {e}")
+                finally:
+                    self.tcp_server = None
+                    self.tcp_sensor_server = None
             
             # Update config
             self.config['tcp_port'] = port
@@ -5108,12 +5204,17 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             # Restart with new port
             try:
                 tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
+                binding_mode = self._get_tcp_binding_mode()
                 self.tcp_message_count = 0
                 # Always connect the signal (PyQt5 does not duplicate connections)
                 self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
                 if tcp_mode == 'async':
                     from embereye.core.tcp_async_server import TCPAsyncSensorServer
-                    self.tcp_server = TCPAsyncSensorServer(port=port, packet_callback=self._emit_tcp_packet)
+                    self.tcp_server = TCPAsyncSensorServer(
+                        port=port,
+                        packet_callback=self._emit_tcp_packet,
+                        binding_mode=binding_mode,
+                    )
                 else:
                     # DEPRECATED: threaded mode causes IP-keyed identity collisions for
                     # multi-device localhost setups (e.g. simulators). Set tcp_mode=async.
@@ -5140,7 +5241,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     fut.result(timeout=5)
                 else:
                     self.tcp_server.start()
-                self.update_tcp_status(True, f"TCP Server: Running on port {port} ({tcp_mode})")
+                self.update_tcp_status(True, f"TCP Server: Running on port {port} ({tcp_mode}, {binding_mode})")
                 QMessageBox.information(self, "TCP Server Restarted", f"TCP server successfully restarted on port {port}.")
             except Exception as e:
                 error_msg = str(e)
@@ -5209,6 +5310,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         current_settings = {
             # Fusion parameters
             'temp_threshold': self.fusion_temp_threshold,
+            'critical_temp_threshold': self.fusion_critical_temp_threshold,
             'gas_ppm_threshold': self.fusion_gas_ppm_threshold,
             'flame_active_value': self.fusion_flame_active_value,
             'smoke_threshold_pct': float(getattr(self, 'fusion_smoke_threshold_pct', self.config.get('smoke_threshold_pct', 25.0))),
@@ -5336,6 +5438,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self._last_sensor_apply_warning_shown = False
         # Update sensor fusion
         self.fusion_temp_threshold = float(settings['temp_threshold'])
+        self.fusion_critical_temp_threshold = float(settings.get('critical_temp_threshold', getattr(self, 'fusion_critical_temp_threshold', fusion_config.critical_temp_threshold)))
         self.fusion_gas_ppm_threshold = float(settings['gas_ppm_threshold'])
         self.fusion_smoke_threshold_pct = float(settings.get('smoke_threshold_pct', getattr(self, 'fusion_smoke_threshold_pct', 25.0)))
         self.fusion_flame_threshold_pct = float(settings.get('flame_threshold_pct', getattr(self, 'fusion_flame_threshold_pct', 25.0)))
@@ -5725,6 +5828,66 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             return None
         return None
 
+    def _pending_from_recent_telemetry(self, now_ts: float = None) -> dict:
+        """Recover pending identities from recent telemetry so brief sightings remain visible in UI."""
+        now_val = float(now_ts if now_ts is not None else time.time())
+        retention_s = int(getattr(self, '_pending_telemetry_retention_s', 24 * 60 * 60) or 24 * 60 * 60)
+        telemetry_path = os.path.join('logs', 'device_telemetry.jsonl')
+        if not os.path.exists(telemetry_path):
+            return {}
+
+        def _tail_lines(path: str, max_bytes: int = 256 * 1024):
+            try:
+                with open(path, 'rb') as fh:
+                    fh.seek(0, os.SEEK_END)
+                    size = fh.tell()
+                    fh.seek(max(0, size - max_bytes), os.SEEK_SET)
+                    chunk = fh.read().decode('utf-8', errors='ignore')
+                return chunk.splitlines()
+            except Exception:
+                return []
+
+        recovered = {}
+        for raw in _tail_lines(telemetry_path):
+            text = str(raw or '').strip()
+            if not text or not text.startswith('{'):
+                continue
+            try:
+                rec = json.loads(text)
+            except Exception:
+                continue
+            event = str(rec.get('event') or '').strip()
+            payload = rec.get('payload') or {}
+            if not isinstance(payload, dict):
+                continue
+            serial = self._normalize_serial_key(payload.get('serial') or payload.get('serial_number'))
+            if not serial:
+                continue
+            state = str(payload.get('state') or '').strip().lower()
+            drop_reason = str(payload.get('drop_reason') or '').strip().lower()
+            include = (
+                event == 'identity_pending'
+                or (event == 'packet_dropped' and state == 'pending_identity')
+                or (event == 'packet_dropped' and drop_reason in ('device_not_linked', 'access_blocked', 'missing_serial'))
+            )
+            if not include:
+                continue
+            seen_ts = self._parse_seen_timestamp(rec.get('timestamp'))
+            if seen_ts is None:
+                continue
+            if (now_val - float(seen_ts)) > float(retention_s):
+                continue
+
+            info = recovered.get(serial)
+            if info is None or float(seen_ts) >= float(info.get('last_seen') or 0):
+                recovered[serial] = {
+                    'serial_number': serial,
+                    'client_ip': str(payload.get('client_ip') or ''),
+                    'last_seen': float(seen_ts),
+                    'state': 'pending_identity',
+                }
+        return recovered
+
     def _collect_live_pfds_snapshot(self):
         now_ts = time.time()
         try:
@@ -5733,6 +5896,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             devices = []
 
         pending = dict(getattr(self, '_pending_device_by_serial', {}) or {})
+        for serial, info in self._pending_from_recent_telemetry(now_ts=now_ts).items():
+            pending.setdefault(serial, info)
         for device in devices:
             serial = self._normalize_serial_key(device.get('serial_number'))
             if not serial or serial in pending:
@@ -6623,6 +6788,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         table.setItem(row, c, QTableWidgetItem(str(val)))
 
                 pending = dict(self._pending_device_by_serial)
+                for serial, info in self._pending_from_recent_telemetry(now_ts=now_ts).items():
+                    pending.setdefault(serial, info)
                 for d in devices:
                     serial = self._normalize_serial_key(d.get('serial_number'))
                     if not serial or serial in pending:
@@ -7940,7 +8107,20 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             bool: True if command was sent successfully, False otherwise
         """
         from tcp_logger import log_raw_packet, log_error_packet
+
+        def _extract_host(value: str | None) -> str:
+            raw = str(value or '').strip()
+            if not raw:
+                return ''
+            if '://' in raw:
+                raw = raw.split('://', 1)[1]
+            raw = raw.split('/', 1)[0].strip()
+            if ':' in raw:
+                raw = raw.split(':', 1)[0].strip()
+            return raw
+
         serial_number = str(cmd.get('serial_number') or '').strip()
+        fallback_host = _extract_host(cmd.get('ip') or cmd.get('device_ip') or cmd.get('host'))
         loc = cmd.get('location_id') or ''
         name = cmd.get('name') or ''
         command = cmd.get('command')
@@ -7962,6 +8142,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         # Send command through existing TCP server connection
         if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
             success = self.tcp_sensor_server.send_command_to_client(serial_number, command)
+            route = f"serial={serial_number}"
+            if not success and fallback_host:
+                success = self.tcp_sensor_server.send_command_to_client(fallback_host, command)
+                if success:
+                    route = f"ip_fallback={fallback_host}"
+
             if success:
                 self._emit_device_telemetry(
                     'command_sent',
@@ -7970,7 +8156,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     location_id=loc,
                     device_name=name,
                 )
-                log_raw_packet(loc, f"PFDS_CMD {command} to serial={serial_number} ({name}) | sent via active connection")
+                log_raw_packet(loc, f"PFDS_CMD {command} to {route} ({name}) | sent via active connection")
                 return True
             else:
                 self._emit_device_telemetry(
@@ -8005,9 +8191,21 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         Returns:
             bool: True if command was sent successfully
         """
+        def _extract_host(value: str | None) -> str:
+            raw = str(value or '').strip()
+            if not raw:
+                return ''
+            if '://' in raw:
+                raw = raw.split('://', 1)[1]
+            raw = raw.split('/', 1)[0].strip()
+            if ':' in raw:
+                raw = raw.split(':', 1)[0].strip()
+            return raw
+
         try:
             command = cmd.get('command')
             serial_number = str(cmd.get('serial_number') or '').strip()
+            fallback_host = _extract_host(cmd.get('ip') or cmd.get('device_ip') or cmd.get('host'))
             
             if not command or not serial_number:
                 print(f"❌ dispatch_emberhawk_command: missing command={command} or serial_number")
@@ -8024,6 +8222,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             # PFDS expects raw command strings like "PERIOD_ON", "EEPROM1", "REQUEST1", "PERIOD_OFF"
             if self.tcp_sensor_server and hasattr(self.tcp_sensor_server, 'send_command_to_client'):
                 success = self.tcp_sensor_server.send_command_to_client(serial_number, command)
+                if not success and fallback_host:
+                    success = self.tcp_sensor_server.send_command_to_client(fallback_host, command)
                 
                 if success:
                     print(f"✅ dispatch_emberhawk_command: '{command}' sent to serial={serial_number}")
@@ -10079,8 +10279,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         )
         if reply == QMessageBox.No:
             return
-        # Build default empty configuration
-        default_config = {"groups": ["Default"], "streams": [], "tcp_port": self.config.get("tcp_port", 9000)}
+        # Build default empty configuration — preserve all non-stream keys (thresholds, tcp settings, etc.)
+        default_config = {k: v for k, v in self.config.items() if k not in ("groups", "streams")}
+        default_config["groups"] = ["Default"]
+        default_config["streams"] = []
+        default_config.setdefault("tcp_port", 9000)
         if StreamConfig.save_config(default_config):
             self.config = default_config
             self.group_combo.clear()

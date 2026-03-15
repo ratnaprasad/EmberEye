@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json as jsonlib
+import re
 from typing import Callable, Dict, Any
 import numpy as np
 
@@ -24,7 +25,8 @@ class TCPAsyncSensorServer:
                  max_queue: int = 10000, batch_interval_ms: int = 50,
                  auto_request_eeprom_on_connect: bool = True,
                  collect_eeprom_until_received: bool = True,
-                 eeprom_retry_interval_seconds: float = 8.0):
+                 eeprom_retry_interval_seconds: float = 8.0,
+                 binding_mode: str = 'auto_bind'):
         self.host = host
         self.port = port if port is not None else self._get_config_port()
         self.packet_callback = packet_callback
@@ -47,6 +49,39 @@ class TCPAsyncSensorServer:
         self.auto_request_eeprom_on_connect = bool(auto_request_eeprom_on_connect)
         self.collect_eeprom_until_received = bool(collect_eeprom_until_received)
         self.eeprom_retry_interval_seconds = max(2.0, float(eeprom_retry_interval_seconds))
+        self.binding_mode = self._normalize_binding_mode(binding_mode)
+
+    @staticmethod
+    def _normalize_binding_mode(mode: str) -> str:
+        value = str(mode or 'auto_bind').strip().lower()
+        if value in ('handshake', 'device_id', 'device_id_handshake'):
+            return 'handshake'
+        return 'auto_bind'
+
+    @staticmethod
+    def _looks_like_serial_token(token: str | None) -> bool:
+        candidate = str(token or '').strip()
+        if not candidate or ' ' in candidate:
+            return False
+        if re.match(r'^\d{1,3}(?:\.\d{1,3}){3}$', candidate):
+            return False
+        upper = candidate.upper()
+        if upper.startswith('EHWK') and len(upper) >= 8:
+            return True
+        if candidate.isdigit() and len(candidate) >= 8:
+            return True
+        if re.match(r'^[A-Z]{2,}\d{4,}$', upper):
+            return True
+        return False
+
+    def _bind_serial_to_client(self, serial: str | None, client_key: str | None) -> str | None:
+        serial_key = str(serial or '').strip()
+        key = str(client_key or '').strip()
+        if not serial_key or not key:
+            return None
+        self._serial_to_client[serial_key] = key
+        self._client_to_serial[key] = serial_key
+        return serial_key
 
     def _get_config_port(self) -> int:
         config_path = os.path.join(os.path.dirname(__file__), 'stream_config.json')
@@ -94,6 +129,12 @@ class TCPAsyncSensorServer:
                 target_key = self._serial_to_client[token]
             elif token in self._latest_client_by_ip:
                 target_key = self._latest_client_by_ip[token]
+            elif self._looks_like_serial_token(token) and len(self._client_writers) == 1:
+                # Bootstrap path: when serial is not bound yet, route via the only active client.
+                target_key = next(iter(self._client_writers.keys()))
+                log_warning(
+                    f"Bootstrap route for unresolved serial {token} via sole client {target_key}"
+                )
 
         if target_key not in self._client_writers:
             log_warning(
@@ -146,6 +187,7 @@ class TCPAsyncSensorServer:
         self._client_writers[client_key] = writer  # Store writer for command sending
         self._latest_client_by_ip[client_ip] = client_key
         log_info(f"Client connected: {client_key}")
+        log_debug(f"TCP binding mode for {client_key}: {self.binding_mode}")
         
         # Send DEVICE_ID query, PERIOD_ON and EEPROM1 once on connection establishment.
         # Each command must be \n-terminated so the device's line-based parser can delimit it.
@@ -309,25 +351,25 @@ class TCPAsyncSensorServer:
             if line.startswith('#DEVICE_ID:'):
                 serial = line.split(':', 1)[1].rstrip('!').strip()
                 result = {'type': 'device_id', 'serial_number': serial, 'client_ip': client_ip}
-                if client_key and serial:
-                    self._serial_to_client[serial] = client_key
-                    self._client_to_serial[client_key] = serial
+                self._bind_serial_to_client(serial, client_key)
             elif line.startswith('#serialno:'):
                 serial = line.split(':', 1)[1].rstrip('!').strip()
                 result = {'type': 'serialno', 'serialno': serial, 'client_ip': client_ip}
-                if client_key and serial:
-                    self._serial_to_client[serial] = client_key
-                    self._client_to_serial[client_key] = serial
+                self._bind_serial_to_client(serial, client_key)
             elif line.startswith('#locid:'):
                 loc_id = line.split(':', 1)[1].rstrip('!').strip()
                 result = {'type': 'locid', 'loc_id': loc_id, 'client_ip': client_ip}
             elif line.startswith('#EEPROM'):
                 eeprom_result = parse_eeprom_packet(line)
                 if eeprom_result.get('success'):
+                    frame_id = str(eeprom_result.get('frame_id') or '').strip()
+                    # Some real devices send serial in EEPROM frame_id (e.g. #EEPROM<serial>:...)
+                    if self.binding_mode == 'auto_bind' and self._looks_like_serial_token(frame_id):
+                        self._bind_serial_to_client(frame_id, client_key)
                     self._client_eeprom_hex[client_key] = eeprom_result.get('hex')
                     result = {
                         'type': 'eeprom',
-                        'frame_id': eeprom_result.get('frame_id'),
+                        'frame_id': frame_id,
                         'blocks': eeprom_result.get('blocks'),
                         'client_ip': client_ip
                     }
@@ -346,10 +388,14 @@ class TCPAsyncSensorServer:
                     if prefix.startswith('frame') and len(prefix) > 5:
                         loc_id = prefix[5:]
                         frame_data = data.strip()
+                        if self.binding_mode == 'auto_bind' and self._looks_like_serial_token(loc_id):
+                            self._bind_serial_to_client(loc_id, client_key)
                     else:
                         if ':' in data:
                             loc_id, frame_data = data.split(':', 1)
                             loc_id = loc_id.strip(); frame_data = frame_data.strip()
+                            if self.binding_mode == 'auto_bind' and self._looks_like_serial_token(loc_id):
+                                self._bind_serial_to_client(loc_id, client_key)
                         else:
                             loc_id = None; frame_data = data.strip()
                     if not loc_id and client_ip:
@@ -458,12 +504,17 @@ class TCPAsyncSensorServer:
                     log_error_packet(reason="sensor no colon", raw=line[:80], loc_id=client_ip)
                 else:
                     prefix, data = content.split(':', 1)
+                    serial_candidate = None
                     if prefix.startswith('Sensor') and len(prefix) > 6:
                         loc_id = prefix[6:]; sensor_data = data.strip()
+                        if self.binding_mode == 'auto_bind' and self._looks_like_serial_token(loc_id):
+                            serial_candidate = loc_id
                     else:
                         if ':' in data:
                             loc_id, sensor_data = data.split(':', 1)
                             loc_id = loc_id.strip(); sensor_data = sensor_data.strip()
+                            if self.binding_mode == 'auto_bind' and self._looks_like_serial_token(loc_id):
+                                serial_candidate = loc_id
                         else:
                             loc_id = None; sensor_data = data.strip()
                     if not loc_id and client_ip:
@@ -473,10 +524,17 @@ class TCPAsyncSensorServer:
                         if '=' in part:
                             k, v = part.split('=', 1)
                             k = k.strip().rstrip(':'); v = v.strip()
+                            key_lower = k.lower()
+                            if key_lower in ('serial', 'serialno', 'serial_number', 'device_id'):
+                                serial_candidate = str(v)
+                                sensors['serial_number'] = str(v)
+                                continue
                             try:
                                 sensors[k] = float(v) if '.' in v else int(v)
                             except (ValueError, TypeError):
                                 sensors[k] = str(v)
+                    if self.binding_mode == 'auto_bind' and serial_candidate and client_key:
+                        self._bind_serial_to_client(serial_candidate, client_key)
                     result = {'type': 'sensor', 'loc_id': loc_id, 'client_ip': client_ip, **sensors}
                     serial = self._client_to_serial.get(client_key or '')
                     if serial:

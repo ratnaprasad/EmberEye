@@ -6,8 +6,8 @@ Converts each row in ``tests/data/fusion_testcases_input.csv`` into the
 equivalent EmberHawk simulator wire-format packets:
 
   * **Sensor packet** – ``#SensorTCxxx:ADC1=…,ADC2=…,Button=0,MQ_IN=0,MPY_IN=0,DIO_OUT=0!``
-    - ADC1 encodes Smoke%   (ADC1 = round(smoke_pct  × 4095 / 100))
-    - ADC2 encodes Flame%   (ADC2 = round(flame_pct   × 4095 / 100))
+        - ADC1 encodes Flame%   (ADC1 = round(flame_pct   × 4095 / 100))
+        - ADC2 encodes Smoke%   (ADC2 = round(smoke_pct  × 4095 / 100))
     - MPY_IN is always 0 here; these cases only exercise the *analog* flame path.
 
   * **Thermal frame packet** – ``#frameTCxxx:{3336_hex}!``
@@ -67,13 +67,13 @@ FUSION_CONFIG = {
 
 # ── EmberHawk packet helpers ──────────────────────────────────────────────────
 
-def smoke_pct_to_adc1(smoke_pct: float) -> int:
-    """Convert smoke percentage to 12-bit ADC1 value (inverts main_window logic)."""
+def smoke_pct_to_adc2(smoke_pct: float) -> int:
+    """Convert smoke percentage to 12-bit ADC2 value (inverts main_window logic)."""
     return max(0, min(4095, round(smoke_pct * 4095.0 / 100.0)))
 
 
-def flame_pct_to_adc2(flame_pct: float) -> int:
-    """Convert flame percentage to 12-bit ADC2 value (inverts main_window logic)."""
+def flame_pct_to_adc1(flame_pct: float) -> int:
+    """Convert flame percentage to 12-bit ADC1 value (inverts main_window logic)."""
     return max(0, min(4095, round(flame_pct * 4095.0 / 100.0)))
 
 
@@ -165,12 +165,12 @@ def sensor_packet_to_frame_data(sensor_parsed: dict) -> dict:
     mpy_in = sensor_parsed.get("MPY_IN", 0)
 
     if adc1 is not None:
-        frame_data["smoke_pct"] = (adc1 * 100.0) / 4095.0
-        # ADC1-derived gas (fallback, no explicit GAS_PPM in these test packets)
-        frame_data["gas_ppm"] = (adc1 * 1500.0) / 4095.0
+        frame_data["flame_analog_pct"] = (adc1 * 100.0) / 4095.0
 
     if adc2 is not None:
-        frame_data["flame_analog_pct"] = (adc2 * 100.0) / 4095.0
+        frame_data["smoke_pct"] = (adc2 * 100.0) / 4095.0
+        # ADC2-derived gas (fallback, no explicit GAS_PPM in these test packets)
+        frame_data["gas_ppm"] = (adc2 * 1500.0) / 4095.0
 
     frame_data["flame_digital"] = int(mpy_in)
     return frame_data
@@ -199,8 +199,8 @@ def run() -> int:
         serial = f"TC{case_id:03d}"
 
         # ── 1. Generate EmberHawk packets ─────────────────────────────────────
-        adc1 = smoke_pct_to_adc1(smoke_pct)
-        adc2 = flame_pct_to_adc2(flame_pct)
+        adc1 = flame_pct_to_adc1(flame_pct)
+        adc2 = smoke_pct_to_adc2(smoke_pct)
         mpy_in = 0  # analog-only test cases
 
         sensor_pkt = make_sensor_packet(serial, adc1, adc2, mpy_in)
@@ -311,8 +311,8 @@ def run() -> int:
         "",
         "| Input field | EmberHawk packet | Field app conversion |",
         "|---|---|---|",
-        "| Smoke (%) | `ADC1 = round(smoke% × 4095/100)` in `#SensorTCxxx:…` | `smoke_pct = ADC1 × 100/4095` |",
-        "| Flame (%) | `ADC2 = round(flame% × 4095/100)` in `#SensorTCxxx:…` | `flame_analog_pct = ADC2 × 100/4095` |",
+        "| Smoke (%) | `ADC2 = round(smoke% × 4095/100)` in `#SensorTCxxx:…` | `smoke_pct = ADC2 × 100/4095` |",
+        "| Flame (%) | `ADC1 = round(flame% × 4095/100)` in `#SensorTCxxx:…` | `flame_analog_pct = ADC1 × 100/4095` |",
         "| Temp (°C) | 24×32 uniform grid in `#frameTCxxx:…` | `thermal = np.ndarray(24,32)`, max used for threshold |",
         "| Vision Score | *Not in HW packets* | Injected directly as `vision_score` (output of CV model) |",
         "",

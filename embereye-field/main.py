@@ -2,6 +2,7 @@
 import sys
 import os
 from pathlib import Path
+import ctypes
 
 # --------------------------------------------------------------------------
 # Early CUDA probe for frozen (PyInstaller) builds on Windows.
@@ -184,6 +185,25 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
+    # Windows-only hard single-instance guard using a named mutex.
+    # This avoids split runtime state when two app processes start together.
+    app_mutex = None
+    if platform.system() == 'Windows':
+        try:
+            kernel32 = ctypes.windll.kernel32
+            mutex_name = "Global\\EmberEyeFieldSingleInstance"
+            app_mutex = kernel32.CreateMutexW(None, False, mutex_name)
+            if not app_mutex:
+                raise OSError("CreateMutexW failed")
+            ERROR_ALREADY_EXISTS = 183
+            if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+                app = QApplication(sys.argv)
+                QMessageBox.warning(None, "Already Running", "Ember Eye is already running. Please close the existing instance first.")
+                sys.exit(1)
+        except Exception:
+            # Fall back to legacy file lock below.
+            app_mutex = None
+
     # Single instance check using lock file
     lock_file_path = os.path.join(os.path.dirname(__file__), '.embereve.lock')
     lock_file = None

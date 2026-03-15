@@ -80,10 +80,11 @@ class FusionBridge:
             if sensor:
                 adc1 = float(sensor.get("ADC1", 0.0))
                 adc2 = float(sensor.get("ADC2", 0.0))
-                frame_data["smoke_pct"] = max(0.0, min(100.0, (adc1 / 4095.0) * 100.0))
-                frame_data["flame_analog_pct"] = max(0.0, min(100.0, (adc2 / 4095.0) * 100.0))
+                frame_data["flame_analog_pct"] = max(0.0, min(100.0, (adc1 / 4095.0) * 100.0))
+                frame_data["smoke_pct"] = max(0.0, min(100.0, (adc2 / 4095.0) * 100.0))
+                frame_data["gas_ppm"] = (adc2 / 4095.0) * 1500.0
                 if "MPY30" in sensor:
-                    frame_data["gas_ppm"] = float(sensor.get("MPY30", 0.0))
+                    frame_data["flame_digital"] = int(float(sensor.get("MPY30", 0.0)))
 
             result = self.fusion.process_frame(frame_data)
             self.stats.fusion_runs += 1

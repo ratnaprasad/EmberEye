@@ -101,8 +101,8 @@ def generate_seed(
         flame_adc = pct_to_adc(case["flame_pct"])
 
         sensor_payload = (
-            f"ADC1={smoke_adc},"
-            f"ADC2={flame_adc},"
+            f"ADC1={flame_adc},"
+            f"ADC2={smoke_adc},"
             f"Button=1,"
             f"MQ_IN={1 if case['smoke_pct'] >= 20.0 else 0},"
             f"MPY_IN={1 if case['flame_pct'] >= 10.0 else 0},"

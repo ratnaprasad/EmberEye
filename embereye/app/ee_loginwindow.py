@@ -1,6 +1,8 @@
 import sqlite3
 import bcrypt
 import os
+import sys
+import importlib
 import importlib.util
 from PyQt5.QtWidgets import (
     QWidget,
@@ -31,14 +33,43 @@ from password_reset import PasswordResetDialog
 
 
 def _load_fieldglass_main_window():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    fieldglass_path = os.path.join(base_dir, 'embereye-field', 'fieldglass', 'main_window.py')
-    spec = importlib.util.spec_from_file_location('fieldglass_main_window', fieldglass_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Failed to load FieldGlass main window from {fieldglass_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.BEMainWindow
+    # Prefer package import first; this works in both source and PyInstaller bundles
+    # when 'fieldglass' is collected as a package.
+    try:
+        module = importlib.import_module('fieldglass.main_window')
+        return module.BEMainWindow
+    except Exception:
+        pass
+
+    # Fallback: attempt to load from known source/bundle file-system layouts.
+    candidate_paths = []
+
+    # Source layout: <repo>/embereye-field/fieldglass/main_window.py
+    source_base = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    candidate_paths.append(os.path.join(source_base, 'embereye-field', 'fieldglass', 'main_window.py'))
+    candidate_paths.append(os.path.join(source_base, 'fieldglass', 'main_window.py'))
+
+    # Frozen layout: _MEIPASS may contain either fieldglass/main_window.py directly,
+    # or under embereye-field/fieldglass depending on build settings.
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        candidate_paths.append(os.path.join(meipass, 'fieldglass', 'main_window.py'))
+        candidate_paths.append(os.path.join(meipass, 'embereye-field', 'fieldglass', 'main_window.py'))
+
+    for fieldglass_path in candidate_paths:
+        if not os.path.exists(fieldglass_path):
+            continue
+        spec = importlib.util.spec_from_file_location('fieldglass_main_window', fieldglass_path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.BEMainWindow
+
+    raise ImportError(
+        "Failed to load FieldGlass main window. Tried module import and paths: "
+        + "; ".join(candidate_paths)
+    )
 
 
 if os.environ.get('EMBEREYE_FIELD', '').strip().lower() in ('1', 'true', 'yes'):

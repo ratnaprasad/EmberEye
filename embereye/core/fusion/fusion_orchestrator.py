@@ -40,13 +40,14 @@ class FusionOrchestrator:
     def process_frame(self, frame_data: dict) -> FusionResult:
         detections: list[Detection] = []
 
-        smoke_value = frame_data.get('smoke_pct', frame_data.get('adc1'))
+        # Hardware mapping: ADC1 -> flame analog, ADC2 -> smoke/gas channel.
+        smoke_value = frame_data.get('smoke_pct', frame_data.get('adc2'))
         if smoke_value is not None:
             detection = self.detectors[DetectionSource.SMOKE].detect(smoke_value)
             if detection:
                 detections.append(detection)
 
-        flame_analog_value = frame_data.get('flame_analog_pct', frame_data.get('adc2'))
+        flame_analog_value = frame_data.get('flame_analog_pct', frame_data.get('adc1'))
         if flame_analog_value is not None:
             detection = self.detectors[DetectionSource.FLAME_ANALOG].detect(flame_analog_value)
             if detection:
@@ -155,8 +156,8 @@ class FusionOrchestrator:
         gas_detection = next((d for d in detections if d.source == DetectionSource.GAS), None)
         vision_detection = next((d for d in detections if d.source == DetectionSource.VISION), None)
 
-        raw_smoke = payload.get('smoke_pct', payload.get('adc1'))
-        raw_flame = payload.get('flame_analog_pct', payload.get('adc2'))
+        raw_smoke = payload.get('smoke_pct', payload.get('adc2'))
+        raw_flame = payload.get('flame_analog_pct', payload.get('adc1'))
         raw_vision = None
         if 'vision_detections' in payload:
             raw_vision = self._extract_vision_value(payload.get('vision_detections'))

@@ -83,6 +83,7 @@ class SensorConfigDialog(QDialog):
         self.settings = {
             # Fusion parameters
             'temp_threshold': 40.0,  # Celsius (fire detection threshold)
+            'critical_temp_threshold': 60.0,  # Celsius (critical alarm threshold)
             'gas_ppm_threshold': 400,
             'flame_active_value': 1,
             'min_sources': 2,
@@ -224,10 +225,20 @@ class SensorConfigDialog(QDialog):
         self.temp_threshold_spin.setValue(float(self.settings['temp_threshold']))
         self.temp_threshold_spin.setSuffix(" °C")
         temp_row.addWidget(self.temp_threshold_spin)
+
+        critical_temp_row = QHBoxLayout()
+        critical_temp_row.addWidget(QLabel("Critical Temp Threshold:"))
+        self.critical_temp_threshold_spin = QDoubleSpinBox()
+        self.critical_temp_threshold_spin.setRange(0.0, 250.0)
+        self.critical_temp_threshold_spin.setDecimals(1)
+        self.critical_temp_threshold_spin.setValue(float(self.settings.get('critical_temp_threshold', 60.0)))
+        self.critical_temp_threshold_spin.setSuffix(" °C")
+        critical_temp_row.addWidget(self.critical_temp_threshold_spin)
         
         temp_info = QLabel("Temperature in Celsius. 40°C = fire detection, 30°C = warm objects")
         temp_info.setStyleSheet("color: rgba(200,175,90,0.65); font-size: 9pt;")
         temp_layout.addLayout(temp_row)
+        temp_layout.addLayout(critical_temp_row)
         temp_layout.addWidget(temp_info)
         temp_group.setLayout(temp_layout)
         layout.addWidget(temp_group)
@@ -266,9 +277,9 @@ class SensorConfigDialog(QDialog):
         adc_group = QGroupBox("Analog Sensor Thresholds")
         adc_layout = QVBoxLayout()
 
-        # Smoke (ADC1) threshold in percentage
+        # Smoke (ADC2) threshold in percentage
         smoke_row = QHBoxLayout()
-        smoke_row.addWidget(QLabel("Smoke Threshold (ADC1):"))
+        smoke_row.addWidget(QLabel("Smoke Threshold (ADC2):"))
         self.smoke_threshold_spin = QDoubleSpinBox()
         self.smoke_threshold_spin.setRange(0.0, 100.0)
         self.smoke_threshold_spin.setDecimals(1)
@@ -278,9 +289,9 @@ class SensorConfigDialog(QDialog):
         smoke_row.addWidget(self.smoke_threshold_spin)
         adc_layout.addLayout(smoke_row)
 
-        # Flame analog (ADC2) threshold in percentage
+        # Flame analog (ADC1) threshold in percentage
         flamea_row = QHBoxLayout()
-        flamea_row.addWidget(QLabel("Flame Threshold (ADC2 Analog):"))
+        flamea_row.addWidget(QLabel("Flame Threshold (ADC1 Analog):"))
         self.flame_threshold_spin = QDoubleSpinBox()
         self.flame_threshold_spin.setRange(0.0, 100.0)
         self.flame_threshold_spin.setDecimals(1)
@@ -933,6 +944,7 @@ class SensorConfigDialog(QDialog):
         return {
             # Fusion parameters
             'temp_threshold': self.temp_threshold_spin.value(),
+            'critical_temp_threshold': self.critical_temp_threshold_spin.value(),
             'gas_ppm_threshold': self.gas_threshold_spin.value(),
             # Digital flame active value no longer configurable; keep and forward current value
             'flame_active_value': int(self.settings.get('flame_active_value', 1)),
