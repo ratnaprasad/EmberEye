@@ -1,11 +1,26 @@
 #!/usr/bin/env python
-"""
-Build EmberEye Studio.exe installer using PyInstaller
+"""Build EmberEye Studio executable with PyInstaller.
+
+Retired for 2.x direct usage. Use scripts/build_suite_2x.py instead.
+Set EMBEREYE_ALLOW_LEGACY_BUILD=1 (or pass --allow-legacy) only for
+compatibility workflows.
 """
 import os
 import sys
 import subprocess
 from pathlib import Path
+
+
+def guard_legacy_usage() -> None:
+    allow_flag = '--allow-legacy' in sys.argv
+    if allow_flag:
+        sys.argv.remove('--allow-legacy')
+    if allow_flag or os.getenv('EMBEREYE_ALLOW_LEGACY_BUILD') == '1':
+        return
+    print('[RETIRED] embereye-studio/build_installer.py is retired for 2.x development.')
+    print('[ACTION] Use: python scripts/build_suite_2x.py')
+    print('[NOTE] For compatibility-only runs set EMBEREYE_ALLOW_LEGACY_BUILD=1 or pass --allow-legacy.')
+    raise SystemExit(2)
 
 def build_installer():
     """Build the installer using PyInstaller"""
@@ -43,14 +58,14 @@ def build_installer():
     # Remove None values (icon if not exists)
     pyinstaller_cmd = [cmd for cmd in pyinstaller_cmd if cmd is not None]
     
-    print(f"\n[3/5] Running PyInstaller...")
+    print("\n[3/5] Running PyInstaller...")
     print(f"Command: {' '.join(pyinstaller_cmd[:5])} ...")
     
     try:
         result = subprocess.run(pyinstaller_cmd, cwd=str(studio_dir), capture_output=True, text=True)
         
         if result.returncode == 0:
-            print(f"[4/5] ✓ Build completed successfully!")
+            print("[4/5] ✓ Build completed successfully!")
             
             exe_file = dist_dir / "EmberEyeStudio.exe"
             if exe_file.exists():
@@ -60,16 +75,16 @@ def build_installer():
                 print("\n" + "=" * 60)
                 print("Build Complete!")
                 print("=" * 60)
-                print(f"\nExecutable location:")
+                print("\nExecutable location:")
                 print(f"  {exe_file}")
-                print(f"\nTo run: Double-click EmberEyeStudio.exe or run:")
+                print("\nTo run: Double-click EmberEyeStudio.exe or run:")
                 print(f"  {exe_file}")
                 return True
             else:
                 print(f"✗ Executable not found at {exe_file}")
                 return False
         else:
-            print(f"✗ Build failed!")
+            print("✗ Build failed!")
             print(f"Error: {result.stderr}")
             return False
             
@@ -78,5 +93,7 @@ def build_installer():
         return False
 
 if __name__ == "__main__":
+    guard_legacy_usage()
     success = build_installer()
     sys.exit(0 if success else 1)
+
