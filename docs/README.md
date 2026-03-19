@@ -11,6 +11,7 @@
 - [Overview](#overview)
 - [Key Features](#key-features)
 - [Architecture](#architecture)
+- [Release Notes](#release-notes)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
@@ -141,6 +142,12 @@ Ember Eye is a sophisticated command center application for real-time thermal vi
 | **Anomalies Manager** | Thermal data logging | JSON persistence |
 | **WebSocket Client** | Real-time updates | websockets |
 | **Metrics Server** | Prometheus endpoint | HTTP server |
+
+## 🏷 Release Notes
+
+- Product versioning policy: [VERSIONING_POLICY.md](d:/EE/EmberEye/docs/VERSIONING_POLICY.md)
+- Release notes index: [releases/README.md](d:/EE/EmberEye/docs/releases/README.md)
+- Current stable release: [releases/RELEASE_NOTES_2026-03-19.md](d:/EE/EmberEye/docs/releases/RELEASE_NOTES_2026-03-19.md)
 
 ## 📦 Installation
 
