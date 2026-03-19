@@ -9,6 +9,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from embereye import BASE_VERSION, BUILD_NUMBER
+
 def check_pyinstaller():
     """Ensure PyInstaller is installed"""
     try:
@@ -158,8 +160,8 @@ if sys.platform == 'darwin':
         info_plist={
             'CFBundleName': 'EmberEye',
             'CFBundleDisplayName': 'EmberEye',
-            'CFBundleVersion': '1.0.0',
-            'CFBundleShortVersionString': '1.0.0',
+            'CFBundleVersion': BUILD_NUMBER,
+            'CFBundleShortVersionString': BASE_VERSION,
             'NSHighResolutionCapable': 'True',
             'NSCameraUsageDescription': 'EmberEye needs camera access to capture live video for fire, smoke, and thermal hazard detection.',
         },

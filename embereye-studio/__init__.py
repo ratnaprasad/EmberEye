@@ -1,5 +1,5 @@
 """
-EmberEye Studio - Labs Edition v1.0.0
+EmberEye Studio - Labs Edition v2.0.0
 Centralized training and model development hub
 
 Main Modules:
@@ -10,9 +10,11 @@ Main Modules:
 - ignissim: Simulation hub for testing
 """
 
+from embereye import STUDIO_VERSION
+
 from .studio_db_manager import StudioDatabaseManager
 from .studio_login import StudioLoginWindow
 from .studio_main_window import StudioMainWindow
 
-__version__ = "1.0.0"
+__version__ = STUDIO_VERSION
 __all__ = ['StudioDatabaseManager', 'StudioLoginWindow', 'StudioMainWindow']

@@ -22,7 +22,7 @@
   <Product Id="*" 
            Name="EmberEye" 
            Language="1033" 
-           Version="1.0.0" 
+           Version="2.0.0" 
            Manufacturer="S3Micro Systems" 
            UpgradeCode="12345678-1234-1234-1234-123456789ABC">
     

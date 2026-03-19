@@ -2771,7 +2771,7 @@ class SettingsTab(QWidget):
         about_layout = QVBoxLayout()
 
         about_text = QLabel(
-            "EmberEye Studio v1.0.0\n"
+            "EmberEye Studio v2.0.0\n"
             "Training and Model Development Hub\n\n"
             "ForgeLab Module - Phoenix Cycle Training\n"
             "© EmberEye Team 2026"
