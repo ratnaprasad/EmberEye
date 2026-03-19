@@ -504,8 +504,11 @@ class VisionDetector:
                         else:
                             raw_class_name = str(class_id)
 
-                        # Map class id to central canonical class label when available
-                        if 0 <= class_id < len(self.central_class_names):
+                        # Use class labels from the uploaded model first.
+                        # Fall back to central config only when model names are unavailable.
+                        if names and class_id in names:
+                            class_name = str(names.get(class_id, raw_class_name))
+                        elif 0 <= class_id < len(self.central_class_names):
                             class_name = self.central_class_names[class_id]
                         else:
                             class_name = raw_class_name

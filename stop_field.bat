@@ -9,6 +9,7 @@ echo.
 echo Stopping EmberEye Field Application...
 taskkill /F /FI "WINDOWTITLE eq EmberEye Field*" /T >nul 2>&1
 taskkill /F /IM EmberEye-Field.exe /T >nul 2>&1
+taskkill /F /IM EmberEye-Field-GPU.exe /T >nul 2>&1
 taskkill /F /IM EmberEye-Field-OneFile.exe /T >nul 2>&1
 
 echo Stopping RTSP Camera Simulator...

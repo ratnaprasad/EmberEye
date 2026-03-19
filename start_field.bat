@@ -13,6 +13,7 @@ taskkill /F /FI "WINDOWTITLE eq EmberEye Field*" /T >nul 2>&1
 
 echo   Stopping packaged executables if running...
 taskkill /F /IM EmberEye-Field.exe /T >nul 2>&1
+taskkill /F /IM EmberEye-Field-GPU.exe /T >nul 2>&1
 taskkill /F /IM EmberEye-Field-OneFile.exe /T >nul 2>&1
 
 echo   Stopping Python script processes if running...
@@ -21,12 +22,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Pr
 timeout /t 2 /nobreak >nul
 
 echo [1/1] Starting EmberEye Field Application...
+set "EMBEREYE_FIELD=1"
 if "%EMBEREYE_FORCE_CPU%"=="1" (
-	echo   Launching field app using active imported model - CPU-only mode...
-	start "EmberEye Field" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=1 && set CUDA_VISIBLE_DEVICES=-1 && .venv\Scripts\python.exe embereye-field\main.py"
+	set "CUDA_VISIBLE_DEVICES=-1"
+	set "EMBEREYE_FORCE_CPU=1"
 ) else (
-	echo   Launching field app using active imported model - GPU auto-detect mode...
-	start "EmberEye Field" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=0 && .venv\Scripts\python.exe embereye-field\main.py"
+	set "EMBEREYE_FORCE_CPU=0"
+)
+
+echo   Launching tactical source UI - hardlocked...
+if "%EMBEREYE_FORCE_CPU%"=="1" (
+	start "EmberEye Field Tactical" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=1 && set CUDA_VISIBLE_DEVICES=-1 && .venv\Scripts\python.exe embereye-field\main.py"
+) else (
+	start "EmberEye Field Tactical" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=0 && .venv\Scripts\python.exe embereye-field\main.py"
 )
 
 echo.
@@ -38,4 +46,4 @@ echo Field App:   Running in separate window
 echo.
 echo To stop the app, run: stop_field.bat
 echo.
-pause
+exit /b 0

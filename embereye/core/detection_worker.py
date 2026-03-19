@@ -4,6 +4,9 @@ Processes frames from detection queue with YOLO model in background thread
 """
 import threading
 import time
+import os
+import filecmp
+from pathlib import Path
 from typing import Callable, Optional, Dict
 from .detection_queue import get_detection_queue, DetectionResult
 from .hybrid_detector import HybridDetector
@@ -130,16 +133,76 @@ class DetectionWorker(threading.Thread):
     def is_running(self) -> bool:
         """Check if worker is running"""
         return self.is_alive() and not self._stop_event.is_set()
+
+    def _resolve_model_version(self, model_path: Optional[str]) -> Optional[str]:
+        """Best-effort resolve of active model version for UI display."""
+        if not model_path:
+            return None
+
+        path_obj = Path(model_path)
+        parts = path_obj.parts
+
+        # Fast path when the file is already under models/<version>/weights/*
+        if 'models' in parts:
+            try:
+                idx = parts.index('models')
+                if idx + 1 < len(parts):
+                    candidate = parts[idx + 1]
+                    if candidate and candidate != 'yolo_versions':
+                        return candidate
+            except Exception:
+                pass
+
+        # Alias path path: models/yolo_versions/current_best.pt
+        if path_obj.name.lower() == 'current_best.pt':
+            try:
+                from embereye.core.model_versioning import ModelVersionManager
+
+                manager = ModelVersionManager()
+                # Support both classic vN folders and deployment_* import folders.
+                version_dirs = [
+                    p for p in manager.models_dir.iterdir()
+                    if p.is_dir() and (p / "weights" / "EmberEye.pt").exists()
+                ]
+                for version_dir in version_dirs:
+                    version = version_dir.name
+                    version_file = version_dir / "weights" / "EmberEye.pt"
+                    if not version_file.exists():
+                        continue
+
+                    # Symlink-friendly fast check.
+                    try:
+                        if os.path.samefile(str(path_obj), str(version_file)):
+                            return version
+                    except Exception:
+                        pass
+
+                    # Windows fallback when current_best.pt is copied (not symlinked).
+                    try:
+                        if filecmp.cmp(str(path_obj), str(version_file), shallow=False):
+                            return version
+                    except Exception:
+                        continue
+            except Exception:
+                return None
+
+        return None
     
     def get_stats(self) -> Dict:
         """Get worker statistics"""
+        model_path = getattr(self.detector, 'yolo_model_path', None)
+        model_name = Path(model_path).name if model_path else None
+        model_version = self._resolve_model_version(model_path)
         return {
             **self.stats,
             'queue_size': self.detection_queue.get_queue_size(),
             'queue_stats': self.detection_queue.get_stats(),
             'model_loaded': self.detector.model_loaded,
             'model_error': self.detector.last_load_error,
-            'inference_device': getattr(self.detector, 'inference_device', 'cpu')
+            'inference_device': getattr(self.detector, 'inference_device', 'cpu'),
+            'model_path': model_path,
+            'model_name': model_name,
+            'model_version': model_version,
         }
 
     def add_result_callback(self, callback: Optional[Callable[[DetectionResult], None]]) -> None:

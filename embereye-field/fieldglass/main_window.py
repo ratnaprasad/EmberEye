@@ -5007,15 +5007,23 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         mono=True,
                     )
             if stats.get('model_loaded'):
+                model_name = str(stats.get('model_name') or '').strip()
+                model_version = str(stats.get('model_version') or '').strip()
+                if model_version:
+                    model_text = f"MODEL: {model_version}"
+                elif model_name:
+                    model_text = f"MODEL: {model_name}"
+                else:
+                    model_text = "MODEL: LOADED"
                 self._apply_tactical_status_module_style(
                     self.model_status_frame,
                     self.model_status_label,
-                    "MODEL: LOADED",
+                    model_text,
                     text_color="#FFDC00",
                     active=True,
                     mono=True,
                 )
-                self.model_status_label.setToolTip("")
+                self.model_status_label.setToolTip(str(stats.get('model_path') or model_text))
             else:
                 model_error = stats.get('model_error')
                 if model_error:
@@ -5832,7 +5840,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """Recover pending identities from recent telemetry so brief sightings remain visible in UI."""
         now_val = float(now_ts if now_ts is not None else time.time())
         retention_s = int(getattr(self, '_pending_telemetry_retention_s', 24 * 60 * 60) or 24 * 60 * 60)
+        # Use tcp_logger's canonical path so source and frozen EXE modes agree.
         telemetry_path = os.path.join('logs', 'device_telemetry.jsonl')
+        try:
+            from tcp_logger import DEVICE_TELEMETRY_LOG
+            if DEVICE_TELEMETRY_LOG:
+                telemetry_path = str(DEVICE_TELEMETRY_LOG)
+        except Exception:
+            pass
+        telemetry_path = os.path.abspath(telemetry_path)
         if not os.path.exists(telemetry_path):
             return {}
 
@@ -5888,6 +5904,17 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 }
         return recovered
 
+    def _exclude_active_serials_from_pending(self, pending: dict, devices, now_ts: float = None) -> dict:
+        """Keep pending views mutually exclusive with active PFDS cards."""
+        filtered = dict(pending or {})
+        for device in (devices or []):
+            serial = self._normalize_serial_key((device or {}).get('serial_number'))
+            if not serial:
+                continue
+            if self._get_device_lifecycle_state(device, now_ts=now_ts) == 'active':
+                filtered.pop(serial, None)
+        return filtered
+
     def _collect_live_pfds_snapshot(self):
         now_ts = time.time()
         try:
@@ -5919,6 +5946,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     'state': pending_state,
                     'device_id': device.get('id'),
                 }
+
+        pending = self._exclude_active_serials_from_pending(pending, devices, now_ts=now_ts)
 
         pending_list = []
         for serial, info in sorted(pending.items(), key=lambda item: item[0]):
@@ -6811,6 +6840,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                             'state': pending_state,
                             'device_id': d.get('id'),
                         }
+
+                pending = self._exclude_active_serials_from_pending(pending, devices, now_ts=now_ts)
 
                 for serial, info in sorted(pending.items(), key=lambda kv: kv[0]):
                     prow = pending_table.rowCount()

@@ -185,14 +185,38 @@ class VideoWidget(QWidget):
                 
                 # Extract and display target temperature (max value in grid)
                 corrected = self._apply_emissivity_compensation(arr)
-                target_temp = corrected.max()
-                self.set_temperature(target_temp)
+                finite_vals = corrected[np.isfinite(corrected)]
+                if finite_vals.size:
+                    target_temp = float(np.max(finite_vals))
+                    self.set_temperature(target_temp)
             except Exception as e:
                 print(f"Temperature extraction error: {e}")
-            
-            # Grid view mode: full temperature grid is handled in update_frame
-            # Non-grid view mode: hot cells and fusion overlay are handled in update_frame via _redraw_with_grid
-            # No need to call any rendering here, just store the data
+
+            current_pixmap = self.video_label.pixmap()
+            has_visible_pixmap = bool(current_pixmap and not current_pixmap.isNull())
+
+            # Thermal packets can arrive while the RTSP path is stalled or disconnected.
+            # Re-render directly so thermal/grid modes persist even without a fresh camera frame.
+            if self.display_mode == "grid":
+                grid_pixmap = self._build_temperature_grid_pixmap(self._last_thermal_matrix)
+                if grid_pixmap and not grid_pixmap.isNull():
+                    self._last_base_pixmap = grid_pixmap
+                    self.video_label.setPixmap(grid_pixmap)
+                    self._redraw_with_grid()
+                else:
+                    self._render_no_video_fallback()
+            elif self.display_mode == "thermal":
+                thermal_pixmap = self._build_thermal_heatmap_pixmap(self._last_thermal_matrix)
+                if thermal_pixmap and not thermal_pixmap.isNull():
+                    self._last_base_pixmap = thermal_pixmap
+                    self.video_label.setPixmap(thermal_pixmap)
+                    self._redraw_with_grid()
+                else:
+                    self._render_no_video_fallback()
+            elif has_visible_pixmap:
+                self._redraw_with_grid()
+            else:
+                self._render_no_video_fallback()
         except Exception as e:
             print(f"Thermal handler error: {e}")
 
@@ -557,7 +581,13 @@ class VideoWidget(QWidget):
 
                     val = float(arr[r, c])
                     temp_c = val
-                    bg_color, tcolor = self._temperature_to_grid_colors(temp_c, temp_lo, temp_hi, alpha=160)
+                    if np.isfinite(temp_c):
+                        bg_color, tcolor = self._temperature_to_grid_colors(temp_c, temp_lo, temp_hi, alpha=160)
+                        txt = f"{temp_c:.2f}"
+                    else:
+                        bg_color = QColor(110, 26, 26, 180)
+                        tcolor = QColor(245, 245, 245)
+                        txt = "--"
 
                     # Fill the cell to preserve hotspot contrast in numeric overlay mode.
                     painter.fillRect(rect.adjusted(1, 1, -1, -1), bg_color)
@@ -571,7 +601,6 @@ class VideoWidget(QWidget):
 
                     # Draw temperature text
                     painter.setPen(tcolor)
-                    txt = f"{temp_c:.2f}"
                     painter.drawText(rect, Qt.AlignCenter, txt)
 
                 painter.end()
@@ -685,7 +714,13 @@ class VideoWidget(QWidget):
 
                 val = float(arr[r, c])
                 temp_c = val
-                bg_color, tcolor = self._temperature_to_grid_colors(temp_c, temp_lo, temp_hi)
+                if np.isfinite(temp_c):
+                    bg_color, tcolor = self._temperature_to_grid_colors(temp_c, temp_lo, temp_hi)
+                    txt = f"{temp_c:.2f}"
+                else:
+                    bg_color = QColor(110, 26, 26)
+                    tcolor = QColor(245, 245, 245)
+                    txt = "--"
 
                 # Fill each cell so hotspots remain immediately visible in numeric mode.
                 painter.fillRect(rect.adjusted(1, 1, -1, -1), bg_color)
@@ -694,7 +729,6 @@ class VideoWidget(QWidget):
                 if not show_text:
                     continue
                 painter.setPen(tcolor)
-                txt = f"{temp_c:.2f}"
                 painter.drawText(rect, Qt.AlignCenter, txt)
 
             painter.end()
@@ -1848,7 +1882,14 @@ class VideoWidget(QWidget):
         if not hasattr(self, 'temp_label'):
             return  # Label not created yet, skip update
         # Update temperature display
-        self.temp_label.setText(f"Temp: {temp:.1f}°C")
+        try:
+            import numpy as np
+            if np.isfinite(float(temp)):
+                self.temp_label.setText(f"Temp: {float(temp):.1f}°C")
+            else:
+                self.temp_label.setText("Temp: --")
+        except Exception:
+            self.temp_label.setText("Temp: --")
         self._update_temp_color()
 
     def _update_temp_color(self):

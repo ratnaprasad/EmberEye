@@ -303,6 +303,14 @@ class TCPAsyncSensorServer:
         loop = asyncio.get_running_loop()
         while self.running and client_key in self._client_writers:
             if client_key in self._client_eeprom_hex:
+                # EEPROM received: send PERIOD_ON to ensure streaming starts
+                # (some devices require PERIOD_ON after EEPROM is processed)
+                try:
+                    writer.write(b"PERIOD_ON\n")
+                    await writer.drain()
+                    log_debug(f"Sent PERIOD_ON to {client_key} after EEPROM received [POST-EEPROM]")
+                except Exception:
+                    pass
                 return
 
             last_sent = float(self._client_last_eeprom_request.get(client_key, 0.0))

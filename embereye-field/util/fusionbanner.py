@@ -1,4 +1,4 @@
-from math import sin
+from math import sin, isfinite
 from time import time as now_time
 
 from PyQt5.QtCore import QRect, QRectF, Qt
@@ -14,13 +14,20 @@ def draw_fusion_overlay(widget, painter, width, height):
         scale = min(width / 1280.0, height / 720.0) * mode_gain
         scale = max(0.74, min(scale, 1.28))
 
-        confidence = float(fusion.get("confidence", 0.0) or 0.0)
+        def _finite_or_default(value, default=0.0):
+            try:
+                parsed = float(value)
+            except Exception:
+                return float(default)
+            return parsed if isfinite(parsed) else float(default)
+
+        confidence = _finite_or_default(fusion.get("confidence", 0.0), 0.0)
         confidence = max(0.0, min(1.0, confidence))
         accuracy = int(confidence * 100)
         alarm = bool(fusion.get("alarm"))
 
         sources = set(fusion.get("sources", []) or [])
-        thermal = float(fusion.get("thermal_max", 0.0) or 0.0)
+        thermal = _finite_or_default(fusion.get("thermal_max", 0.0), 0.0)
         if thermal <= 0.0:
             try:
                 last_matrix = getattr(widget, "_last_thermal_matrix", None)
@@ -28,20 +35,23 @@ def draw_fusion_overlay(widget, painter, width, height):
                     import numpy as _np
                     arr = _np.array(last_matrix, dtype=float)
                     if arr.size > 0:
-                        thermal = float(_np.max(arr))
+                        finite_vals = arr[_np.isfinite(arr)]
+                        if finite_vals.size > 0:
+                            thermal = float(_np.max(finite_vals))
             except Exception:
                 pass
-        gas = float(fusion.get("gas_ppm", 0.0) or 0.0)
-        smoke = float(fusion.get("smoke_level", 0.0) or 0.0)
+        thermal_valid = bool(isfinite(thermal) and thermal > 0.0)
+        gas = _finite_or_default(fusion.get("gas_ppm", 0.0), 0.0)
+        smoke = _finite_or_default(fusion.get("smoke_level", 0.0), 0.0)
         flame_digital = int(fusion.get("flame_digital", 0) or 0)
-        flame_analog_pct = float(fusion.get("flame_analog_pct", 0.0) or 0.0)
-        temp_threshold = float(fusion.get("temp_threshold", 40.0) or 40.0)
-        critical_temp_threshold = float(fusion.get("critical_temp_threshold", 60.0) or 60.0)
+        flame_analog_pct = _finite_or_default(fusion.get("flame_analog_pct", 0.0), 0.0)
+        temp_threshold = _finite_or_default(fusion.get("temp_threshold", 40.0), 40.0)
+        critical_temp_threshold = _finite_or_default(fusion.get("critical_temp_threshold", 60.0), 60.0)
         if critical_temp_threshold <= temp_threshold:
             critical_temp_threshold = temp_threshold + 1.0
-        gas_threshold_ppm = float(fusion.get("gas_ppm_threshold", 400.0) or 400.0)
-        smoke_threshold_pct = float(fusion.get("smoke_threshold_pct", 25.0) or 25.0)
-        flame_threshold_pct = float(fusion.get("flame_threshold_pct", 25.0) or 25.0)
+        gas_threshold_ppm = _finite_or_default(fusion.get("gas_ppm_threshold", 400.0), 400.0)
+        smoke_threshold_pct = _finite_or_default(fusion.get("smoke_threshold_pct", 25.0), 25.0)
+        flame_threshold_pct = _finite_or_default(fusion.get("flame_threshold_pct", 25.0), 25.0)
         flame_source_active = ("flame" in sources) or ("flame_analog" in sources) or ("flame_digital" in sources)
         flame_detected = bool(flame_digital == 1 or flame_analog_pct >= flame_threshold_pct)
         flame_confidence = max(1.0 if flame_digital == 1 else 0.0, max(0.0, min(1.0, flame_analog_pct / 100.0)))
@@ -50,7 +60,10 @@ def draw_fusion_overlay(widget, painter, width, height):
 
         def metric_ratio(value, lo, hi):
             try:
-                return max(0.0, min(1.0, (float(value) - float(lo)) / max(1e-6, (float(hi) - float(lo)))))
+                val = float(value)
+                if not isfinite(val):
+                    return 0.0
+                return max(0.0, min(1.0, (val - float(lo)) / max(1e-6, (float(hi) - float(lo)))))
             except Exception:
                 return 0.0
 
@@ -61,13 +74,15 @@ def draw_fusion_overlay(widget, painter, width, height):
                 value_f = float(value)
             except Exception:
                 return 0
+            if not isfinite(value_f):
+                return 0
             if value_f >= float(crit):
                 return 3
             if value_f >= float(warn):
                 return 2
             return 1
 
-        thermal_source_active = ("thermal" in sources) or thermal >= temp_threshold
+        thermal_source_active = ("thermal" in sources) or (thermal_valid and thermal >= temp_threshold)
         sev_thermal = metric_severity(thermal, temp_threshold, critical_temp_threshold, thermal_source_active)
         sev_gas = metric_severity(gas, 300.0, 500.0, "gas" in sources)
         sev_smoke = metric_severity(smoke, 30.0, 50.0, ("gas" in sources or "smoke" in sources))
@@ -350,7 +365,8 @@ def draw_fusion_overlay(widget, painter, width, height):
 
             elif key == "thermal":
                 draw_alert_pulse(card, sev_thermal)
-                draw_shadow_text(card.adjusted(int(8 * scale), int(26 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, f"{thermal:.1f}°C", value_col, value_font)
+                thermal_text = f"{thermal:.1f}°C" if thermal_valid else "--°C"
+                draw_shadow_text(card.adjusted(int(8 * scale), int(26 * scale), -int(8 * scale), 0), Qt.AlignHCenter | Qt.AlignTop, thermal_text, value_col, value_font)
                 draw_meter(
                     QRect(card.left() + int(8 * scale), card.bottom() - int(19 * scale), card.width() - int(16 * scale), max(4, int(5 * scale))),
                     metric_ratio(thermal, 0.0, 100.0),
@@ -358,7 +374,10 @@ def draw_fusion_overlay(widget, painter, width, height):
                     QColor(255, 196, 92),
                     QColor(255, 214, 126),
                 )
-                therm_state = "OP-READY" if thermal < temp_threshold else ("ELEVATED" if thermal < critical_temp_threshold else "CRITICAL")
+                if not thermal_valid:
+                    therm_state = "NO DATA"
+                else:
+                    therm_state = "OP-READY" if thermal < temp_threshold else ("ELEVATED" if thermal < critical_temp_threshold else "CRITICAL")
                 draw_shadow_text(card.adjusted(int(8 * scale), int(54 * scale), 0, 0), Qt.AlignLeft | Qt.AlignTop, therm_state, _col_title, small_font)
 
             elif key == "gas":

@@ -375,10 +375,22 @@ class HybridDetector:
                         for box in result.boxes:
                             class_id = int(box.cls[0])
                             confidence = float(box.conf[0])
-                            if 0 <= class_id < len(self.central_class_names):
-                                class_name = self.central_class_names[class_id]
+                            # Use uploaded model class names first.
+                            # Fall back to central mapping only if model names are unavailable.
+                            model_names = getattr(self.model, 'names', None)
+                            class_name = None
+                            if isinstance(model_names, dict):
+                                class_name = model_names.get(class_id)
+                            elif isinstance(model_names, list) and 0 <= class_id < len(model_names):
+                                class_name = model_names[class_id]
+
+                            if class_name is None:
+                                if 0 <= class_id < len(self.central_class_names):
+                                    class_name = self.central_class_names[class_id]
+                                else:
+                                    class_name = f"class_{class_id}"
                             else:
-                                class_name = self.model.names.get(class_id, f"class_{class_id}")
+                                class_name = str(class_name)
                             
                             detections.append({
                                 'class': class_name,
