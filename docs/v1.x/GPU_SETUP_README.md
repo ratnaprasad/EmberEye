@@ -77,9 +77,9 @@ The built `.exe` will check for GPU at runtime using the bundled PyTorch. If:
 
 The `requirements.txt` has been left as CPU-only by default for maximum compatibility. To permanently use GPU:
 
-### Option A: Use requirements-gpu.txt
+### Option A: Use requirements/requirements-gpu.txt
 ```powershell
-pip install -r requirements-gpu.txt
+pip install -r requirements/requirements-gpu.txt
 ```
 
 ### Option B: Modify setup_windows.ps1

@@ -41,7 +41,7 @@
    - Expected behavior
    - Verification steps
 
-2. **QUICK_REFERENCE.txt**
+2. **docs/shared/QUICK_REFERENCE.txt**
    - Quick start guide
    - Key log messages
    - Temperature formula examples

@@ -15,7 +15,7 @@ CORE_FILES = [
     "camera_calibrator.py", "calibrationcapture.py", "CalibrationWindow.py",
     "embereye_base/app/vendoredata.py", "embereye_base/app/vendorepojo.py", "resource_helper.py",
     "crash_logger.py", "embereye_base/utils/tcp_logger.py", "embereye_base/utils/tcp_server_logger.py", "error_logger.py",
-    "dashboardapp_working.py", "roommonitoring.py", "steam_tester.py",
+    "dashboardapp_working.py", "steam_tester.py",
     "test_client.py",
     # Vision & adaptive modules
     "embereye_base/core/vision_detector.py", "adaptive_fps.py", "metrics.py",
