@@ -40,7 +40,7 @@ TEST_FILES = [
 ]
 
 DOC_FILES = [
-    "requirements.txt", "EmberEye.spec", "EmberEye_win.spec",
+    "requirements.txt", "EmberEye.spec", "packaging/EmberEye_win.spec",
     "BUILD_GUIDE.md", "BUILD_WINDOWS.md", "DISTRIBUTION.md",
     "THERMAL_GRID_FEATURE.md", "README_WINDOWS_MIGRATION.md",
     "TESTING_INDEX.md", "TESTING_QUICK_START.md",

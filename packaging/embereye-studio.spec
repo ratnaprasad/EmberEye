@@ -3,7 +3,8 @@
 import os
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
-project_dir = os.path.abspath(os.getcwd())
+# SPECPATH is set by PyInstaller to the packaging/ directory; project root is one level up.
+project_dir = os.path.dirname(SPECPATH)
 studio_dir = os.path.join(project_dir, "embereye-studio")
 
 # Collect torch CUDA DLLs and related libs

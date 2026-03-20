@@ -15,7 +15,10 @@ import subprocess
 import sys
 import shutil
 
-WXS_FILE = 'EmberEye.wxs'
+# Canonical packaging location — resolve relative to this script's repo-root parent
+import pathlib as _pathlib
+_PACKAGING = _pathlib.Path(__file__).resolve().parents[1] / 'packaging'
+WXS_FILE = str(_PACKAGING / 'EmberEye.wxs')
 HARVESTED_FILE = 'harvested.wxs'
 OBJ_DIR = 'obj'
 MSI_OUTPUT = 'EmberEye.msi'

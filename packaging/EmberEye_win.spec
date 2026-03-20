@@ -2,12 +2,20 @@
 from PyInstaller.utils.hooks import collect_all
 import os
 
+# SPECPATH is set by PyInstaller to the directory containing this spec file.
+# Project root is one level up from packaging/.
+PROJ = os.path.dirname(SPECPATH)
+
 # Minimal Windows spec excluding torch/ultralytics to avoid DLL init errors
-datas = [('logo.png', '.'), ('stream_config.json', '.'), ('training_config.json', '.')]
+datas = [
+    (os.path.join(PROJ, 'logo.png'), '.'),
+    (os.path.join(PROJ, 'stream_config.json'), '.'),
+    (os.path.join(PROJ, 'training_config.json'), '.'),
+]
 
 # Include annotations folder if it exists (for training support)
-if os.path.isdir('annotations'):
-    datas.append(('annotations', 'annotations'))
+if os.path.isdir(os.path.join(PROJ, 'annotations')):
+    datas.append((os.path.join(PROJ, 'annotations'), 'annotations'))
 
 binaries = []
 hiddenimports = [
@@ -23,8 +31,8 @@ hiddenimports = [
     'PyQt5.QtPrintSupport', 'PyQt5.QtNetwork'
 ]
 
-# Collect embereye package (ensures all submodules and embereye.app.* are available)
-tmp_ret = collect_all('embereye')
+# Collect embereye_base package (ensures all submodules and embereye_base.app.* are available)
+tmp_ret = collect_all('embereye_base')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # Collect OpenCV assets/hooks
@@ -41,8 +49,8 @@ for pkg_name in ('PyQt5.QtWebEngineWidgets', 'PyQt5.QtWebEngineCore', 'PyQt5.QtW
 
 
 a = Analysis(
-    ['main.py'],
-    pathex=['.', 'embereye'],
+    [os.path.join(PROJ, 'main.py')],
+    pathex=[PROJ, os.path.join(PROJ, 'embereye_base')],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

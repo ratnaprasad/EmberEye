@@ -63,11 +63,11 @@ REM Build executable
 echo [4/5] Building executable (this may take 2-5 minutes)...
 
 REM Use Windows-specific spec that excludes torch/ultralytics to avoid DLL init errors
-if exist "EmberEye_win.spec" (
-    echo [*] Using EmberEye_win.spec (excludes torch/ultralytics)
-    pyinstaller --clean EmberEye_win.spec
+if exist "packaging\EmberEye_win.spec" (
+    echo [*] Using packaging\EmberEye_win.spec (excludes torch/ultralytics)
+    pyinstaller --clean packaging\EmberEye_win.spec
 ) else (
-    echo WARNING: EmberEye_win.spec not found, falling back to inline build
+    echo WARNING: packaging\EmberEye_win.spec not found, falling back to inline build
     set ICON_FLAG=
     if exist "logo.ico" (
         set ICON_FLAG=--icon logo.ico

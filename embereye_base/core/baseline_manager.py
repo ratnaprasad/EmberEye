@@ -3,6 +3,10 @@ import time
 import json
 import os
 
+# Default data directory: embereye_base/config/ (alongside committed baselines_events.json sample)
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'config')
+
+
 class BaselineManager:
     def __init__(self):
         self.baselines = {}  # loc_id -> baseline frame (np.array)
@@ -48,7 +52,10 @@ class BaselineManager:
     def get_event_log(self):
         return self.event_log
 
-    def save_to_disk(self, path_prefix='baselines'):
+    def save_to_disk(self, path_prefix=None):
+        if path_prefix is None:
+            path_prefix = os.path.join(_DEFAULT_DATA_DIR, 'baselines')
+        os.makedirs(os.path.dirname(path_prefix) if os.path.dirname(path_prefix) else '.', exist_ok=True)
         # Save baselines
         for loc_id, arr in self.baselines.items():
             np.save(f'{path_prefix}_{loc_id}.npy', arr)
@@ -56,12 +63,17 @@ class BaselineManager:
         with open(f'{path_prefix}_events.json', 'w') as f:
             json.dump(self.event_log, f, default=lambda o: o.tolist() if isinstance(o, np.ndarray) else o)
 
-    def load_from_disk(self, path_prefix='baselines'):
+    def load_from_disk(self, path_prefix=None):
+        if path_prefix is None:
+            path_prefix = os.path.join(_DEFAULT_DATA_DIR, 'baselines')
+        data_dir = os.path.dirname(path_prefix) or '.'
+        prefix_base = os.path.basename(path_prefix)
         # Load baselines
-        for fname in os.listdir('.'):
-            if fname.startswith(path_prefix) and fname.endswith('.npy'):
-                loc_id = fname[len(path_prefix)+1:-4]
-                self.baselines[loc_id] = np.load(fname)
+        if os.path.isdir(data_dir):
+            for fname in os.listdir(data_dir):
+                if fname.startswith(prefix_base) and fname.endswith('.npy'):
+                    loc_id = fname[len(prefix_base)+1:-4]
+                    self.baselines[loc_id] = np.load(os.path.join(data_dir, fname))
         # Load events
         events_path = f'{path_prefix}_events.json'
         if os.path.exists(events_path):

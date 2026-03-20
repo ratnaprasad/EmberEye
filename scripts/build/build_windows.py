@@ -15,7 +15,9 @@ import os
 import subprocess
 import sys
 
-SPEC_FILE = 'EmberEye_win.spec'
+# Canonical spec location — resolve relative to this script's repo-root parent
+_HERE = os.path.dirname(os.path.abspath(__file__))
+SPEC_FILE = os.path.join(_HERE, '..', 'packaging', 'EmberEye_win.spec')
 
 REQUIRED_MODULES = [
     'PyQt5', 'PyQtWebEngine', 'numpy', 'opencv-python', 'bcrypt', 'websockets', 'passlib', 'cryptography'
