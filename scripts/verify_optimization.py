@@ -53,8 +53,8 @@ print("\n[2] CHECKING FOR HYBRID SYSTEM COMPONENTS...")
 print("-" * 80)
 
 hybrid_checks = [
-    ('DetectionQueue import', 'from embereye.core.detection_queue import get_detection_queue', True),
-    ('DetectionWorker import', 'from embereye.core.detection_worker import get_detection_worker', True),
+    ('DetectionQueue import', 'from embereye_base.core.detection_queue import get_detection_queue', True),
+    ('DetectionWorker import', 'from embereye_base.core.detection_worker import get_detection_worker', True),
     ('FrameMetadata import', 'FrameMetadata', True),
     ('detection_queue initialization', 'self.detection_queue = get_detection_queue()', True),
     ('Heuristic filtering', 'h_score = self.vision_detector.heuristic_fire_smoke(frame)', True),

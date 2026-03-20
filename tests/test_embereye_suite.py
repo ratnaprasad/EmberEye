@@ -35,7 +35,7 @@ def test_tcp_packet_parsing():
     print("\n=== Testing TCP Packet Parsing ===")
     
     try:
-        from embereye.core.tcp_sensor_server import TCPSensorServer
+        from embereye_base.core.tcp_sensor_server import TCPSensorServer
         
         # Test data collector
         received_packets = []
@@ -198,11 +198,11 @@ def test_tcp_logger():
     print("\n=== Testing TCP Logger ===")
     
     try:
-        from tcp_logger import log_raw_packet, log_error_packet, get_tcp_log_path
+        from embereye_base.utils.tcp_logger import log_raw_packet, log_error_packet, get_tcp_log_path
         
         with tempfile.TemporaryDirectory() as tmpdir:
             # Override log path
-            import tcp_logger
+            import embereye_base.utils.tcp_logger as tcp_logger
             old_log_dir = tcp_logger.LOG_DIR
             tcp_logger.LOG_DIR = tmpdir
             
@@ -294,7 +294,7 @@ def test_thermal_frame_parsing():
     print("\n=== Testing Thermal Frame Parsing ===")
     
     try:
-        from embereye.core.thermal_frame_parser import ThermalFrameParser
+        from embereye_base.core.thermal_frame_parser import ThermalFrameParser
         import numpy as np
         
         # Generate test frame with known temperatures
@@ -360,7 +360,7 @@ def test_fusion_orchestrator_hot_cells():
     print("\n=== Testing Fusion Orchestrator Hot Cells ===")
     
     try:
-        from embereye.core.fusion import FusionOrchestrator
+        from embereye_base.core.fusion import FusionOrchestrator
         import numpy as np
 
         fusion = FusionOrchestrator({
@@ -418,7 +418,7 @@ def test_integration_tcp_server():
     print("\n=== Integration Test: TCP Server ===")
     
     try:
-        from embereye.core.tcp_sensor_server import TCPSensorServer
+        from embereye_base.core.tcp_sensor_server import TCPSensorServer
         import threading
         
         received = []

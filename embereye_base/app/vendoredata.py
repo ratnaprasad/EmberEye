@@ -1,5 +1,5 @@
 import json
-from vendorepojo import Vendor
+from embereye_base.app.vendorepojo import Vendor
 class VendorDataHandler:
     """
     A class to create, store, and retrieve JSON data arrays.

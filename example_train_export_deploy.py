@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 def train_model(version: str, total_images: int, new_images: int, epochs: int, 
                 project_name: str = "fire_detector"):
     """Train a model version."""
-    from training_pipeline import TrainingConfig, YOLOTrainingPipeline
+    from embereye_base.core.training_pipeline import TrainingConfig, YOLOTrainingPipeline
     
     logger.info(f"🚀 Training {version} with {total_images} total images ({new_images} new)...")
     
@@ -55,7 +55,7 @@ def create_version(version: str, total_images: int, new_images: int,
                    previous_version=None):
     """Create a versioned model."""
     from model_versioning import ModelVersionManager, ModelMetadata
-    from training_pipeline import TrainingConfig
+    from embereye_base.core.training_pipeline import TrainingConfig
     
     logger.info(f"📝 Creating version {version}...")
     

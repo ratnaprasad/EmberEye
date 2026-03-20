@@ -7,9 +7,9 @@ import os
 sys.path.insert(0, r'd:/EE/EmberEye')
 
 import time
-from embereye.core.detection_queue import get_detection_queue
-from embereye.core.detection_worker import get_detection_worker, stop_detection_worker
-from embereye.core.hybrid_detector import HybridDetector
+from embereye_base.core.detection_queue import get_detection_queue
+from embereye_base.core.detection_worker import get_detection_worker, stop_detection_worker
+from embereye_base.core.hybrid_detector import HybridDetector
 import numpy as np
 import cv2
 

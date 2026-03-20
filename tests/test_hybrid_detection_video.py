@@ -14,9 +14,9 @@ import time
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from embereye.core.vision_detector import VisionDetector
-from embereye.core.detection_queue import get_detection_queue, FrameMetadata
-from embereye.core.detection_worker import get_detection_worker, stop_detection_worker
+from embereye_base.core.vision_detector import VisionDetector
+from embereye_base.core.detection_queue import get_detection_queue, FrameMetadata
+from embereye_base.core.detection_worker import get_detection_worker, stop_detection_worker
 
 class VideoTestProcessor:
     def __init__(self, video_path, output_base='test_output', max_frames=None, stop_after_high_conf=None):

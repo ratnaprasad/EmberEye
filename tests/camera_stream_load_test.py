@@ -47,7 +47,7 @@ try:
 except Exception:  # pragma: no cover
     psutil = None
 
-from vision_detector import VisionDetector
+from embereye_base.core.vision_detector import VisionDetector
 
 def parse_args():
     p = argparse.ArgumentParser(description="EmberEye camera stream load tester")
