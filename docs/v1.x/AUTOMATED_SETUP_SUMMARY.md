@@ -24,7 +24,7 @@
 - Warning logs for non-critical issues
 - Exit codes for troubleshooting
 
-### 2. **`setup_windows.bat`** (Batch Launcher)
+### 2. **`scripts/windows/setup_windows.bat`** (Batch Launcher)
 **The user-friendly launcher** - Simple execution:
 
 ✅ Double-click to run PowerShell script  
@@ -51,7 +51,7 @@
 ### For Windows Users:
 
 ```
-1. Download setup_windows.bat
+1. Download scripts/windows/setup_windows.bat
 2. Double-click it
 3. Wait 10-15 minutes
 4. Done! ✅
@@ -119,7 +119,7 @@ The script handles all major failures:
 
 ### Option 1: Simple (Recommended)
 ```batch
-1. Download: setup_windows.bat
+1. Download: scripts/windows/setup_windows.bat
 2. Double-click it
 3. Wait 10-15 minutes
 4. Done!
@@ -128,7 +128,7 @@ The script handles all major failures:
 ### Option 2: Custom Path
 ```batch
 # Open Command Prompt
-setup_windows.bat D:\MyApps\EmberEye
+scripts/windows/setup_windows.bat D:\MyApps\EmberEye
 ```
 
 ### Option 3: PowerShell Direct
@@ -168,8 +168,8 @@ C:\EmberEye/
 ├── EmberEye/                    ← Full source code
 │   ├── main.py                 ← Launch app
 │   ├── .venv/                  ← Virtual environment with all packages
-│   ├── build_windows.bat       ← Build .exe
-│   ├── build_installer.bat     ← Build professional installer
+│   ├── scripts/windows/build_windows.bat       ← Build .exe
+│   ├── scripts/windows/build_installer.bat     ← Build professional installer
 │   └── dist/                   ← Output folder for builds
 │
 └── Setup Logs/
@@ -202,7 +202,7 @@ Users will see:
 🚀 Next Steps:
    1. Launch EmberEye from desktop shortcut
    2. Or run: cd C:\EmberEye && .\.venv\Scripts\activate && python main.py
-   3. To build .exe: Run build_windows.bat
+   3. To build .exe: Run scripts/windows/build_windows.bat
 ```
 
 ---
@@ -244,7 +244,7 @@ All detailed in `WINDOWS_SETUP_AUTOMATED.md`:
 
 ### Files to Share:
 
-1. **`setup_windows.bat`** - Simple launcher (just double-click!)
+1. **`scripts/windows/setup_windows.bat`** - Simple launcher (just double-click!)
 2. **`setup_windows.ps1`** - Complete setup automation
 3. **`WINDOWS_SETUP_AUTOMATED.md`** - Complete guide
 4. **Repository link** - For manual setup if needed
@@ -253,7 +253,7 @@ All detailed in `WINDOWS_SETUP_AUTOMATED.md`:
 
 ```
 EmberEye-Windows-Setup/
-├── setup_windows.bat
+├── scripts/windows/setup_windows.bat
 ├── setup_windows.ps1
 ├── WINDOWS_SETUP_AUTOMATED.md
 ├── DISTRIBUTION_QUICK_START.md
@@ -266,7 +266,7 @@ EmberEye-Windows-Setup/
 
 When introducing to teams:
 
-> "Just download `setup_windows.bat` and double-click it. The script handles everything - Python, Git, dependencies, GPU detection, everything. If something goes wrong, check the log files. No technical knowledge required!"
+> "Just download `scripts/windows/setup_windows.bat` and double-click it. The script handles everything - Python, Git, dependencies, GPU detection, everything. If something goes wrong, check the log files. No technical knowledge required!"
 
 ---
 
@@ -296,14 +296,14 @@ When introducing to teams:
 ### Step 1: Share The Files
 ```
 Send to team:
-- setup_windows.bat
+- scripts/windows/setup_windows.bat
 - setup_windows.ps1
 - WINDOWS_SETUP_AUTOMATED.md
 ```
 
 ### Step 2: Tell Them
 ```
-"Just double-click setup_windows.bat
+"Just double-click scripts/windows/setup_windows.bat
 Wait 10-15 minutes
 Done! Check desktop for shortcuts"
 ```
@@ -351,7 +351,7 @@ You now have:
 
 ## 🎯 Next Steps
 
-1. **Test on Windows machine** - Run setup_windows.bat
+1. **Test on Windows machine** - Run scripts/windows/setup_windows.bat
 2. **Check logs** - Verify logging works
 3. **Share with team** - Send setup files + guide
 4. **Support users** - Collect logs if they fail

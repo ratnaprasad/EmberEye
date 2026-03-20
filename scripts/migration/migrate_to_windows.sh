@@ -112,7 +112,7 @@ echo.
 
 REM Activate virtual environment
 if not exist ".venv\Scripts\activate.bat" (
-    echo ERROR: Virtual environment not found. Run setup_windows.bat first.
+    echo ERROR: Virtual environment not found. Run scripts\windows\setup_windows.bat first.
     pause
     exit /b 1
 )
@@ -184,7 +184,7 @@ cat > "$WINDOWS_MIGRATION_DIR/WINDOWS_DEPLOYMENT.md" << 'EOF'
 :: Navigate to the extracted folder
 
 :: Run setup
-setup_windows.bat
+scripts\windows\setup_windows.bat
 ```
 
 This will:
@@ -524,7 +524,7 @@ This package contains everything needed to deploy EmberEye on Windows.
 
 1. **Setup Environment**
    ```batch
-   setup_windows.bat
+    scripts\windows\setup_windows.bat
    ```
 
 2. **Create Icon** (Optional)
@@ -629,7 +629,7 @@ echo ""
 echo "Transfer to Windows:"
 echo "  1. Copy ${WINDOWS_MIGRATION_DIR}.zip to Windows PC"
 echo "  2. Extract the ZIP file"
-echo "  3. Run setup_windows.bat"
+echo "  3. Run scripts/windows/setup_windows.bat"
 echo "  4. Run build_windows_exe.bat"
 echo ""
 echo "Output: dist\\EmberEye\\EmberEye.exe"

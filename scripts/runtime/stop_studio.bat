@@ -3,7 +3,9 @@ REM EmberEye Studio - Stop Script
 REM Stops EmberEye Studio processes started via EXE or Python
 
 setlocal
-cd /d "%~dp0"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
 
 echo ============================================================
 echo EmberEye Studio - Stop

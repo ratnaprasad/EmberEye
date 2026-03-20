@@ -19,7 +19,7 @@ python --version
 
 ```powershell
 # Double-click this file:
-build_windows.bat
+scripts/windows/build_windows.bat
 
 # Output: dist\EmberEye.exe (~1GB)
 ```
@@ -28,7 +28,7 @@ build_windows.bat
 
 ```powershell
 # 1. Install NSIS from: https://nsis.sourceforge.io/Download
-# 2. Run: build_installer.bat
+# 2. Run: scripts/windows/build_installer.bat
 # Output: dist\EmberEye-1.0.0-beta-Setup.exe (~900MB)
 ```
 
@@ -81,7 +81,7 @@ chmod +x scripts/retired/build_macos.sh
 ## 🚀 Distribution Steps
 
 ### Step 1: Build All Packages
-1. **Windows**: Run `build_windows.bat` on your Windows machine
+1. **Windows**: Run `scripts/windows/build_windows.bat` on your Windows machine
 2. **Linux**: Run `./build_linux.sh` on Ubuntu machine (or WSL)
 3. **macOS**: Run `./build_macos.sh` on Mac (or copy DMG from Mac)
 
@@ -144,8 +144,8 @@ All packages automatically detect and use:
 | File | Purpose |
 |------|---------|
 | `DISTRIBUTION_SETUP.md` | **Complete setup guide** (detailed) |
-| `build_windows.bat` | Build Windows .exe |
-| `build_installer.bat` | Create Windows installer |
+| `scripts/windows/build_windows.bat` | Build Windows .exe |
+| `scripts/windows/build_installer.bat` | Create Windows installer |
 | `scripts/retired/build_linux.sh` | Build Linux .deb |
 | `scripts/retired/build_macos.sh` | Build macOS .dmg |
 | `embereye/config/device_config.py` | GPU/CPU auto-detection |

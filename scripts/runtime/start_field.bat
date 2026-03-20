@@ -2,6 +2,10 @@
 REM EmberEye Field App - App-Only Startup
 REM Starts only the Field application (no RTSP/MediaMTX/PFDS)
 
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
+
 echo ============================================================
 echo EmberEye Field Application - App-Only Startup
 echo ============================================================
@@ -32,9 +36,9 @@ if "%EMBEREYE_FORCE_CPU%"=="1" (
 
 echo   Launching tactical source UI - hardlocked...
 if "%EMBEREYE_FORCE_CPU%"=="1" (
-	start "EmberEye Field Tactical" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=1 && set CUDA_VISIBLE_DEVICES=-1 && .venv\Scripts\python.exe embereye-field\main.py"
+	start "EmberEye Field Tactical" cmd /k "cd /d %ROOT_DIR% && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=1 && set CUDA_VISIBLE_DEVICES=-1 && .venv\Scripts\python.exe embereye-field\main.py"
 ) else (
-	start "EmberEye Field Tactical" cmd /k "cd /d %~dp0 && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=0 && .venv\Scripts\python.exe embereye-field\main.py"
+	start "EmberEye Field Tactical" cmd /k "cd /d %ROOT_DIR% && set EMBEREYE_FIELD=1 && set EMBEREYE_FORCE_CPU=0 && .venv\Scripts\python.exe embereye-field\main.py"
 )
 
 echo.
@@ -44,6 +48,6 @@ echo ============================================================
 echo.
 echo Field App:   Running in separate window
 echo.
-echo To stop the app, run: stop_field.bat
+echo To stop the app, run: scripts\runtime\stop_field.bat
 echo.
 exit /b 0

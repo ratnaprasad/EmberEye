@@ -8,6 +8,10 @@ REM ============================================================================
 
 setlocal enabledelayedexpansion
 
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
+
 echo.
 echo ================================================================
 echo       EmberEye v1.0.0-beta - Automated Windows Setup
@@ -22,22 +26,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Get the directory where this script is located
-set "SCRIPT_DIR=%~dp0"
-
 REM Ask user where to install
 set "INSTALL_PATH="
 if "%~1"=="" (
     echo.
     echo Installation Options:
-    echo 1. Use current directory: %SCRIPT_DIR%
+    echo 1. Use current directory: %ROOT_DIR%
     echo 2. Use default: C:\EmberEye
     echo 3. Enter custom path
     echo.
     set /p "CHOICE=Select option (1/2/3): "
     
     if "!CHOICE!"=="1" (
-        set "INSTALL_PATH=%SCRIPT_DIR%"
+        set "INSTALL_PATH=%ROOT_DIR%"
         echo Using current directory: !INSTALL_PATH!
     ) else if "!CHOICE!"=="2" (
         set "INSTALL_PATH=C:\EmberEye"
@@ -60,7 +61,7 @@ REM Execute PowerShell script
 echo Launching setup script...
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%SCRIPT_DIR%setup_windows.ps1' -InstallPath '%INSTALL_PATH%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\setup_windows.ps1' -InstallPath '%INSTALL_PATH%'"
 
 if errorlevel 1 (
     echo.

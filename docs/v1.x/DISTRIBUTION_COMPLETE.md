@@ -12,8 +12,8 @@
 
 ```
 EmberEye/
-├── build_windows.bat          ← Build Windows .exe (one click!)
-├── build_installer.bat        ← Create Windows installer
+├── scripts/windows/build_windows.bat          ← Build Windows .exe (one click!)
+├── scripts/windows/build_installer.bat        ← Create Windows installer
 ├── scripts/retired/build_linux.sh             ← Build Linux .deb
 ├── scripts/retired/build_macos.sh             ← Build macOS .dmg
 │
@@ -34,7 +34,7 @@ EmberEye/
 ### Step 1: Build Windows EXE (on your Windows machine)
 ```powershell
 cd EmberEye
-build_windows.bat
+scripts/windows/build_windows.bat
 
 # Output: dist\EmberEye.exe (~1GB)
 # Test it immediately, then distribute!
@@ -43,7 +43,7 @@ build_windows.bat
 ### Step 2: Build Installers (optional, professional)
 ```powershell
 # Install NSIS from: https://nsis.sourceforge.io/Download
-build_installer.bat
+scripts/windows/build_installer.bat
 
 # Output: dist\EmberEye-1.0.0-beta-Setup.exe (~900MB)
 ```
@@ -159,8 +159,8 @@ User sees device in UI, all optimized automatically!
    - 📞 Support info
 
 4. **Build Scripts** (automated)
-   - `build_windows.bat` - One-click Windows build
-   - `build_installer.bat` - Professional installer
+   - `scripts/windows/build_windows.bat` - One-click Windows build
+   - `scripts/windows/build_installer.bat` - Professional installer
    - `scripts/retired/build_linux.sh` - Linux DEB package
    - `scripts/retired/build_macos.sh` - macOS DMG bundle
 
@@ -169,7 +169,7 @@ User sees device in UI, all optimized automatically!
 ## 🎯 Distribution Strategy
 
 ### Option A: Simple (For Internal Teams)
-1. Run `build_windows.bat` on your Windows machine
+1. Run `scripts/windows/build_windows.bat` on your Windows machine
 2. Create network share folder
 3. Copy `dist\EmberEye.exe` to share
 4. Send team: "Download from `\\server\EmberEye\EmberEye.exe`"
@@ -261,8 +261,8 @@ User sees device in UI, all optimized automatically!
 
 | File | Use | Output |
 |------|-----|--------|
-| `build_windows.bat` | Double-click on Windows | `dist\EmberEye.exe` |
-| `build_installer.bat` | For professional setup (optional) | `dist\EmberEye-Setup.exe` |
+| `scripts/windows/build_windows.bat` | Double-click on Windows | `dist\EmberEye.exe` |
+| `scripts/windows/build_installer.bat` | For professional setup (optional) | `dist\EmberEye-Setup.exe` |
 | `DISTRIBUTION_QUICK_START.md` | Share with team leads | Reference guide |
 | `DISTRIBUTION_SETUP.md` | Share with advanced users | Technical guide |
 
@@ -271,7 +271,7 @@ User sees device in UI, all optimized automatically!
 ## 🚀 Next Actions (Recommended)
 
 1. **Today**: 
-   - [ ] Run `build_windows.bat`
+   - [ ] Run `scripts/windows/build_windows.bat`
    - [ ] Test the generated .exe on your machine
    - [ ] Verify app launches and shows device info
 
@@ -345,8 +345,8 @@ Your distribution is **successful** when:
 ## 📝 Files Committed to GitHub
 
 ```
-✅ build_windows.bat              - One-click Windows EXE builder
-✅ build_installer.bat            - Windows installer creator
+✅ scripts/windows/build_windows.bat              - One-click Windows EXE builder
+✅ scripts/windows/build_installer.bat            - Windows installer creator
 ✅ scripts/retired/build_linux.sh                 - Linux DEB builder
 ✅ scripts/retired/build_macos.sh                 - macOS DMG builder
 ✅ embereye/config/device_config.py - GPU/CPU auto-detection

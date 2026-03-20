@@ -1,13 +1,17 @@
 @echo off
 REM ============================================================================
-REM EmberEye - PyTorch CUDA Installation Launcher
+REM EmberEye - PyTorch Nightly Installation Launcher
 REM ============================================================================
 
 setlocal enabledelayedexpansion
 
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
+
 echo.
 echo ================================================================
-echo       EmberEye - PyTorch CUDA Installation
+echo       EmberEye - PyTorch Nightly Installation
 echo ================================================================
 echo.
 
@@ -19,11 +23,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Get the directory where this script is located
-set "SCRIPT_DIR=%~dp0"
-
 REM Execute PowerShell script
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%SCRIPT_DIR%install_pytorch_cuda.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\install_pytorch_nightly.ps1'"
 
 if errorlevel 1 (
     echo.

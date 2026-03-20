@@ -1,6 +1,10 @@
 @echo off
 REM Stop EmberEye Field App and RTSP Simulator
 
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
+
 echo ============================================================
 echo Stopping EmberEye Field Application Stack
 echo ============================================================

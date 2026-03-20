@@ -2,6 +2,10 @@
 REM EmberEye v1.0.0-beta - NSIS Installer Builder
 REM Creates professional Windows installer (.exe setup file)
 
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
+
 echo.
 echo ========================================
 echo EmberEye - Windows Installer Builder
@@ -27,7 +31,7 @@ REM Check if executable was built
 if not exist "dist\EmberEye.exe" (
     echo ERROR: dist\EmberEye.exe not found
     echo.
-    echo Please run build_windows.bat first to build the executable
+    echo Please run scripts\windows\build_windows.bat first to build the executable
     exit /b 1
 )
 

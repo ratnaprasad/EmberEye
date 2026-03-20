@@ -29,7 +29,7 @@ EmberEye is a **production-ready thermal imaging and AI detection framework** th
 
 #### Windows (Automated)
 1. Download `EmberEye-Setup.zip` from [Releases](https://github.com/ratnaprasad/EmberEye/releases)
-2. Extract and run `setup_windows.bat`
+2. Extract and run `scripts/windows/setup_windows.bat`
 3. Follow the prompts (installs Python, Git, dependencies automatically)
 4. Launch from desktop shortcut
 
@@ -63,7 +63,7 @@ For testing the Field application with simulated camera streams:
 #### Automated (One Command)
 ```batch
 # Windows - Starts RTSP simulator + Field app together
-start_field.bat
+scripts/runtime/start_field.bat
 ```
 
 This will automatically:
@@ -86,7 +86,7 @@ python embereye-field\main.py
 
 #### Stop All Services
 ```batch
-stop_field.bat
+scripts/runtime/stop_field.bat
 ```
 
 See [RTSP Simulator Documentation](./simulators/rtsp/README.md) for advanced configuration.
@@ -208,7 +208,7 @@ http://localhost:8080
 ### Build Executable (Windows)
 ```bash
 cd EmberEye
-.\build_windows.bat
+.\scripts/windows/build_windows.bat
 # Output: dist\EmberEye.exe (~1GB)
 ```
 

@@ -631,7 +631,7 @@ function Main {
     Write-Host "Next Steps:" -ForegroundColor Yellow
     Write-Host "   1. Launch EmberEye from desktop shortcut, or"
     Write-Host "   2. Run: cd $repoPath && .\.venv\Scripts\activate && python main.py"
-    Write-Host "   3. To build .exe: Run build_windows.bat"
+    Write-Host "   3. To build .exe: Run scripts/windows/build_windows.bat"
     Write-Host ""
     
     Write-Log "======== Setup Completed Successfully ========"

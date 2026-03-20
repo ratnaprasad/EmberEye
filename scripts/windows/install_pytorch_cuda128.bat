@@ -1,13 +1,17 @@
 @echo off
 REM ============================================================================
-REM NVIDIA CUDA Toolkit Installation Guide
+REM EmberEye - PyTorch CUDA 12.8+ Installation Launcher
 REM ============================================================================
 
 setlocal enabledelayedexpansion
 
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%..\..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
+
 echo.
 echo ================================================================
-echo       NVIDIA CUDA Toolkit 12.8 - Installation Required
+echo       EmberEye - PyTorch CUDA 12.8+ Installation
 echo ================================================================
 echo.
 
@@ -19,10 +23,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Get the directory where this script is located
-set "SCRIPT_DIR=%~dp0"
-
 REM Execute PowerShell script
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%SCRIPT_DIR%install_cuda_toolkit.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\install_pytorch_cuda128.ps1'"
 
-pause
+if errorlevel 1 (
+    echo.
+    echo Installation failed or not yet available.
+    pause
+    exit /b 1
+) else (
+    echo.
+    pause
+    exit /b 0
+)
