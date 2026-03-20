@@ -28,8 +28,8 @@ from database_manager import DatabaseManager
 from embereye_base.utils.theme_manager import ThemeManager
 # from license_dialog import LicenseKeyDialog
 # from user_creation import UserCreationDialog
-from setup_wizard import SetupWizard
-from password_reset import PasswordResetDialog
+from embereye_base.app.setup_wizard import SetupWizard
+from embereye_base.app.password_reset import PasswordResetDialog
 
 
 def _load_fieldglass_main_window():

@@ -7,15 +7,15 @@ import os, zipfile, datetime, sys
 CORE_FILES = [
     "main.py", "main_window.py", "video_widget.py", "video_worker.py",
     "sensor_server.py", "tcp_sensor_server.py",
-    "baseline_manager.py", "pfds_manager.py", "database_manager.py",
-    "stream_config.py", "streamconfig_dialog.py", "streamconfig_editdialog.py",
+    "baseline_manager.py", "embereye_base/core/pfds_manager.py", "database_manager.py",
+    "embereye_base/core/stream_config.py", "embereye_base/app/streamconfig_dialog.py", "embereye_base/app/streamconfig_editdialog.py",
     "ee_loginwindow.py", "embereye_base/app/user_creation.py", "password_reset.py",
     "license_dialog.py", "license_generator.py", "activationkey_generator.py",
     "licensegenerator_client.py", "setup_wizard.py",
     "camera_calibrator.py", "calibrationcapture.py", "CalibrationWindow.py",
     "embereye_base/app/vendoredata.py", "embereye_base/app/vendorepojo.py", "resource_helper.py",
     "crash_logger.py", "embereye_base/utils/tcp_logger.py", "embereye_base/utils/tcp_server_logger.py", "error_logger.py",
-    "dashboardapp_working.py", "steam_tester.py",
+    "dashboardapp_working.py", "embereye_base/app/steam_tester.py",
     "test_client.py",
     # Vision & adaptive modules
     "embereye_base/core/vision_detector.py", "adaptive_fps.py", "metrics.py",
