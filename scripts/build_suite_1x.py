@@ -38,7 +38,7 @@ def build_field(mode: str, build_installer: bool) -> Path:
     # direct legacy script usage.
     env["EMBEREYE_ALLOW_LEGACY_BUILD"] = "1"
 
-    cmd = [sys.executable, str(ROOT / "build_field_onefile.py"), "--mode", mode]
+    cmd = [sys.executable, str(ROOT / "scripts" / "build" / "build_field_onefile.py"), "--mode", mode]
     if build_installer:
         cmd.append("--installer")
     run(cmd, env=env)

@@ -36,7 +36,7 @@ def ensure_output_dir(clean: bool) -> Path:
 def build_field(mode: str, build_installer: bool) -> Path:
     env = os.environ.copy()
     env["EMBEREYE_ALLOW_LEGACY_BUILD"] = "1"
-    cmd = [sys.executable, str(ROOT / "build_field_onefile.py"), "--mode", mode]
+    cmd = [sys.executable, str(ROOT / "scripts" / "build" / "build_field_onefile.py"), "--mode", mode]
     if build_installer:
         cmd.append("--installer")
     run(cmd, env=env)
@@ -75,7 +75,7 @@ def copy_artifact(src: Path, out_dir: Path, label: str) -> str:
 
 
 def write_manifest(out_dir: Path, field_artifact: Path, studio_artifact: Path) -> None:
-    from embereye import BASE_VERSION, STUDIO_VERSION, FIELD_VERSION, SUITE_RELEASE
+    from embereye_base import BASE_VERSION, STUDIO_VERSION, FIELD_VERSION, SUITE_RELEASE
 
     manifest = {
         "suite": "EmberEye",
