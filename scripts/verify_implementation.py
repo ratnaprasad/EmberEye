@@ -6,9 +6,11 @@ print("=" * 60)
 print("FILTERED DATASET QUICK RETRAIN - VERIFICATION TEST")
 print("=" * 60)
 
+repo_root = Path(__file__).resolve().parent.parent
+
 # Test 1: Check DatasetManager method exists
 print("\n✓ Test 1: DatasetManager.create_filtered_dataset_unclassified_only()")
-training_pipeline = Path("/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/embereye/core/training_pipeline.py")
+training_pipeline = repo_root / "embereye_base/core/training_pipeline.py"
 with open(training_pipeline) as f:
     content = f.read()
     if "def create_filtered_dataset_unclassified_only" in content:
@@ -18,7 +20,7 @@ with open(training_pipeline) as f:
 
 # Test 2: Check main_window.py has filtered dataset dialog
 print("\n✓ Test 2: Quick retrain filtered dataset dialog")
-main_window = Path("/Users/ratnaprasadkakani/development/laby/pythonworkspace/EmberEye/main_window.py")
+main_window = repo_root / "main.py"
 with open(main_window) as f:
     content = f.read()
     checks = [

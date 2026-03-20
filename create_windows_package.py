@@ -90,7 +90,10 @@ def build():
             except Exception:
                 return False
         print("WebSocket loop fix:", "OK" if contains("main_window.py", "not self.loop.is_running()") else "MISSING")
-        print("Vision detector present:", "OK" if "vision_detector.py" in z.namelist() else "MISSING")
+        print(
+            "Vision detector present:",
+            "OK" if "embereye_base/core/vision_detector.py" in z.namelist() else "MISSING",
+        )
         print("Adaptive FPS present:", "OK" if "adaptive_fps.py" in z.namelist() else "MISSING")
         print("Metrics present:", "OK" if "metrics.py" in z.namelist() else "MISSING")
         print("Gas sensor present:", "OK" if "gas_sensor.py" in z.namelist() else "MISSING")
