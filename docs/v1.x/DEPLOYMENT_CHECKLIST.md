@@ -86,7 +86,7 @@ Rollback drill command (Phase D):
 
 ```bash
 source .venv/bin/activate
-python tests/field/run_rollback_drill.py --restart-cmd "bash start_studio.sh" --observe-seconds 15 --restore-original
+python tests/field/run_rollback_drill.py --restart-cmd "bash scripts/runtime/start_studio.sh" --observe-seconds 15 --restore-original
 ```
 
 Rollback drill output:

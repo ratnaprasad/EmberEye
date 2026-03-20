@@ -1,11 +1,11 @@
-#!/bin/bash
 #!/usr/bin/env zsh
 set -euo pipefail
 
 # Create a ZIP bundle of the project for Windows build
 # Output: EmberEye-windows-bundle.zip at project root
 
-ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+ROOT_DIR=$(cd "$SCRIPT_DIR/../.." && pwd)
 BUNDLE_NAME="EmberEye-windows-bundle"
 ZIP_FILE="$ROOT_DIR/${BUNDLE_NAME}.zip"
 
@@ -52,72 +52,6 @@ echo "[INFO] Creating ZIP at $ZIP_FILE"
 mv "$ZIP_FILE" "$ROOT_DIR/"
 
 echo "[SUCCESS] Bundle created: $ROOT_DIR/${BUNDLE_NAME}.zip"
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=['matplotlib', 'matplotlib.pyplot', 'matplotlib.backends'],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    noarchive=False,
-    optimize=0,
-)
-
-pyz = PYZ(a.pure, a.zipped_data)
-
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name='EmberEye',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    console=False,  # Set to True for debugging
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon='logo.ico',  # Windows icon
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='EmberEye',
-)
-EOF
-
-# Create batch file for icon generation on Windows
-cat > "$WINDOWS_MIGRATION_DIR/create_icon_windows.bat" << 'EOF'
-@echo off
-REM Convert logo.png to Windows ICO format
-REM Requires ImageMagick or similar tool
-
-echo Creating Windows icon from logo.png...
-
-REM Check if ImageMagick is available
-where magick >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    magick convert logo.png -define icon:auto-resize=256,128,64,48,32,16 logo.ico
-    echo Icon created: logo.ico
-) else (
-    echo ERROR: ImageMagick not found. Install from https://imagemagick.org/
-    echo Alternative: Use online converter at https://convertio.co/png-ico/
-    pause
-)
-EOF
-
-# Create Windows setup batch file
-cat > "$WINDOWS_MIGRATION_DIR/setup_windows.bat" << 'EOF'
-@echo off
-echo ==========================================
 echo EmberEye Windows Setup
 echo ==========================================
 echo.

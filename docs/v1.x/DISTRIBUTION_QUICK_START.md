@@ -38,7 +38,7 @@ build_windows.bat
 
 ```bash
 # Copy repository to Linux machine, then:
-chmod +x build_linux.sh
+chmod +x scripts/retired/build_linux.sh
 ./build_linux.sh
 
 # Output: dist/embereye_1.0.0~beta_amd64.deb (~800MB)
@@ -50,7 +50,7 @@ chmod +x build_linux.sh
 
 ```bash
 # On macOS:
-chmod +x build_macos.sh
+chmod +x scripts/retired/build_macos.sh
 ./build_macos.sh
 
 # Output: dist/EmberEye-1.0.0-beta.dmg (~600MB)
@@ -146,8 +146,8 @@ All packages automatically detect and use:
 | `DISTRIBUTION_SETUP.md` | **Complete setup guide** (detailed) |
 | `build_windows.bat` | Build Windows .exe |
 | `build_installer.bat` | Create Windows installer |
-| `build_linux.sh` | Build Linux .deb |
-| `build_macos.sh` | Build macOS .dmg |
+| `scripts/retired/build_linux.sh` | Build Linux .deb |
+| `scripts/retired/build_macos.sh` | Build macOS .dmg |
 | `embereye/config/device_config.py` | GPU/CPU auto-detection |
 
 ---

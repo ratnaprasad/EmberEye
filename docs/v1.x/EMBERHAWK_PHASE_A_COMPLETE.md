@@ -174,7 +174,7 @@ Closure evidence:
 - Artifact: `tests/artifacts/release_readiness_report.json`
 - Report timestamp: `2026-03-08T18:37:29.497036+00:00`
 2. Rollback drill passed with production-equivalent restart command:
-- Command path used: `bash start_field.sh`
+- Command path used: `bash scripts/runtime/start_field.sh`
 - Decision: `PASS`
 - Artifact: `tests/artifacts/rollback_drill_report.json`
 - Report timestamp: `2026-03-08T18:36:22.979270+00:00`

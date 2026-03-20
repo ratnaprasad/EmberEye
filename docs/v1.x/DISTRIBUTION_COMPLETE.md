@@ -14,8 +14,8 @@
 EmberEye/
 ├── build_windows.bat          ← Build Windows .exe (one click!)
 ├── build_installer.bat        ← Create Windows installer
-├── build_linux.sh             ← Build Linux .deb
-├── build_macos.sh             ← Build macOS .dmg
+├── scripts/retired/build_linux.sh             ← Build Linux .deb
+├── scripts/retired/build_macos.sh             ← Build macOS .dmg
 │
 ├── embereye/config/
 │   └── device_config.py       ← Auto GPU/CPU detection
@@ -51,12 +51,12 @@ build_installer.bat
 ### Step 3: Build Linux/macOS Packages (on respective machines)
 ```bash
 # On Linux (Ubuntu 20.04+):
-chmod +x build_linux.sh
+chmod +x scripts/retired/build_linux.sh
 ./build_linux.sh
 # Output: dist/embereye_1.0.0~beta_amd64.deb (~800MB)
 
 # On macOS:
-chmod +x build_macos.sh
+chmod +x scripts/retired/build_macos.sh
 ./build_macos.sh
 # Output: dist/EmberEye-1.0.0-beta.dmg (~600MB)
 ```
@@ -161,8 +161,8 @@ User sees device in UI, all optimized automatically!
 4. **Build Scripts** (automated)
    - `build_windows.bat` - One-click Windows build
    - `build_installer.bat` - Professional installer
-   - `build_linux.sh` - Linux DEB package
-   - `build_macos.sh` - macOS DMG bundle
+   - `scripts/retired/build_linux.sh` - Linux DEB package
+   - `scripts/retired/build_macos.sh` - macOS DMG bundle
 
 ---
 
@@ -347,8 +347,8 @@ Your distribution is **successful** when:
 ```
 ✅ build_windows.bat              - One-click Windows EXE builder
 ✅ build_installer.bat            - Windows installer creator
-✅ build_linux.sh                 - Linux DEB builder
-✅ build_macos.sh                 - macOS DMG builder
+✅ scripts/retired/build_linux.sh                 - Linux DEB builder
+✅ scripts/retired/build_macos.sh                 - macOS DMG builder
 ✅ embereye/config/device_config.py - GPU/CPU auto-detection
 ✅ DISTRIBUTION_SETUP.md          - Complete technical guide
 ✅ DISTRIBUTION_QUICK_START.md    - Quick reference

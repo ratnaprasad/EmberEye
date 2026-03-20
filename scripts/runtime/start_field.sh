@@ -5,7 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$ROOT_DIR"
 
 echo "============================================================"
 echo "EmberEye Field Application - Full Stack Startup"
@@ -148,7 +149,7 @@ else
   echo "PFDS Sim:    skipped"
 fi
 echo "Field App:   embereye-field/main.py"
-echo "Stop stack:  ./stop_field.sh"
+echo "Stop stack:  ./scripts/runtime/stop_field.sh"
 echo
 
 if [ "$FIELD_FOREGROUND" = "1" ]; then
