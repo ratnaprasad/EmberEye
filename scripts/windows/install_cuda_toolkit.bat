@@ -24,6 +24,6 @@ if errorlevel 1 (
 )
 
 REM Execute PowerShell script
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\install_cuda_toolkit.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\scripts\windows\install_cuda_toolkit.ps1'"
 
 pause

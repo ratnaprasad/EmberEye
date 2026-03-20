@@ -17,7 +17,7 @@ scripts/windows/install_pytorch_cuda.bat
 ```
 Or directly in PowerShell:
 ```powershell
-.\install_pytorch_cuda.ps1
+.\scripts\windows\install_pytorch_cuda.ps1
 ```
 
 ### Option 2: Manual installation

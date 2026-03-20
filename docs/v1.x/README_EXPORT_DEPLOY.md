@@ -34,7 +34,7 @@ A **production-grade model export and deployment system** for EmberEye that enab
 - **[TRAINING_GUIDE.md](TRAINING_GUIDE.md)** - Complete training pipeline guide
 
 ### 4. Example Script
-- **[example_train_export_deploy.py](example_train_export_deploy.py)** - Runnable end-to-end example
+- **[examples/example_train_export_deploy.py](../../examples/example_train_export_deploy.py)** - Runnable end-to-end example
 
 ---
 

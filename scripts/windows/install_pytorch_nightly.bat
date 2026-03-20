@@ -24,7 +24,7 @@ if errorlevel 1 (
 )
 
 REM Execute PowerShell script
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\install_pytorch_nightly.ps1'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\scripts\windows\install_pytorch_nightly.ps1'"
 
 if errorlevel 1 (
     echo.
