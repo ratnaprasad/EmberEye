@@ -3,16 +3,20 @@ from datetime import datetime
 import shutil
 import sys
 import json
+from pathlib import Path
 
-# Determine log directory - handle both normal Python and PyInstaller frozen apps
+# Determine log directory - handle both normal Python and PyInstaller frozen apps.
+# In source mode logs must be written under <repo>/logs so release-readiness
+# checks can find device_telemetry.jsonl and device_audit.jsonl.
 if getattr(sys, 'frozen', False):
-    # Running as PyInstaller bundle
-    app_dir = os.path.dirname(sys.executable)
+    # Running as PyInstaller bundle.
+    default_log_dir = os.path.join(os.path.dirname(sys.executable), 'logs')
 else:
-    # Running as normal Python script
-    app_dir = os.path.dirname(os.path.abspath(__file__))
+    # Running from source, repo root is two levels above this file.
+    repo_root = Path(__file__).resolve().parents[2]
+    default_log_dir = str(repo_root / 'logs')
 
-LOG_DIR = os.path.join(app_dir, 'logs')
+LOG_DIR = os.environ.get('EMBEREYE_LOG_DIR', default_log_dir)
 DEBUG_LOG = os.path.join(LOG_DIR, 'tcp_debug.log')
 ERROR_LOG = os.path.join(LOG_DIR, 'tcp_errors.log')
 DEVICE_TELEMETRY_LOG = os.path.join(LOG_DIR, 'device_telemetry.jsonl')
