@@ -6,7 +6,7 @@ from video_worker import VideoWorker
 from PyQt5.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy, QApplication
 from PyQt5.QtCore import Qt, QRect, QRectF, pyqtSignal, QThread, QTimer, QObject, QMutexLocker, pyqtSlot
 from PyQt5.QtGui import QColor, QImage
-from debug_config import debug_print, is_debug_enabled
+from embereye_base.utils.debug_config import debug_print, is_debug_enabled
 from PyQt5.QtCore import QSettings
 from util.fusionbanner import draw_fusion_overlay as render_fusion_overlay
 import json

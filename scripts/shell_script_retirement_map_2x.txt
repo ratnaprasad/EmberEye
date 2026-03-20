@@ -1,0 +1,24 @@
+EmberEye 2.x Shell Script Retirement Map
+Date: 2026-03-20
+
+Status legend:
+- MOVED: script is still used and moved out of root.
+- RETIRED: legacy script kept for reference; not part of active 2.x workflow.
+
+MOVED
+- start_field.sh -> scripts/runtime/start_field.sh
+- stop_field.sh -> scripts/runtime/stop_field.sh
+- start_studio.sh -> scripts/runtime/start_studio.sh
+- stop_studio.sh -> scripts/runtime/stop_studio.sh
+- migrate_to_windows.sh -> scripts/migration/migrate_to_windows.sh
+
+RETIRED
+- build_linux.sh -> scripts/retired/build_linux.sh
+- build_macos.sh -> scripts/retired/build_macos.sh
+- build_windows_onedir.sh -> scripts/retired/build_windows_onedir.sh
+- make_windows_zip.sh -> scripts/retired/make_windows_zip.sh
+- migrate_project.sh -> scripts/retired/migrate_project.sh
+
+Notes
+- Runtime scripts now resolve repository root using script-relative paths.
+- migrate_to_windows.sh was cleaned to remove non-shell trailing content.

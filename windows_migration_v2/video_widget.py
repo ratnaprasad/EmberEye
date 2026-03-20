@@ -1,4 +1,4 @@
-from video_worker import VideoWorker
+from .video_worker import VideoWorker
 from PyQt5.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QObject
 from PyQt5.QtGui import QColor
@@ -146,7 +146,7 @@ class VideoWidget(QWidget):
             
         except Exception as e:
             print(f"Grid overlay error: {e}")
-            from error_logger import get_error_logger
+            from ..embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log('ThermalGrid', f'Redraw error: {e}')
 
     def _apply_thermal_overlay_internal(self, matrix):
@@ -198,7 +198,7 @@ class VideoWidget(QWidget):
                 self.video_label.setPixmap(self.cached_thermal_overlay)
         except Exception as e:
             print(f"Thermal overlay error: {e}")
-            from error_logger import get_error_logger
+            from ..embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log('ThermalOverlay', f'Apply error: {e}')
 
     def create_controls(self):
@@ -320,7 +320,7 @@ class VideoWidget(QWidget):
 
     def update_frame(self, pixmap):
         if pixmap is None or pixmap.isNull():
-            from error_logger import get_error_logger
+            from ..embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log(self.name, "Null pixmap received")
             self.last_error_message = "Null pixmap received"
             self.video_label.setText("No video feed\n" + self.rtsp_url)
@@ -353,7 +353,7 @@ class VideoWidget(QWidget):
             self.handle_error(str(e))
 
     def handle_error(self, message):
-        from error_logger import get_error_logger
+        from ..embereye_base.utils.error_logger import get_error_logger
         get_error_logger().log(self.name, message)
         self.last_error_message = message
         self.video_label.setText(f"ERROR: {message}\n{self.rtsp_url}")

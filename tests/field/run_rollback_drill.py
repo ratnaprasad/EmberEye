@@ -43,7 +43,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--restart-cmd",
         default="",
-        help="Optional app restart command (e.g. 'bash start_studio.sh').",
+        help="Optional app restart command (e.g. 'bash scripts/runtime/start_studio.sh').",
     )
     parser.add_argument(
         "--observe-seconds",

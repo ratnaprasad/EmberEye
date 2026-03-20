@@ -10,7 +10,7 @@ from PyQt5.QtCore import (
 )
 
 
-from vision_detector import VisionDetector
+from ..vision_detector import VisionDetector
 
 class VideoWorker(QObject):
     frame_ready = pyqtSignal(QPixmap)

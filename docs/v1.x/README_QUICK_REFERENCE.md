@@ -8,7 +8,7 @@
 |------|------|---------|
 | `model_export_deploy.py` | NEW | Export/import system (670 lines) |
 | `model_versioning.py` | UPDATED | EmberEye.pt naming, transfer learning |
-| `example_train_export_deploy.py` | NEW | Runnable example script |
+| `examples/example_train_export_deploy.py` | NEW | Runnable example script |
 | `README_EXPORT_DEPLOY.md` | NEW | Executive summary |
 | `EXPORT_DEPLOYMENT_GUIDE.md` | NEW | Complete workflow guide |
 | `EXPORT_DEPLOY_QUICK_START.md` | NEW | Quick start & reference |

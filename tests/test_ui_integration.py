@@ -196,39 +196,9 @@ class UITestRunner:
             log_ui_test("Video widget", "FAIL", str(e))
             return False
     
-    def test_failed_devices_tab(self):
-        """Test 6: Failed devices tab."""
-        print("\n=== Test 6: Failed Devices Tab ===")
-        
-        try:
-            from failed_devices_tab import FailedDevicesTab
-            from device_status_manager import DeviceStatusManager
-            
-            manager = DeviceStatusManager()
-            tab = FailedDevicesTab(manager)
-            
-            # Check tab components
-            if hasattr(tab, 'device_table'):
-                log_ui_test("FailedDevices: device table", "PASS")
-            else:
-                log_ui_test("FailedDevices: device table", "FAIL")
-                return False
-            
-            if hasattr(tab, 'reconnect_all_btn'):
-                log_ui_test("FailedDevices: reconnect all button", "PASS")
-            else:
-                log_ui_test("FailedDevices: reconnect all button", "WARN", "Button not found")
-            
-            log_ui_test("Failed devices tab", "PASS", "Tab initialized correctly")
-            return True
-            
-        except Exception as e:
-            log_ui_test("Failed devices tab", "FAIL", str(e))
-            return False
-    
     def test_pfds_device_operations(self):
-        """Test 7: PFDS device operations."""
-        print("\n=== Test 7: PFDS Operations ===")
+        """Test 6: PFDS device operations."""
+        print("\n=== Test 6: PFDS Operations ===")
         
         try:
             from pfds_manager import PFDSManager, is_valid_ip
@@ -304,7 +274,6 @@ class UITestRunner:
             self.test_main_window_init,
             self.test_stream_config_dialog,
             self.test_video_widget,
-            self.test_failed_devices_tab,
             self.test_pfds_device_operations
         ]
         

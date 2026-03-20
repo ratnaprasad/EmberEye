@@ -4,9 +4,9 @@ from PyQt5.QtWidgets import (QWizard, QWizardPage, QLabel, QLineEdit,
 from PyQt5.QtGui import (
     QPixmap
 )
-from license_dialog import LicenseKeyPage
-from user_creation import UserCreationPage
-from resource_helper import get_resource_path
+from .license_dialog import LicenseKeyPage
+from .user_creation import UserCreationPage
+from ..utils.resource_helper import get_resource_path
 
 class SetupWizard(QWizard):
     def __init__(self, db):

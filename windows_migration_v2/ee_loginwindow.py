@@ -4,15 +4,15 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QPushButton, QDial
                             QMainWindow, QMessageBox, QLabel, QWizard)
 from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtGui import QPixmap
-from resource_helper import get_resource_path
-from main_window import BEMainWindow
-from sensor_server import SensorServer
+from ..resource_helper import get_resource_path
+from ..main_window import BEMainWindow
+from ..sensor_server import SensorServer
 from threading import Thread
-from database_manager import DatabaseManager
+from ..database_manager import DatabaseManager
 # from license_dialog import LicenseKeyDialog
 # from user_creation import UserCreationDialog
-from setup_wizard import SetupWizard
-from password_reset import PasswordResetDialog
+from ..setup_wizard import SetupWizard
+from ..password_reset import PasswordResetDialog
 
 class EELoginWindow(QWidget):
     success = pyqtSignal(QMainWindow)

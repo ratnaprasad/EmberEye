@@ -21,15 +21,15 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtGui import QPixmap
-from resource_helper import get_resource_path
-from sensor_server import SensorServer
+from ..utils.resource_helper import get_resource_path
+from ..core.sensor_server import SensorServer
 from threading import Thread
-from database_manager import DatabaseManager
-from embereye_base.utils.theme_manager import ThemeManager
+from ..core.database_manager import DatabaseManager
+from ..utils.theme_manager import ThemeManager
 # from license_dialog import LicenseKeyDialog
 # from user_creation import UserCreationDialog
-from setup_wizard import SetupWizard
-from password_reset import PasswordResetDialog
+from .setup_wizard import SetupWizard
+from .password_reset import PasswordResetDialog
 
 
 def _load_fieldglass_main_window():
@@ -75,7 +75,11 @@ def _load_fieldglass_main_window():
 if os.environ.get('EMBEREYE_FIELD', '').strip().lower() in ('1', 'true', 'yes'):
     BEMainWindow = _load_fieldglass_main_window()
 else:
-    from main_window import BEMainWindow
+    try:
+        from main_window import BEMainWindow
+    except ImportError:
+        # Fallback: try loading from fieldglass
+        BEMainWindow = _load_fieldglass_main_window()
 
 class EELoginWindow(QWidget):
     success = pyqtSignal(QMainWindow)

@@ -9,7 +9,7 @@
 ### Option A: Default Installation (Recommended)
 
 1. **Download the setup script** from: [GitHub EmberEye Repository](https://github.com/ratnaprasad/EmberEye)
-2. **Double-click**: `setup_windows.bat`
+2. **Double-click**: `scripts/windows/setup_windows.bat`
 3. Wait 10-15 minutes for full installation
 4. Done! 🎉
 
@@ -17,7 +17,7 @@
 
 ```powershell
 # Open PowerShell as Administrator and run:
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\path\to\setup_windows.ps1' -InstallPath 'D:\MyApps\EmberEye'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\path\to\scripts\windows\setup_windows.ps1' -InstallPath 'D:\MyApps\EmberEye'"
 ```
 
 ---
@@ -48,7 +48,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\path\to\setup_wind
 
 ```batch
 # Just double-click this file:
-setup_windows.bat
+scripts/windows/setup_windows.bat
 
 # It will install to: C:\EmberEye
 ```
@@ -57,17 +57,17 @@ setup_windows.bat
 
 ```batch
 # Right-click Command Prompt, "Run as Administrator"
-setup_windows.bat D:\CustomPath\EmberEye
+scripts/windows/setup_windows.bat D:\CustomPath\EmberEye
 
 # Or using PowerShell:
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'setup_windows.ps1' -InstallPath 'D:\CustomPath'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'scripts\windows\setup_windows.ps1' -InstallPath 'D:\CustomPath'"
 ```
 
 ### Mode 3: Force Reinstall
 
 ```powershell
 # If repository already exists, force re-clone:
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'setup_windows.ps1' -Force"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'scripts\windows\setup_windows.ps1' -Force"
 ```
 
 ---
@@ -130,7 +130,7 @@ C:\EmberEye\setup_log_*.txt
 🚀 Next Steps:
    1. Launch EmberEye from desktop shortcut, or
    2. Run: cd C:\EmberEye && .\.venv\Scripts\activate && python main.py
-   3. To build .exe: Run build_windows.bat
+   3. To build .exe: Run scripts/windows/build_windows.bat
 ```
 
 ### Desktop Shortcuts Created:
@@ -210,7 +210,7 @@ python main.py
 
 ```batch
 # Double-click:
-C:\EmberEye\build_windows.bat
+C:\EmberEye\scripts/windows/build_windows.bat
 
 # Output: C:\EmberEye\dist\EmberEye.exe (~1GB)
 ```
@@ -220,7 +220,7 @@ C:\EmberEye\build_windows.bat
 ```batch
 # Install NSIS first: https://nsis.sourceforge.io/Download
 # Then double-click:
-C:\EmberEye\build_installer.bat
+C:\EmberEye\scripts/windows/build_installer.bat
 
 # Output: C:\EmberEye\dist\EmberEye-Setup.exe (~900MB)
 ```
@@ -235,8 +235,8 @@ After successful setup:
 C:\EmberEye\
 ├── EmberEye/                    ← Source code
 │   ├── main.py
-│   ├── build_windows.bat
-│   ├── build_installer.bat
+│   ├── scripts/windows/build_windows.bat
+│   ├── scripts/windows/build_installer.bat
 │   ├── embereye/
 │   ├── .venv/                   ← Virtual environment
 │   ├── dist/                    ← Built executables (after build)
@@ -274,7 +274,7 @@ python main.py
 ### Change Installation Path
 
 ```batch
-setup_windows.bat D:\Apps\EmberEye
+scripts/windows/setup_windows.bat D:\Apps\EmberEye
 ```
 
 ### Reinstall (Force Mode)

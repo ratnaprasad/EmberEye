@@ -15,17 +15,17 @@ from PyQt5.QtCore import (
     QObject, QMetaObject, Q_ARG
 )
 
-from embereye.core.vision_detector import VisionDetector
-from embereye.core.pipeline_logs import log_vision_event
+from embereye_base.core.vision_detector import VisionDetector
+from embereye_base.core.pipeline_logs import log_vision_event
 from shared.emberkit import log_debug, log_error
-from debug_config import is_debug_enabled
+from embereye_base.utils.debug_config import is_debug_enabled
 from shared.emberkit import get_fps_controller
 from shared.emberkit import get_metrics
 # Hybrid detection system imports
 import threading
 import time
-from embereye.core.detection_queue import get_detection_queue, FrameMetadata
-from embereye.core.detection_worker import get_detection_worker, stop_detection_worker
+from embereye_base.core.detection_queue import get_detection_queue, FrameMetadata
+from embereye_base.core.detection_worker import get_detection_worker, stop_detection_worker
 
 class VideoWorker(QObject):
     frame_ready = pyqtSignal(QPixmap)

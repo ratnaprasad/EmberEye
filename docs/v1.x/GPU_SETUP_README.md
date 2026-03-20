@@ -13,11 +13,11 @@ By default, `pip install` installs the **CPU-only** version of PyTorch, even if 
 
 ### Option 1: Run the automated script (Windows)
 ```batch
-install_pytorch_cuda.bat
+scripts/windows/install_pytorch_cuda.bat
 ```
 Or directly in PowerShell:
 ```powershell
-.\install_pytorch_cuda.ps1
+.\scripts\windows\install_pytorch_cuda.ps1
 ```
 
 ### Option 2: Manual installation
@@ -61,7 +61,7 @@ When you build an `.exe` with PyInstaller, it bundles the packages that are **cu
 2. **Verify GPU detection works**
 3. **Then build the executable:**
    ```batch
-   build_windows.bat
+   scripts/windows/build_windows.bat
    ```
    Or:
    ```powershell
@@ -77,13 +77,13 @@ The built `.exe` will check for GPU at runtime using the bundled PyTorch. If:
 
 The `requirements.txt` has been left as CPU-only by default for maximum compatibility. To permanently use GPU:
 
-### Option A: Use requirements-gpu.txt
+### Option A: Use requirements/requirements-gpu.txt
 ```powershell
-pip install -r requirements-gpu.txt
+pip install -r requirements/requirements-gpu.txt
 ```
 
 ### Option B: Modify setup_windows.ps1
-Edit line ~391 in `setup_windows.ps1`:
+Edit line ~391 in `scripts/windows/setup_windows.ps1`:
 ```powershell
 # Before (CPU-only)
 & pip install -r requirements.txt
@@ -123,7 +123,7 @@ The current PyTorch install supports CUDA capabilities ... sm_90.
 
 #### Option 1: Try PyTorch with CUDA 12.8+ (required for sm_120)
 ```batch
-.\install_pytorch_cuda128.bat
+.\scripts/windows/install_pytorch_cuda128.bat
 ```
 Or manually:
 ```powershell
@@ -138,7 +138,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 #### Option 1B: Try PyTorch Nightly (may have newer GPU support)
 ```batch
-.\install_pytorch_nightly.bat
+.\scripts/windows/install_pytorch_nightly.bat
 ```
 
 **Note:** Nightly builds are experimental and may be unstable.
@@ -187,7 +187,7 @@ This is displayed immediately when the app launches.
 When distributing EmberEye to end users:
 1. **Build two versions**: one with CPU, one with GPU
 2. **Or**: Build with GPU and let auto-fallback handle CPU-only systems
-3. **Include**: Instructions to run `install_pytorch_cuda.bat` if GPU is not detected
+3. **Include**: Instructions to run `scripts/windows/install_pytorch_cuda.bat` if GPU is not detected
 
 ## Additional Resources
 - PyTorch Installation Guide: https://pytorch.org/get-started/locally/

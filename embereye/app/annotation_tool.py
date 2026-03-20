@@ -2,7 +2,7 @@ import os
 import cv2
 import json
 from datetime import datetime
-from resource_helper import get_data_path
+from .resource_helper import get_data_path
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QCompleter, QSlider, QStackedLayout,
