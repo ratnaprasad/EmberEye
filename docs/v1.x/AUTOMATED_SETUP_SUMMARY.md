@@ -133,12 +133,12 @@ scripts/windows/setup_windows.bat D:\MyApps\EmberEye
 
 ### Option 3: PowerShell Direct
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'setup_windows.ps1' -InstallPath 'C:\CustomPath'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'scripts\windows\setup_windows.ps1' -InstallPath 'C:\CustomPath'"
 ```
 
 ### Option 4: Force Reinstall
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'setup_windows.ps1' -Force"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'scripts\windows\setup_windows.ps1' -Force"
 ```
 
 ---
@@ -245,7 +245,7 @@ All detailed in `WINDOWS_SETUP_AUTOMATED.md`:
 ### Files to Share:
 
 1. **`scripts/windows/setup_windows.bat`** - Simple launcher (just double-click!)
-2. **`setup_windows.ps1`** - Complete setup automation
+2. **`scripts/windows/setup_windows.ps1`** - Complete setup automation
 3. **`WINDOWS_SETUP_AUTOMATED.md`** - Complete guide
 4. **Repository link** - For manual setup if needed
 
@@ -254,7 +254,9 @@ All detailed in `WINDOWS_SETUP_AUTOMATED.md`:
 ```
 EmberEye-Windows-Setup/
 ├── scripts/windows/setup_windows.bat
-├── setup_windows.ps1
+├── scripts/windows/
+│   ├── setup_windows.bat          # Launcher (double-click or run from CLI)
+│   ├── setup_windows.ps1          # Main setup script
 ├── WINDOWS_SETUP_AUTOMATED.md
 ├── DISTRIBUTION_QUICK_START.md
 └── README.txt (with link to repo)
@@ -297,7 +299,8 @@ When introducing to teams:
 ```
 Send to team:
 - scripts/windows/setup_windows.bat
-- setup_windows.ps1
+- scripts/windows/setup_windows.bat (recommended)
+- scripts/windows/setup_windows.ps1 (alternative)
 - WINDOWS_SETUP_AUTOMATED.md
 ```
 

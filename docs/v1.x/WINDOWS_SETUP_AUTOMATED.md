@@ -17,7 +17,7 @@
 
 ```powershell
 # Open PowerShell as Administrator and run:
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\path\to\setup_windows.ps1' -InstallPath 'D:\MyApps\EmberEye'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\path\to\scripts\windows\setup_windows.ps1' -InstallPath 'D:\MyApps\EmberEye'"
 ```
 
 ---
@@ -60,14 +60,14 @@ scripts/windows/setup_windows.bat
 scripts/windows/setup_windows.bat D:\CustomPath\EmberEye
 
 # Or using PowerShell:
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'setup_windows.ps1' -InstallPath 'D:\CustomPath'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'scripts\windows\setup_windows.ps1' -InstallPath 'D:\CustomPath'"
 ```
 
 ### Mode 3: Force Reinstall
 
 ```powershell
 # If repository already exists, force re-clone:
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'setup_windows.ps1' -Force"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'scripts\windows\setup_windows.ps1' -Force"
 ```
 
 ---

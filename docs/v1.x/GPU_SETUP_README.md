@@ -83,7 +83,7 @@ pip install -r requirements/requirements-gpu.txt
 ```
 
 ### Option B: Modify setup_windows.ps1
-Edit line ~391 in `setup_windows.ps1`:
+Edit line ~391 in `scripts/windows/setup_windows.ps1`:
 ```powershell
 # Before (CPU-only)
 & pip install -r requirements.txt

@@ -15,7 +15,7 @@ Write-Host ""
 $VenvActivate = ".\.venv\Scripts\Activate.ps1"
 if (-not (Test-Path $VenvActivate)) {
     Write-Host "ERROR: Virtual environment not found!" -ForegroundColor Red
-    Write-Host "Please run setup_windows.ps1 first." -ForegroundColor Yellow
+    Write-Host "Please run scripts\windows\setup_windows.bat first." -ForegroundColor Yellow
     exit 1
 }
 

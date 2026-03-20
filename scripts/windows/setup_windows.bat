@@ -61,7 +61,7 @@ REM Execute PowerShell script
 echo Launching setup script...
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\setup_windows.ps1' -InstallPath '%INSTALL_PATH%'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%ROOT_DIR%\scripts\windows\setup_windows.ps1' -InstallPath '%INSTALL_PATH%'"
 
 if errorlevel 1 (
     echo.
