@@ -1,0 +1,9 @@
+{
+  "IncidentEnvironment": [
+    "HUMAN_CATEGORY"
+  ],
+  "HUMAN_CATEGORY": [
+    "PERSON WITHOUT SAFETY WEAR",
+    "PERSON WITH PPE"
+  ]
+}

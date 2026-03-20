@@ -7,8 +7,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import (
     Qt, QThread
 )
-from streamconfig_editdialog import StreamEditDialog
-from steam_tester import StreamTester
+from .streamconfig_editdialog import StreamEditDialog
+from .steam_tester import StreamTester
 
 class StreamConfigDialog(QDialog):
     def __init__(self, config, parent=None):

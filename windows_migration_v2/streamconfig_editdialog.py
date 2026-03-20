@@ -3,10 +3,10 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox, QHBoxLayout, QPushButton, QProgressDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt, QThread
-from steam_tester import StreamTester
+from .steam_tester import StreamTester
 
 try:
-    from camera_discovery_dialog import CameraDiscoveryDialog
+    from .camera_discovery_dialog import CameraDiscoveryDialog
 except Exception:
     CameraDiscoveryDialog = None
 

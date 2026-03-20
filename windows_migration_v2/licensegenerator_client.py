@@ -8,8 +8,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QFormLayout, QLineEdit, QPushButton,
     QTextEdit, QLabel, QHBoxLayout, QInputDialog, QMessageBox, QFileDialog
 )
-from license_generator import LicenseKeyGenerator
-from vendorepojo import Vendor
+from ..license_generator import LicenseKeyGenerator
+from ..vendorepojo import Vendor
 
 class LicenseGenerator(QWidget):
     def __init__(self):

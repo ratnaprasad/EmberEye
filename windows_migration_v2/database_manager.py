@@ -1,7 +1,7 @@
 import sqlite3
 import bcrypt
 from datetime import datetime
-from resource_helper import get_writable_path, copy_bundled_resource
+from ..resource_helper import get_writable_path, copy_bundled_resource
 
 class DatabaseManager:
     def __init__(self, db_path=None):

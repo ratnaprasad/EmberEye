@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 import os
-from resource_helper import get_data_path
+from embereye_base.utils.resource_helper import get_data_path
 from embereye_base.core.class_config import load_master_classes, save_master_classes
 from embereye_base.core.threat_rules import load_threat_rules, save_threat_rules, DEFAULT_SETTINGS, SEVERITIES, DEFAULT_THREAT_RULES, DEFAULT_EXAMPLES
 

@@ -412,7 +412,7 @@ class ModelManagerModal(QDialog):
     
     def import_model_package(self):
         """Import a model package."""
-        from model_export_deploy import ModelImporter
+        from ...model_export_deploy import ModelImporter
         
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -467,7 +467,7 @@ class ModelManagerModal(QDialog):
             return
         
         try:
-            from model_export_deploy import ModelDeployer
+            from ...model_export_deploy import ModelDeployer
             
             deployer = ModelDeployer(str(self.models_dir / "exports"))
             success, package = deployer.create_deployment_package(version, "auto", "all")

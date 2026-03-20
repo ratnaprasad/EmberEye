@@ -2078,14 +2078,7 @@ class BEMainWindow(QMainWindow):
             self.init_live_pfds_tab()
             # Training Manager removed - Studio-only feature
             # Field Edition focuses on monitoring and detection
-            # Initialize Failed Devices tab if available
-            if hasattr(self, 'device_status_manager'):
-                try:
-                    from failed_devices_tab import FailedDevicesTab
-                    self.failed_devices_tab = FailedDevicesTab(self.device_status_manager, parent=self)
-                    self.tabs.addTab(self.failed_devices_tab, "DEVICES")
-                except Exception as e:
-                    print(f"Failed Devices tab init error: {e}")
+            # Failed Devices tab retired; Live PFDS tab is the supported device view.
             
             # Modern status bar
             if is_modern:
@@ -5155,7 +5148,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             return
 
         self.config['tcp_binding_mode'] = next_mode
-        from stream_config import StreamConfig
+        from embereye_base.core.stream_config import StreamConfig
         StreamConfig.save_config(self.config)
         self._quick_restart_tcp_server()
         QMessageBox.information(
@@ -5205,7 +5198,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             # Update config
             self.config['tcp_port'] = port
             self.tcp_server_port = port
-            from stream_config import StreamConfig
+            from embereye_base.core.stream_config import StreamConfig
             StreamConfig.save_config(self.config)
             
             # Restart with new port
@@ -5305,7 +5298,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def show_sensor_config(self):
         """Show sensor configuration dialog."""
-        from sensor_config_dialog import SensorConfigDialog
+        from embereye_base.app.sensor_config_dialog import SensorConfigDialog
 
         available_pfds = sorted({str(getattr(widget, 'loc_id', '')).strip() for widget in self.get_video_widgets() if str(getattr(widget, 'loc_id', '')).strip()})
         saved_target_pfds = str(self.config.get('thermal_target_pfds', self.config.get('thermal_target_room', ''))).strip()

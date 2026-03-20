@@ -7,7 +7,7 @@ import numpy as np
 
 from embereye_base.utils.tcp_logger import log_raw_packet, log_error_packet
 from embereye_base.utils.tcp_server_logger import log_info, log_debug, log_warning, log_error as log_server_error
-from metrics import get_metrics
+from embereye_base.utils.metrics import get_metrics
 from embereye_base.core.thermal_decoder_bridge import decode_frame_to_matrix, parse_eeprom_packet
 from embereye_base.core.thermal_frame_parser import ThermalFrameParser
 

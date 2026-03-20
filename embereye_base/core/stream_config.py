@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 import shutil
 import os
-from resource_helper import get_writable_path, copy_bundled_resource
+from embereye_base.utils.resource_helper import get_writable_path, copy_bundled_resource
 
 class StreamConfig:
     CONFIG_FILE = get_writable_path("stream_config.json")

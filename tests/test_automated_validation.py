@@ -276,7 +276,6 @@ def test_ui_screens_exist():
         ("ee_loginwindow.py", "Login window"),
         ("streamconfig_dialog.py", "Stream configuration"),
         ("video_widget.py", "Video display widget"),
-        ("failed_devices_tab.py", "Failed devices management"),
         ("device_status_manager.py", "Device status tracking")
     ]
     

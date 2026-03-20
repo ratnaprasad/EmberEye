@@ -13,8 +13,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import (
     Qt
 )
-from ee_loginwindow import EELoginWindow
-from error_logger import get_error_logger
+from ..embereye_base.app.ee_loginwindow import EELoginWindow
+from ..embereye_base.utils.error_logger import get_error_logger
 
 if __name__ == "__main__":
     # Single instance check using lock file

@@ -21,15 +21,15 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (Qt, pyqtSignal)
 from PyQt5.QtGui import QPixmap
-from resource_helper import get_resource_path
-from sensor_server import SensorServer
+from .resource_helper import get_resource_path
+from .sensor_server import SensorServer
 from threading import Thread
-from database_manager import DatabaseManager
-from theme_manager import ThemeManager
+from .database_manager import DatabaseManager
+from .theme_manager import ThemeManager
 # from license_dialog import LicenseKeyDialog
 # from user_creation import UserCreationDialog
-from setup_wizard import SetupWizard
-from password_reset import PasswordResetDialog
+from .setup_wizard import SetupWizard
+from .password_reset import PasswordResetDialog
 
 
 def _load_fieldglass_main_window():
