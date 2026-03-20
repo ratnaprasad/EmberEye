@@ -21,10 +21,10 @@ import subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stream_config import StreamConfig
-from resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
+from embereye_base.core.stream_config import StreamConfig
 from embereye_base.utils.tcp_server_logger import log_info as log_server_info, log_error as log_server_error
-from debug_config import debug_print, is_debug_enabled, set_debug_enabled
+from embereye_base.utils.resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
+from embereye_base.utils.debug_config import debug_print, is_debug_enabled, set_debug_enabled
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
     QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
@@ -46,16 +46,15 @@ try:
 except Exception:
     HAS_WEBENGINE = False
 from datetime import datetime, timezone
-from streamconfig_dialog import StreamConfigDialog
+from embereye_base.app.streamconfig_dialog import StreamConfigDialog
 from video_widget import VideoWidget
 from embereye_base.core.fusion import FusionOrchestrator, DetectionSource
 from embereye_base.core.configuration.fusion_config import fusion_config
 from embereye_base.core.configuration.hybrid_detection_config import hybrid_detection_config
 from embereye_base.core.pipeline_logs import VISION_LOG, FUSION_LOG, log_fusion_event
-from baseline_manager import BaselineManager
+from embereye_base.core.baseline_manager import BaselineManager
 from hawkcore.emberhawk_manager import EmberHawkManager, is_valid_ip
 from embereye_base.core.class_config import load_master_classes, get_leaf_classes
-from master_class_config_dialog import MasterClassConfigDialog
 from incidents import (
     ThermalROIExtractor,
     IncidentRecord,
@@ -5633,7 +5632,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def show_master_class_config(self):
         """Open the master class configuration dialog and refresh classes on save."""
         try:
-            from master_class_config_dialog import MasterClassConfigDialog
+            from embereye_base.app.master_class_config_dialog import MasterClassConfigDialog
             from embereye_base.core.class_config import load_master_classes, get_leaf_classes
             
             dlg = MasterClassConfigDialog(self)
@@ -10432,7 +10431,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _finalize_logout_on_ui_thread(self):
         """Finalize logout by closing this window and opening login on GUI thread."""
         try:
-            from ee_loginwindow import EELoginWindow
+            from embereye_base.app.ee_loginwindow import EELoginWindow
 
             self._skip_close_cleanup = True
             self._login_window = EELoginWindow()

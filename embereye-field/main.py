@@ -125,7 +125,7 @@ warnings.filterwarnings('ignore')
 
 # Setup crash logger first for debugging
 try:
-    from crash_logger import setup_crash_logger
+    from embereye_base.utils.crash_logger import setup_crash_logger
     setup_crash_logger()
 except ImportError:
     pass
@@ -141,7 +141,7 @@ except ImportError:
 
 # Check for updates in background (non-blocking) - DISABLED FOR OFFLINE MODE
 try:
-    from auto_updater import auto_check_updates_background
+    from embereye_base.core.auto_updater import auto_check_updates_background
     # auto_check_updates_background()  # Disabled - not needed for offline use
 except Exception as e:
     pass  # Silently ignore updater errors
@@ -157,7 +157,7 @@ from PyQt5.QtCore import (
     Qt, QThread
 )
 try:
-    from ee_loginwindow import EELoginWindow
+    from embereye_base.app.ee_loginwindow import EELoginWindow
 except ImportError:
     EELoginWindow = None
 

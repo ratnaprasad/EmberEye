@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor
 from datetime import datetime
-from device_status_manager import DeviceStatusManager, DeviceStatus
+from embereye_base.core.device_status_manager import DeviceStatusManager, DeviceStatus
 
 
 class FailedDevicesTab(QWidget):

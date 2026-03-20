@@ -103,7 +103,7 @@ warnings.filterwarnings('ignore')
 
 # Setup crash logger first for debugging
 try:
-    from crash_logger import setup_crash_logger
+    from embereye_base.utils.crash_logger import setup_crash_logger
     setup_crash_logger()
 except ImportError:
     pass
