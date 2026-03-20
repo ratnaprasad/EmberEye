@@ -17,7 +17,7 @@ from PyQt5.QtGui import (
 from datetime import datetime
 from streamconfig_dialog import StreamConfigDialog
 from video_widget import VideoWidget
-from embereye.core.fusion import FusionOrchestrator, DetectionSource
+from embereye_base.core.fusion import FusionOrchestrator, DetectionSource
 from baseline_manager import BaselineManager
 from pfds_manager import PFDSManager, is_valid_ip
 
@@ -639,7 +639,7 @@ class BEMainWindow(QMainWindow):
 
     def show_thermal_grid_config(self):
         """Show thermal grid configuration dialog."""
-        from thermal_grid_config import ThermalGridConfigDialog
+        from embereye_base.app.thermal_grid_config import ThermalGridConfigDialog
         
         # Get current settings from first widget (all widgets will share same config)
         current_settings = None
@@ -1019,7 +1019,7 @@ class BEMainWindow(QMainWindow):
 
         # Load logs periodically
         import os
-        from tcp_logger import DEBUG_LOG, ERROR_LOG
+        from embereye_base.utils.tcp_logger import DEBUG_LOG, ERROR_LOG
         def load_tcp_log():
             path = DEBUG_LOG if mode_combo.currentText() == 'Debug' else ERROR_LOG
             if os.path.exists(path):
@@ -1163,7 +1163,7 @@ class BEMainWindow(QMainWindow):
         """Dispatch PFDS commands over TCP to device IP on current TCP port.
         Sends plain text command (e.g., PERIOD_ON, REQUEST1) followed by newline.
         Logs success/failure to TCP logs."""
-        from tcp_logger import log_raw_packet, log_error_packet
+        from embereye_base.utils.tcp_logger import log_raw_packet, log_error_packet
         ip = cmd.get('ip')
         loc = cmd.get('location_id') or ''
         name = cmd.get('name') or ''

@@ -458,7 +458,7 @@ class EmberHawkManager:
             new_device = None
 
         try:
-            from tcp_logger import log_device_audit
+            from embereye_base.utils.tcp_logger import log_device_audit
 
             actor_name = str(actor or "").strip() or f"system:{os.getenv('USER', 'unknown')}"
             payload = {

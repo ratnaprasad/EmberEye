@@ -23,7 +23,7 @@ sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from stream_config import StreamConfig
 from resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
-from tcp_server_logger import log_info as log_server_info, log_error as log_server_error
+from embereye_base.utils.tcp_server_logger import log_info as log_server_info, log_error as log_server_error
 from debug_config import debug_print, is_debug_enabled, set_debug_enabled
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
@@ -48,13 +48,13 @@ except Exception:
 from datetime import datetime, timezone
 from streamconfig_dialog import StreamConfigDialog
 from video_widget import VideoWidget
-from embereye.core.fusion import FusionOrchestrator, DetectionSource
-from embereye.core.configuration.fusion_config import fusion_config
-from embereye.core.configuration.hybrid_detection_config import hybrid_detection_config
-from embereye.core.pipeline_logs import VISION_LOG, FUSION_LOG, log_fusion_event
+from embereye_base.core.fusion import FusionOrchestrator, DetectionSource
+from embereye_base.core.configuration.fusion_config import fusion_config
+from embereye_base.core.configuration.hybrid_detection_config import hybrid_detection_config
+from embereye_base.core.pipeline_logs import VISION_LOG, FUSION_LOG, log_fusion_event
 from baseline_manager import BaselineManager
 from hawkcore.emberhawk_manager import EmberHawkManager, is_valid_ip
-from embereye.core.class_config import load_master_classes, get_leaf_classes
+from embereye_base.core.class_config import load_master_classes, get_leaf_classes
 from master_class_config_dialog import MasterClassConfigDialog
 from incidents import (
     ThermalROIExtractor,
@@ -63,7 +63,7 @@ from incidents import (
     ThermalVisionAnalyzer
 )
 from embersync import IncidentExporter, IncidentExportMetadata, DetectionFrame
-from embereye.core.vision_detector import VisionDetector, SEVERITY_RANK
+from embereye_base.core.vision_detector import VisionDetector, SEVERITY_RANK
 
 logger = logging.getLogger(__name__)
 
@@ -646,7 +646,7 @@ class BEMainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            from tcp_logger import log_device_telemetry
+            from embereye_base.utils.tcp_logger import log_device_telemetry
             log_device_telemetry(event=str(event), payload=payload)
         except Exception:
             pass
@@ -1584,7 +1584,7 @@ class BEMainWindow(QMainWindow):
             binding_mode = self._get_tcp_binding_mode()
             try:
                 if tcp_mode == 'async':
-                    from embereye.core.tcp_async_server import TCPAsyncSensorServer
+                    from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
                     import asyncio, threading
                     # Create dedicated event loop thread if not already present
                     if self._async_loop is None:
@@ -1610,7 +1610,7 @@ class BEMainWindow(QMainWindow):
                         "[DEPRECATED] tcp_mode='threaded' is retired. "
                         "Switch stream_config.json tcp_mode to 'async' to prevent device routing failures."
                     )
-                    from embereye.core.tcp_sensor_server import TCPSensorServer
+                    from embereye_base.core.tcp_sensor_server import TCPSensorServer
                     self.tcp_server = TCPSensorServer(port=self.tcp_server_port, packet_callback=self._emit_tcp_packet)
                     self.tcp_sensor_server = self.tcp_server  # Alias for pfds_manager commands
                     if self.tcp_server:
@@ -2559,7 +2559,7 @@ class BEMainWindow(QMainWindow):
     def _refresh_sandbox_models(self):
         """Refresh available model versions in sandbox."""
         try:
-            from embereye.core.model_versioning import ModelVersionManager
+            from embereye_base.core.model_versioning import ModelVersionManager
             version_mgr = ModelVersionManager()
             versions = version_mgr.list_versions()
             
@@ -2588,7 +2588,7 @@ class BEMainWindow(QMainWindow):
             if not version or version in ["No models available", "Error loading models"]:
                 return
             
-            from embereye.core.model_versioning import ModelVersionManager
+            from embereye_base.core.model_versioning import ModelVersionManager
             version_mgr = ModelVersionManager()
             metadata_path = version_mgr.models_dir / version / "metadata.json"
             
@@ -2659,7 +2659,7 @@ class BEMainWindow(QMainWindow):
             QMessageBox.information(self, "Verify Model", "Select a model version first.")
             return
         try:
-            from embereye.core.model_versioning import ModelVersionManager
+            from embereye_base.core.model_versioning import ModelVersionManager
             from ultralytics import YOLO
             mgr = ModelVersionManager()
             weights_dir = mgr.models_dir / version / "weights"
@@ -2697,7 +2697,7 @@ class BEMainWindow(QMainWindow):
             return
         
         try:
-            from embereye.core.model_versioning import ModelVersionManager
+            from embereye_base.core.model_versioning import ModelVersionManager
             import zipfile
             import json
             from datetime import datetime
@@ -2742,7 +2742,7 @@ class BEMainWindow(QMainWindow):
             QApplication.processEvents()
             
             # Create metadata with class versioning (matches Studio format)
-            from embereye.core.class_config import get_leaf_classes, get_classes_hash, load_master_classes
+            from embereye_base.core.class_config import get_leaf_classes, get_classes_hash, load_master_classes
             classes_dict = load_master_classes()
             leaf_classes = get_leaf_classes(classes_dict)
             classes_hash = get_classes_hash(leaf_classes)
@@ -2845,7 +2845,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             version_name = version_name.strip()
             
             # Create version directory
-            from embereye.core.model_versioning import ModelVersionManager, ModelMetadata
+            from embereye_base.core.model_versioning import ModelVersionManager, ModelMetadata
             manager = ModelVersionManager()
             version_dir = manager.models_dir / version_name
             weights_dir = version_dir / "weights"
@@ -2989,7 +2989,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             def run(self):
                 try:
-                    from embereye.core.model_versioning import ModelVersionManager
+                    from embereye_base.core.model_versioning import ModelVersionManager
                     from ultralytics import YOLO
                     import time
                     import cv2
@@ -3250,7 +3250,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 
                 # Log performance to metrics file
                 try:
-                    from embereye.utils.metrics import log_performance_metric
+                    from embereye_base.utils.metrics import log_performance_metric
                     log_performance_metric(
                         metric_type='sandbox_video_inference',
                         model_version=perf.get('model_version', 'unknown'),
@@ -3276,7 +3276,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 
                 # Log performance to metrics file
                 try:
-                    from embereye.utils.metrics import log_performance_metric
+                    from embereye_base.utils.metrics import log_performance_metric
                     log_performance_metric(
                         metric_type='sandbox_image_inference',
                         model_version=perf.get('model_version', 'unknown'),
@@ -4970,7 +4970,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if not hasattr(self, 'model_status_label'):
             return
         try:
-            from embereye.core.detection_worker import get_detection_worker
+            from embereye_base.core.detection_worker import get_detection_worker
             worker = get_detection_worker()
             if not worker:
                 self.model_status_label.setText("Model: Unavailable")
@@ -5086,7 +5086,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
             self.tcp_message_count = 0
             if tcp_mode == 'async':
-                from embereye.core.tcp_async_server import TCPAsyncSensorServer
+                from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
                 self.tcp_server = TCPAsyncSensorServer(
                     port=port,
                     packet_callback=self._emit_tcp_packet,
@@ -5115,7 +5115,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     "[DEPRECATED] tcp_mode='threaded' is retired. "
                     "Switch stream_config.json tcp_mode to 'async' to prevent device routing failures."
                 )
-                from embereye.core.tcp_sensor_server import TCPSensorServer
+                from embereye_base.core.tcp_sensor_server import TCPSensorServer
                 self.tcp_server = TCPSensorServer(port=port, packet_callback=self._emit_tcp_packet)
                 self.tcp_sensor_server = self.tcp_server
                 if self.tcp_server:
@@ -5217,7 +5217,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 # Always connect the signal (PyQt5 does not duplicate connections)
                 self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
                 if tcp_mode == 'async':
-                    from embereye.core.tcp_async_server import TCPAsyncSensorServer
+                    from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
                     self.tcp_server = TCPAsyncSensorServer(
                         port=port,
                         packet_callback=self._emit_tcp_packet,
@@ -5230,7 +5230,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         "[DEPRECATED] tcp_mode='threaded' is retired. "
                         "Switch stream_config.json tcp_mode to 'async' to prevent device routing failures."
                     )
-                    from embereye.core.tcp_sensor_server import TCPSensorServer
+                    from embereye_base.core.tcp_sensor_server import TCPSensorServer
                     self.tcp_server = TCPSensorServer(port=port, packet_callback=self._emit_tcp_packet)
                 if tcp_mode == 'async':
                     if self._async_loop is None:
@@ -5261,7 +5261,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def show_thermal_grid_config(self):
         """Show thermal grid configuration dialog."""
-        from thermal_grid_config import ThermalGridConfigDialog
+        from embereye_base.app.thermal_grid_config import ThermalGridConfigDialog
         
         # Get current settings from first widget (all widgets will share same config)
         current_settings = None
@@ -5500,7 +5500,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         # Update global detection worker if running
         try:
-            from embereye.core.detection_worker import get_detection_worker
+            from embereye_base.core.detection_worker import get_detection_worker
             detection_worker = get_detection_worker()
             if detection_worker and getattr(detection_worker, 'detector', None):
                 detector = detection_worker.detector
@@ -5634,7 +5634,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """Open the master class configuration dialog and refresh classes on save."""
         try:
             from master_class_config_dialog import MasterClassConfigDialog
-            from embereye.core.class_config import load_master_classes, get_leaf_classes
+            from embereye_base.core.class_config import load_master_classes, get_leaf_classes
             
             dlg = MasterClassConfigDialog(self)
             if dlg.exec_() == QDialog.Accepted:
@@ -5843,7 +5843,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         # Use tcp_logger's canonical path so source and frozen EXE modes agree.
         telemetry_path = os.path.join('logs', 'device_telemetry.jsonl')
         try:
-            from tcp_logger import DEVICE_TELEMETRY_LOG
+            from embereye_base.utils.tcp_logger import DEVICE_TELEMETRY_LOG
             if DEVICE_TELEMETRY_LOG:
                 telemetry_path = str(DEVICE_TELEMETRY_LOG)
         except Exception:
@@ -7464,7 +7464,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         # Load logs periodically
         import os
-        from tcp_logger import DEBUG_LOG, ERROR_LOG
+        from embereye_base.utils.tcp_logger import DEBUG_LOG, ERROR_LOG
         def load_tcp_log():
             path = DEBUG_LOG if mode_combo.currentText() == 'Debug' else ERROR_LOG
             print(f"Loading TCP log from: {path}")  # Debug output
@@ -7853,7 +7853,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         QApplication.processEvents()
         
         try:
-            from embereye.core.model_versioning import ModelVersionManager, ModelMetadata
+            from embereye_base.core.model_versioning import ModelVersionManager, ModelMetadata
             import datetime
             
             manager = ModelVersionManager()
@@ -7940,7 +7940,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Validate class hash if metadata includes it
             try:
-                from embereye.core.class_config import load_master_classes, get_classes_hash, get_leaf_classes
+                from embereye_base.core.class_config import load_master_classes, get_classes_hash, get_leaf_classes
                 
                 # Check if imported ZIP had class hash in its metadata
                 import zipfile
@@ -8028,7 +8028,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _reload_detection_models(self):
         """Reload detection models in all active video workers."""
         try:
-            from embereye.core.detection_worker import stop_detection_worker
+            from embereye_base.core.detection_worker import stop_detection_worker
 
             # Hard restart global detection worker so new current_best model is loaded
             stop_detection_worker()
@@ -8049,7 +8049,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def export_model(self, format: str):
         """Export current best model to deployment format (ONNX, TorchScript, CoreML, TFLite)."""
         try:
-            from embereye.core.model_versioning import ModelVersionManager
+            from embereye_base.core.model_versioning import ModelVersionManager
             from PyQt5.QtWidgets import QFileDialog, QProgressDialog
             from PyQt5.QtCore import Qt
             
@@ -8137,7 +8137,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         Returns:
             bool: True if command was sent successfully, False otherwise
         """
-        from tcp_logger import log_raw_packet, log_error_packet
+        from embereye_base.utils.tcp_logger import log_raw_packet, log_error_packet
 
         def _extract_host(value: str | None) -> str:
             raw = str(value or '').strip()

@@ -204,11 +204,11 @@ def test_tcp_logger():
     print("\n=== Testing TCP Logger ===")
     
     try:
-        from tcp_logger import log_raw_packet, log_error_packet
+        from embereye_base.utils.tcp_logger import log_raw_packet, log_error_packet
         
         with tempfile.TemporaryDirectory() as tmpdir:
             # Override log path
-            import tcp_logger
+            import embereye_base.utils.tcp_logger as tcp_logger
             old_log_dir = tcp_logger.LOG_DIR
             old_debug = tcp_logger.DEBUG_LOG
             old_error = tcp_logger.ERROR_LOG

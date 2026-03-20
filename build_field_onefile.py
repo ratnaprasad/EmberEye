@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Build EmberEye Field executable and optional installer.
 
+Retired for 2.x direct usage. Use scripts/build_suite_2x.py instead.
+Set EMBEREYE_ALLOW_LEGACY_BUILD=1 (or pass --allow-legacy) only for
+compatibility workflows.
+
 Usage:
     python build_field_onefile.py --mode onefile
     python build_field_onefile.py --mode onedir
@@ -8,6 +12,7 @@ Usage:
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -98,7 +103,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['onefile', 'onedir'], default='onedir', help='Build mode (onedir recommended for GPU torch builds).')
     parser.add_argument('--installer', action='store_true', help='Build setup wizard (requires Inno Setup ISCC.exe)')
+    parser.add_argument('--allow-legacy', action='store_true', help='Allow running this retired legacy script directly.')
     args = parser.parse_args()
+
+    if not args.allow_legacy and os.getenv('EMBEREYE_ALLOW_LEGACY_BUILD') != '1':
+        print('[RETIRED] build_field_onefile.py is retired for 2.x development.')
+        print('[ACTION] Use: python scripts/build_suite_2x.py --field-mode onedir')
+        print('[NOTE] For compatibility-only runs set EMBEREYE_ALLOW_LEGACY_BUILD=1 or pass --allow-legacy.')
+        sys.exit(2)
 
     ensure_pyinstaller()
     ensure_icon()

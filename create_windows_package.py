@@ -9,26 +9,26 @@ CORE_FILES = [
     "sensor_server.py", "tcp_sensor_server.py",
     "baseline_manager.py", "pfds_manager.py", "database_manager.py",
     "stream_config.py", "streamconfig_dialog.py", "streamconfig_editdialog.py",
-    "ee_loginwindow.py", "user_creation.py", "password_reset.py",
+    "ee_loginwindow.py", "embereye_base/app/user_creation.py", "password_reset.py",
     "license_dialog.py", "license_generator.py", "activationkey_generator.py",
     "licensegenerator_client.py", "setup_wizard.py",
     "camera_calibrator.py", "calibrationcapture.py", "CalibrationWindow.py",
-    "vendoredata.py", "vendorepojo.py", "resource_helper.py",
-    "crash_logger.py", "tcp_logger.py", "error_logger.py",
+    "embereye_base/app/vendoredata.py", "embereye_base/app/vendorepojo.py", "resource_helper.py",
+    "crash_logger.py", "embereye_base/utils/tcp_logger.py", "embereye_base/utils/tcp_server_logger.py", "error_logger.py",
     "dashboardapp_working.py", "roommonitoring.py", "steam_tester.py",
     "test_client.py",
     # Vision & adaptive modules
-    "vision_detector.py", "adaptive_fps.py", "metrics.py",
+    "embereye_base/core/vision_detector.py", "adaptive_fps.py", "metrics.py",
     # Modular fusion engine
-    "embereye/core/fusion/fusion_engine.py",
-    "embereye/core/fusion/fusion_orchestrator.py",
-    "embereye/core/fusion/detectors/base_detector.py",
-    "embereye/core/fusion/detectors/smoke_detector.py",
-    "embereye/core/fusion/detectors/flame_analog_detector.py",
-    "embereye/core/fusion/detectors/flame_digital_detector.py",
-    "embereye/core/fusion/detectors/thermal_detector.py",
-    "embereye/core/fusion/detectors/vision_detector.py",
-    "embereye/core/fusion/detectors/gas_detector.py",
+    "embereye_base/core/fusion/fusion_engine.py",
+    "embereye_base/core/fusion/fusion_orchestrator.py",
+    "embereye_base/core/fusion/detectors/base_detector.py",
+    "embereye_base/core/fusion/detectors/smoke_detector.py",
+    "embereye_base/core/fusion/detectors/flame_analog_detector.py",
+    "embereye_base/core/fusion/detectors/flame_digital_detector.py",
+    "embereye_base/core/fusion/detectors/thermal_detector.py",
+    "embereye_base/core/fusion/detectors/vision_detector.py",
+    "embereye_base/core/fusion/detectors/gas_detector.py",
     # Gas sensor module
     "gas_sensor.py"
 ]
@@ -90,7 +90,10 @@ def build():
             except Exception:
                 return False
         print("WebSocket loop fix:", "OK" if contains("main_window.py", "not self.loop.is_running()") else "MISSING")
-        print("Vision detector present:", "OK" if "vision_detector.py" in z.namelist() else "MISSING")
+        print(
+            "Vision detector present:",
+            "OK" if "embereye_base/core/vision_detector.py" in z.namelist() else "MISSING",
+        )
         print("Adaptive FPS present:", "OK" if "adaptive_fps.py" in z.namelist() else "MISSING")
         print("Metrics present:", "OK" if "metrics.py" in z.namelist() else "MISSING")
         print("Gas sensor present:", "OK" if "gas_sensor.py" in z.namelist() else "MISSING")

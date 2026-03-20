@@ -14,14 +14,15 @@ import json
 import urllib.request
 import urllib.error
 from packaging import version as pkg_version
+from embereye import BASE_VERSION
 
 # Current version (update on each release)
-CURRENT_VERSION = "1.0.0-beta"
+CURRENT_VERSION = BASE_VERSION
 
 # GitHub release API endpoint
 GITHUB_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
-GITHUB_OWNER = "your-org"  # TODO: Update with actual GitHub org/user
-GITHUB_REPO = "EmberEye"   # TODO: Update with actual repo name
+GITHUB_OWNER = "ratnaprasad"
+GITHUB_REPO = "EmberEye"
 
 
 def get_latest_version():
@@ -47,7 +48,7 @@ def check_for_updates(silent=False):
     """Check if newer version available. Returns (needs_update, latest_version, download_url)."""
     if not silent:
         print(f"[UPDATE] Current version: {CURRENT_VERSION}")
-        print(f"[UPDATE] Checking for updates...")
+        print("[UPDATE] Checking for updates...")
     
     latest, download_url = get_latest_version()
     if not latest:

@@ -101,7 +101,7 @@ class TCPSensorServer:
                         if line:
                             # Debug log raw packet
                             try:
-                                from tcp_logger import log_raw_packet
+                                from embereye_base.utils.tcp_logger import log_raw_packet
                                 log_raw_packet(line)
                             except Exception:
                                 pass
@@ -110,7 +110,7 @@ class TCPSensorServer:
                             except Exception as e:
                                 print(f"Packet handling error: {e}")
                                 try:
-                                    from tcp_logger import log_error_packet
+                                    from embereye_base.utils.tcp_logger import log_error_packet
                                     log_error_packet(reason=str(e), raw=line)
                                 except Exception:
                                     pass
@@ -136,7 +136,7 @@ class TCPSensorServer:
             except Exception as e:
                 print(f"Serialno parse error: {e}")
                 try:
-                    from tcp_logger import log_error_packet
+                    from embereye_base.utils.tcp_logger import log_error_packet
                     log_error_packet(reason=f"serialno parse error: {e}", raw=line)
                 except Exception:
                     pass
@@ -148,7 +148,7 @@ class TCPSensorServer:
             except Exception as e:
                 print(f"Loc_id parse error: {e}")
                 try:
-                    from tcp_logger import log_error_packet
+                    from embereye_base.utils.tcp_logger import log_error_packet
                     log_error_packet(reason=f"loc_id parse error: {e}", raw=line)
                 except Exception:
                     pass
@@ -169,14 +169,14 @@ class TCPSensorServer:
                 else:
                     print(f"Frame parse error: expected 768 values, got {len(hex_values)}")
                     try:
-                        from tcp_logger import log_error_packet
+                        from embereye_base.utils.tcp_logger import log_error_packet
                         log_error_packet(reason=f"frame count {len(hex_values)}", raw=line)
                     except Exception:
                         pass
             except Exception as e:
                 print(f"Frame parse error: {e}")
                 try:
-                    from tcp_logger import log_error_packet
+                    from embereye_base.utils.tcp_logger import log_error_packet
                     log_error_packet(reason=f"frame parse error: {e}", raw=line)
                 except Exception:
                     pass
@@ -199,14 +199,14 @@ class TCPSensorServer:
             except Exception as e:
                 print(f"Sensor parse error: {e}")
                 try:
-                    from tcp_logger import log_error_packet
+                    from embereye_base.utils.tcp_logger import log_error_packet
                     log_error_packet(reason=f"sensor parse error: {e}", raw=line)
                 except Exception:
                     pass
         else:
             print(f"Unknown packet type: {line}")
             try:
-                from tcp_logger import log_error_packet
+                from embereye_base.utils.tcp_logger import log_error_packet
                 log_error_packet(reason="unknown packet type", raw=line)
             except Exception:
                 pass

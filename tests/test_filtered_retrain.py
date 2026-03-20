@@ -22,7 +22,7 @@ def test_dataset_manager_imports():
     print("=" * 60)
     
     try:
-        from embereye.core.training_pipeline import DatasetManager
+        from embereye_base.core.training_pipeline import DatasetManager
         print("✓ DatasetManager imported successfully")
         
         # Check if method exists
@@ -143,7 +143,7 @@ def test_syntax_and_imports():
     
     try:
         # Try importing main modules
-        from embereye.core.training_pipeline import DatasetManager, YOLOTrainingPipeline
+        from embereye_base.core.training_pipeline import DatasetManager, YOLOTrainingPipeline
         print("✓ training_pipeline imports successfully")
         
         # Check for any import errors in main_window by reading it
@@ -157,7 +157,7 @@ def test_syntax_and_imports():
             return False
         
         # Check training_pipeline.py syntax
-        training_pipeline_path = Path(__file__).parent / "embereye/core/training_pipeline.py"
+        training_pipeline_path = Path(__file__).resolve().parent.parent / "embereye_base/core/training_pipeline.py"
         try:
             with open(training_pipeline_path, 'r') as f:
                 compile(f.read(), str(training_pipeline_path), 'exec')
