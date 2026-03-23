@@ -21,14 +21,14 @@ try:
 except Exception as e:
     logger = logging.getLogger(__name__)
     logger.warning(f"SAM Segmentation not available: {e}")
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QSlider, QListWidget,
     QSizePolicy, QRadioButton, QButtonGroup, QScrollArea, QGroupBox,
     QStackedLayout, QGraphicsBlurEffect, QCompleter
 )
-from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer, QPointF, QEvent
-from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPolygonF, QBrush, QIcon
+from PyQt6.QtCore import Qt, QPoint, QRect, QSize, QTimer, QPointF, QEvent
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPolygonF, QBrush, QIcon
 import logging
 
 logger = logging.getLogger(__name__)
@@ -46,20 +46,25 @@ except:
 # Import centralized get_data_path
 sys.path.insert(0, str(Path(__file__).parent.parent / "embereye"))
 from embereye.utils.resource_helper import get_data_path
-from embereye.core.class_config import get_leaf_classes, get_classes_hash
+from embereye.core.class_config import (
+    get_leaf_classes,
+    get_classes_hash,
+    load_master_classes,
+    get_leaf_classes_for_category,
+)
 
 
 class AnnotationCanvas(QLabel):
     """A QLabel-based canvas to display frames and draw rectangles/polygons with labels."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAlignment(Qt.AlignCenter)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Responsive canvas - fills available space completely
         self.setMinimumSize(QSize(640, 480))
         # No maximum size - let it fill the available space
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Enable keyboard focus to receive ESC key events
-        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._source_pixmap = None  # original pixmap
         self._display_pixmap = None  # scaled to fit
         self._drawing = False
@@ -99,7 +104,7 @@ class AnnotationCanvas(QLabel):
         
         # Convert BGR to RGB using numpy (faster than cv2.cvtColor)
         rgb = frame_bgr[:, :, ::-1].copy()
-        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         self._source_pixmap = QPixmap.fromImage(qimg)
         self.shapes = []
         self._update_display_pixmap(fast_mode=fast_mode)
@@ -110,9 +115,9 @@ class AnnotationCanvas(QLabel):
             return
         target_size = self.size()
         # Use fast transformation during playback, smooth for still frames
-        transform_mode = Qt.FastTransformation if fast_mode else Qt.SmoothTransformation
+        transform_mode = Qt.TransformationMode.FastTransformation if fast_mode else Qt.TransformationMode.SmoothTransformation
         self._display_pixmap = self._source_pixmap.scaled(
-            target_size, Qt.KeepAspectRatioByExpanding, transform_mode
+            target_size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, transform_mode
         )
         self.update()
 
@@ -144,16 +149,16 @@ class AnnotationCanvas(QLabel):
                     
                     # Choose color based on classification
                     if label:
-                        color = self.class_colors.get(label, Qt.green)
+                        color = self.class_colors.get(label, Qt.GlobalColor.green)
                     else:
-                        color = Qt.red
+                        color = Qt.GlobalColor.red
                     
                     # Visual style: solid line for saved, dashed for unsaved
-                    pen_style = Qt.SolidLine if saved else Qt.DashLine
+                    pen_style = Qt.PenStyle.SolidLine if saved else Qt.PenStyle.DashLine
                     pen_width = 3 if saved else 2
                     pen = QPen(color, pen_width, pen_style)
-                    pen.setCapStyle(Qt.RoundCap)
-                    pen.setJoinStyle(Qt.RoundJoin)
+                    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
                     painter.setPen(pen)
                     
                     if shape_type == 'polygon' and 'polygon' in shape:
@@ -177,7 +182,7 @@ class AnnotationCanvas(QLabel):
                         brush = QBrush(QColor(r, g, b, 30))
                         painter.setBrush(brush)
                         painter.drawPolygon(qpoly)
-                        painter.setBrush(Qt.NoBrush)
+                        painter.setBrush(Qt.BrushStyle.NoBrush)
                         # Get bounding rect for label positioning
                         draw_rect = qpoly.boundingRect().toRect()
                     else:
@@ -196,11 +201,11 @@ class AnnotationCanvas(QLabel):
                         # Semi-transparent background for text
                         bg_rect = text_rect.translated(text_pos.x() - 2, text_pos.y() - 10)
                         painter.fillRect(bg_rect, QColor(0, 0, 0, 150))
-                        painter.setPen(QPen(Qt.white))
+                        painter.setPen(QPen(Qt.GlobalColor.white))
                         painter.drawText(text_pos, label_text)
                 # Draw preview while drawing box (also needs offset)
                 if self._drawing:
-                    pen = QPen(Qt.yellow, 2, Qt.DashLine)
+                    pen = QPen(Qt.GlobalColor.yellow, 2, Qt.PenStyle.DashLine)
                     painter.setPen(pen)
                     current_rect = QRect(self._start, self._end).normalized()
                     current_rect.translate(geom.topLeft())
@@ -208,7 +213,7 @@ class AnnotationCanvas(QLabel):
                 
                 # Draw manual polygon in progress
                 if self._drawing_polygon and len(self._polygon_points) > 0:
-                    pen = QPen(Qt.cyan, 2, Qt.SolidLine)
+                    pen = QPen(Qt.GlobalColor.cyan, 2, Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
                     # Draw lines between points
                     for i in range(len(self._polygon_points) - 1):
@@ -219,16 +224,16 @@ class AnnotationCanvas(QLabel):
                     if len(self._polygon_points) >= 2:
                         p_last = self._polygon_points[-1] + geom.topLeft()
                         p_first = self._polygon_points[0] + geom.topLeft()
-                        pen.setStyle(Qt.DashLine)
+                        pen.setStyle(Qt.PenStyle.DashLine)
                         painter.setPen(pen)
                         painter.drawLine(p_last, p_first)
                     # Draw points as circles
-                    pen.setStyle(Qt.SolidLine)
+                    pen.setStyle(Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
-                    painter.setBrush(QBrush(Qt.cyan))
+                    painter.setBrush(QBrush(Qt.GlobalColor.cyan))
                     for pt in self._polygon_points:
                         painter.drawEllipse(pt + geom.topLeft(), 4, 4)
-                    painter.setBrush(Qt.NoBrush)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
         else:
             super().paintEvent(event)
 
@@ -236,11 +241,11 @@ class AnnotationCanvas(QLabel):
         # Handle mouse press for annotation
         if self._display_pixmap is not None:
             geom = self._pixmap_geometry()
-            if geom and geom.contains(event.pos()):
-                if event.button() == Qt.LeftButton:
+            if geom and geom.contains(event.position().toPoint()):
+                if event.button() == Qt.MouseButton.LeftButton:
                     if self.annotation_mode == 'manual_polygon':
                         # Manual polygon: add point on each click (MUST come before other modes)
-                        rel_pos = event.pos() - geom.topLeft()
+                        rel_pos = event.position().toPoint() - geom.topLeft()
                         self._polygon_points.append(rel_pos)
                         self._drawing_polygon = True
                         # Grab keyboard focus so ESC key works
@@ -249,14 +254,14 @@ class AnnotationCanvas(QLabel):
                         return  # Exit early to prevent triggering other modes
                     elif self.annotation_mode == 'polygon':
                         # AI Segmentation mode: single click triggers SAM
-                        self._handle_sam_click(event.pos(), geom)
+                        self._handle_sam_click(event.position().toPoint(), geom)
                     else:
                         # Box mode: start rectangle drawing
                         self._drawing = True
-                        self._start = event.pos() - geom.topLeft()
+                        self._start = event.position().toPoint() - geom.topLeft()
                         self._end = self._start
                         self.update()
-                elif event.button() == Qt.RightButton and self.annotation_mode == 'manual_polygon':
+                elif event.button() == Qt.MouseButton.RightButton and self.annotation_mode == 'manual_polygon':
                     # Right click completes polygon
                     if len(self._polygon_points) >= 3:
                         self._finish_manual_polygon()
@@ -269,7 +274,7 @@ class AnnotationCanvas(QLabel):
     
     def keyPressEvent(self, event):
         """Handle keyboard events"""
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             # ESC key clears current polygon drawing
             if self._drawing_polygon and len(self._polygon_points) > 0:
                 self._polygon_points = []
@@ -310,7 +315,7 @@ class AnnotationCanvas(QLabel):
     def _handle_sam_click(self, click_pos, geom):
         """Handle SAM segmentation click"""
         try:
-            from PyQt5.QtWidgets import QApplication, QMessageBox
+            from PyQt6.QtWidgets import QApplication, QMessageBox
             
             # Check if frame is available
             if self.current_frame_bgr is None:
@@ -330,7 +335,7 @@ class AnnotationCanvas(QLabel):
             logger.info(f"SAM click at ({x}, {y})")
             
             # Show wait cursor
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             QApplication.processEvents()
             
             # Check if SAM segmenter is available
@@ -398,7 +403,7 @@ class AnnotationCanvas(QLabel):
                     "• For small objects, use Rectangle mode instead"
                 )
         except Exception as e:
-            from PyQt5.QtWidgets import QApplication
+            from PyQt6.QtWidgets import QApplication
             QApplication.restoreOverrideCursor()
             logger.error(f"SAM segmentation error: {e}", exc_info=True)
 
@@ -406,7 +411,7 @@ class AnnotationCanvas(QLabel):
         if self._drawing and self._display_pixmap is not None:
             geom = self._pixmap_geometry()
             if geom:
-                pos = event.pos() - geom.topLeft()
+                pos = event.position().toPoint() - geom.topLeft()
                 pos = QPoint(
                     max(0, min(pos.x(), self._display_pixmap.width())),
                     max(0, min(pos.y(), self._display_pixmap.height()))
@@ -416,10 +421,10 @@ class AnnotationCanvas(QLabel):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self._drawing and self._display_pixmap is not None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drawing and self._display_pixmap is not None:
             geom = self._pixmap_geometry()
             if geom:
-                pos = event.pos() - geom.topLeft()
+                pos = event.position().toPoint() - geom.topLeft()
                 pos = QPoint(
                     max(0, min(pos.x(), self._display_pixmap.width())),
                     max(0, min(pos.y(), self._display_pixmap.height()))
@@ -531,7 +536,7 @@ class AnnotationTab(QWidget):
         
         self._play_timer = QTimer()
         self._play_timer.timeout.connect(self._play_next_frame)
-        self._play_timer.setTimerType(Qt.PreciseTimer)  # More accurate timing
+        self._play_timer.setTimerType(Qt.TimerType.PreciseTimer)  # More accurate timing
         self._updating_slider = False
         self._last_frame_time = 0  # Track time for frame skipping
         
@@ -564,7 +569,7 @@ class AnnotationTab(QWidget):
         main_layout.addWidget(top_bar)
         
         # Main content: Canvas + Controls
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         
         # Left: Video container with overlay controls
@@ -628,7 +633,7 @@ class AnnotationTab(QWidget):
         )
         bottom_row.addWidget(self.next_btn)
 
-        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setEnabled(False)
         self.frame_slider.valueChanged.connect(self.on_slider_changed)
         self.frame_slider.setStyleSheet(
@@ -717,11 +722,11 @@ class AnnotationTab(QWidget):
 
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
-        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         right_scroll.setWidget(right_panel)
         right_scroll.setMinimumWidth(300)
         right_scroll.setMaximumWidth(360)
-        right_scroll.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        right_scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         splitter.addWidget(right_scroll)
         splitter.setStretchFactor(0, 90)
@@ -796,7 +801,7 @@ class AnnotationTab(QWidget):
                 ordered.append(c)
         self.class_combo.clear()
         for class_name in ordered:
-            color = self.class_colors.get(class_name, Qt.gray)
+            color = self.class_colors.get(class_name, Qt.GlobalColor.gray)
             icon_pixmap = QPixmap(16, 16)
             icon_pixmap.fill(color)
             self.class_combo.addItem(QIcon(icon_pixmap), class_name)
@@ -811,8 +816,8 @@ class AnnotationTab(QWidget):
 
         # Configure class combo with completer and color indicators
         completer = QCompleter(self.leaf_classes)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.class_combo.setCompleter(completer)
         if self.class_combo.lineEdit():
             self.class_combo.lineEdit().setPlaceholderText("Type to search classes…")
@@ -863,9 +868,27 @@ class AnnotationTab(QWidget):
     def _load_classes(self):
         """Load class configuration"""
         try:
-            self._rebuild_class_map(get_leaf_classes())
+            category = self._get_active_analytics_category()
+            classes_dict = load_master_classes()
+            class_list = get_leaf_classes_for_category(category, classes_dict)
+            if not class_list:
+                class_list = get_leaf_classes(classes_dict)
+            self._rebuild_class_map(class_list)
         except Exception:
             self._rebuild_class_map(["Fire", "Smoke", "Person"])
+
+    def _get_active_analytics_category(self):
+        """Read active analytics category from shared stream_config.json."""
+        stream_cfg_path = Path(__file__).resolve().parent.parent / "stream_config.json"
+        try:
+            with stream_cfg_path.open("r", encoding="utf-8") as fh:
+                stream_cfg = json.load(fh) or {}
+            category = str(stream_cfg.get("active_analytics_category", "fire") or "fire").strip().lower()
+        except Exception:
+            category = "fire"
+        if category not in {"fire", "ppe"}:
+            category = "fire"
+        return category
 
     def import_video(self):
         """Import video file"""

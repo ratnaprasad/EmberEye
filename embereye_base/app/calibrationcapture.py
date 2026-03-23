@@ -2,10 +2,10 @@ import sys
 import cv2
 import numpy as np
 import random
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, 
                              QPushButton, QVBoxLayout, QWidget, QSpinBox)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QPoint
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen
 
 class VideoThread(QThread):
     change_pixmap = pyqtSignal(QImage)
@@ -49,7 +49,7 @@ class VideoThread(QThread):
                 rgb_image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb_image.shape
                 bytes_per_line = ch * w
-                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
                 self.change_pixmap.emit(qt_image)
 
         cap.release()
@@ -207,7 +207,7 @@ class MainWindow(QMainWindow):
         # Video Display
         self.video_label = QLabel(self)
         self.video_label.setFixedSize(640, 480)
-        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         # Controls
         self.start_btn = QPushButton("Start Monitoring", self)
@@ -276,7 +276,7 @@ class MainWindow(QMainWindow):
     def mousePressEvent(self, event):
         if self.drawing_roi:
             # Convert to video label coordinates
-            pos = event.pos()
+            pos = event.position().toPoint()
             local_pos = self.video_label.mapFrom(self, pos)
             
             if 0 <= local_pos.x() < 640 and 0 <= local_pos.y() < 480:
@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
                 # Emit updated ROI points to the thread
                 self.thread.roi_update.emit(self.roi_points.copy())
                 
-                if event.button() == Qt.RightButton:
+                if event.button() == Qt.MouseButton.RightButton:
                     self.drawing_roi = False
                     self.thread.roi_update.emit(self.roi_points.copy())
                     self.status.showMessage(f"ROI set with {len(self.roi_points)} points")
@@ -297,7 +297,7 @@ class MainWindow(QMainWindow):
         super().paintEvent(event)
         if self.drawing_roi and self.roi_points:
             painter = QPainter(self)
-            painter.setPen(QPen(Qt.red, 2))
+            painter.setPen(QPen(Qt.GlobalColor.red, 2))
             for i in range(len(self.roi_points)-1):
                 painter.drawLine(QPoint(*self.roi_points[i]), 
                                QPoint(*self.roi_points[i+1]))
@@ -323,4 +323,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

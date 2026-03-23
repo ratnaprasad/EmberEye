@@ -3,13 +3,13 @@ import cv2
 import json
 from datetime import datetime
 from embereye_base.utils.resource_helper import get_data_path
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QFileDialog, QMessageBox, QSplitter, QCompleter, QSlider, QStackedLayout,
     QWidget, QListWidget, QSizePolicy, QRadioButton, QButtonGroup, QScrollArea
 )
-from PyQt5.QtCore import Qt, QPoint, QRect, QSize, QTimer, QEvent, QPointF
-from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPolygonF, QBrush
+from PyQt6.QtCore import Qt, QPoint, QRect, QSize, QTimer, QEvent, QPointF
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPolygonF, QBrush
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,10 +28,10 @@ class ImageCanvas(QLabel):
     """A QLabel-based canvas to display frames and draw rectangles/polygons with labels."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAlignment(Qt.AlignCenter)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Increase default canvas height for better visibility
         self.setMinimumSize(QSize(900, 650))
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._source_pixmap = None  # original pixmap
         self._display_pixmap = None  # scaled to fit
         self._drawing = False
@@ -55,7 +55,7 @@ class ImageCanvas(QLabel):
         h, w, _ = frame_bgr.shape
         self.current_frame_bgr = frame_bgr.copy()  # Store for SAM
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         self._source_pixmap = QPixmap.fromImage(qimg)
         self.shapes = []
         self._update_display_pixmap()
@@ -66,7 +66,7 @@ class ImageCanvas(QLabel):
             return
         target_size = self.size()
         self._display_pixmap = self._source_pixmap.scaled(
-            target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         )
         self.update()
 
@@ -97,16 +97,16 @@ class ImageCanvas(QLabel):
                     
                     # Choose color based on classification
                     if label:
-                        color = self.class_colors.get(label, Qt.green)
+                        color = self.class_colors.get(label, Qt.GlobalColor.green)
                     else:
-                        color = Qt.red
+                        color = Qt.GlobalColor.red
                     
                     # Visual style: solid line for saved, dashed for unsaved
-                    pen_style = Qt.SolidLine if saved else Qt.DashLine
+                    pen_style = Qt.PenStyle.SolidLine if saved else Qt.PenStyle.DashLine
                     pen_width = 3 if saved else 2
                     pen = QPen(color, pen_width, pen_style)
-                    pen.setCapStyle(Qt.RoundCap)
-                    pen.setJoinStyle(Qt.RoundJoin)
+                    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
                     painter.setPen(pen)
                     
                     if shape_type == 'polygon' and 'polygon' in shape:
@@ -130,7 +130,7 @@ class ImageCanvas(QLabel):
                         brush = QBrush(QColor(r, g, b, 30))
                         painter.setBrush(brush)
                         painter.drawPolygon(qpoly)
-                        painter.setBrush(Qt.NoBrush)
+                        painter.setBrush(Qt.BrushStyle.NoBrush)
                         # Get bounding rect for label positioning
                         draw_rect = qpoly.boundingRect().toRect()
                     else:
@@ -149,11 +149,11 @@ class ImageCanvas(QLabel):
                         # Semi-transparent background for text
                         bg_rect = text_rect.translated(text_pos.x() - 2, text_pos.y() - 10)
                         painter.fillRect(bg_rect, QColor(0, 0, 0, 150))
-                        painter.setPen(QPen(Qt.white))
+                        painter.setPen(QPen(Qt.GlobalColor.white))
                         painter.drawText(text_pos, label_text)
                 # Draw preview while drawing box (also needs offset)
                 if self._drawing:
-                    pen = QPen(Qt.yellow, 2, Qt.DashLine)
+                    pen = QPen(Qt.GlobalColor.yellow, 2, Qt.PenStyle.DashLine)
                     painter.setPen(pen)
                     current_rect = QRect(self._start, self._end).normalized()
                     current_rect.translate(geom.topLeft())
@@ -161,7 +161,7 @@ class ImageCanvas(QLabel):
                 
                 # Draw manual polygon in progress
                 if self._drawing_polygon and len(self._polygon_points) > 0:
-                    pen = QPen(Qt.cyan, 2, Qt.SolidLine)
+                    pen = QPen(Qt.GlobalColor.cyan, 2, Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
                     # Draw lines between points
                     for i in range(len(self._polygon_points) - 1):
@@ -172,16 +172,16 @@ class ImageCanvas(QLabel):
                     if len(self._polygon_points) >= 2:
                         p_last = self._polygon_points[-1] + geom.topLeft()
                         p_first = self._polygon_points[0] + geom.topLeft()
-                        pen.setStyle(Qt.DashLine)
+                        pen.setStyle(Qt.PenStyle.DashLine)
                         painter.setPen(pen)
                         painter.drawLine(p_last, p_first)
                     # Draw points as circles
-                    pen.setStyle(Qt.SolidLine)
+                    pen.setStyle(Qt.PenStyle.SolidLine)
                     painter.setPen(pen)
-                    painter.setBrush(QBrush(Qt.cyan))
+                    painter.setBrush(QBrush(Qt.GlobalColor.cyan))
                     for pt in self._polygon_points:
                         painter.drawEllipse(pt + geom.topLeft(), 4, 4)
-                    painter.setBrush(Qt.NoBrush)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
         else:
             super().paintEvent(event)
 
@@ -189,25 +189,25 @@ class ImageCanvas(QLabel):
         # Handle mouse press for annotation
         if self._display_pixmap is not None:
             geom = self._pixmap_geometry()
-            if geom and geom.contains(event.pos()):
-                if event.button() == Qt.LeftButton:
+            if geom and geom.contains(event.position().toPoint()):
+                if event.button() == Qt.MouseButton.LeftButton:
                     if self.annotation_mode == 'manual_polygon':
                         # Manual polygon: add point on each click (MUST come before other modes)
-                        rel_pos = event.pos() - geom.topLeft()
+                        rel_pos = event.position().toPoint() - geom.topLeft()
                         self._polygon_points.append(rel_pos)
                         self._drawing_polygon = True
                         self.update()
                         return  # Exit early to prevent triggering other modes
                     elif self.annotation_mode == 'polygon':
                         # AI Segmentation mode: single click triggers SAM
-                        self._handle_sam_click(event.pos(), geom)
+                        self._handle_sam_click(event.position().toPoint(), geom)
                     else:
                         # Box mode: start rectangle drawing
                         self._drawing = True
-                        self._start = event.pos() - geom.topLeft()
+                        self._start = event.position().toPoint() - geom.topLeft()
                         self._end = self._start
                         self.update()
-                elif event.button() == Qt.RightButton and self.annotation_mode == 'manual_polygon':
+                elif event.button() == Qt.MouseButton.RightButton and self.annotation_mode == 'manual_polygon':
                     # Right click completes polygon
                     if len(self._polygon_points) >= 3:
                         self._finish_manual_polygon()
@@ -248,8 +248,8 @@ class ImageCanvas(QLabel):
     
     def _handle_sam_click(self, click_pos, geom):
         """Handle SAM segmentation click."""
-        from PyQt5.QtWidgets import QApplication, QMessageBox
-        from PyQt5.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        from PyQt6.QtCore import QTimer
         
         try:
             # Check if frame is available
@@ -271,7 +271,7 @@ class ImageCanvas(QLabel):
             logger.info(f"SAM click at display coords ({x}, {y}), frame shape: {self.current_frame_bgr.shape}, display size: {self._display_pixmap.width()}x{self._display_pixmap.height()}")
             
             # Show wait cursor while processing
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             
             # Show status message
             if hasattr(self, 'parent') and hasattr(self.parent(), 'statusBar'):
@@ -362,7 +362,7 @@ class ImageCanvas(QLabel):
         if self._drawing and self._display_pixmap is not None:
             geom = self._pixmap_geometry()
             if geom:
-                pos = event.pos() - geom.topLeft()
+                pos = event.position().toPoint() - geom.topLeft()
                 pos = QPoint(
                     max(0, min(pos.x(), self._display_pixmap.width())),
                     max(0, min(pos.y(), self._display_pixmap.height()))
@@ -373,10 +373,10 @@ class ImageCanvas(QLabel):
 
     def mouseReleaseEvent(self, event):
         print(f"[DEBUG] Canvas mouseReleaseEvent: button={event.button()}")
-        if event.button() == Qt.LeftButton and self._drawing and self._display_pixmap is not None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drawing and self._display_pixmap is not None:
             geom = self._pixmap_geometry()
             if geom:
-                pos = event.pos() - geom.topLeft()
+                pos = event.position().toPoint() - geom.topLeft()
                 pos = QPoint(
                     max(0, min(pos.x(), self._display_pixmap.width())),
                     max(0, min(pos.y(), self._display_pixmap.height()))
@@ -531,7 +531,7 @@ class AnnotationToolDialog(QDialog):
         self.time_left_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold; min-width: 50px;")
         top_control_layout.addWidget(self.time_left_label)
 
-        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setEnabled(False)
         self.frame_slider.setTickPosition(QSlider.TicksBelow)
         self.frame_slider.setSingleStep(1)
@@ -547,7 +547,7 @@ class AnnotationToolDialog(QDialog):
         main.addWidget(top_control_bar)
         
         splitter = QSplitter()
-        splitter.setOrientation(Qt.Horizontal)
+        splitter.setOrientation(Qt.Orientation.Horizontal)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         main.addWidget(splitter)
@@ -576,7 +576,7 @@ class AnnotationToolDialog(QDialog):
         video_container = QWidget()
         video_container.setObjectName("video_container")
         video_container.setMouseTracking(True)
-        video_container.setAttribute(Qt.WA_StyledBackground, True)
+        video_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         video_layout = QVBoxLayout(video_container)
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(0)
@@ -588,12 +588,12 @@ class AnnotationToolDialog(QDialog):
         # Right: annotation controls (Select Media removed, now scrollable)
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
-        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         right_scroll.setMinimumWidth(300)
-        right_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        right_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         
         right_widget = QWidget()
-        right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         right = QVBoxLayout()
         right.setSpacing(8)
         right.setContentsMargins(10, 5, 10, 5)
@@ -615,8 +615,8 @@ class AnnotationToolDialog(QDialog):
         self.recent_classes = []
         self._refresh_class_combo_items()
         completer = QCompleter(self.leaf_classes or self.class_labels)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.class_combo.setCompleter(completer)
         # Start with empty edit text and a helpful placeholder
         if self.class_combo.lineEdit():
@@ -655,7 +655,7 @@ class AnnotationToolDialog(QDialog):
         # Segmentation sensitivity slider
         right.addWidget(QLabel("Segmentation Sensitivity"))
         sensitivity_layout = QHBoxLayout()
-        self.sensitivity_slider = QSlider(Qt.Horizontal)
+        self.sensitivity_slider = QSlider(Qt.Orientation.Horizontal)
         self.sensitivity_slider.setMinimum(1)
         self.sensitivity_slider.setMaximum(10)
         self.sensitivity_slider.setValue(5)  # Default middle
@@ -691,7 +691,7 @@ class AnnotationToolDialog(QDialog):
         right.addWidget(QLabel("Boxes in Frame"))
         self.box_list = QListWidget()
         self.box_list.setMinimumHeight(80)
-        self.box_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.box_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         right.addWidget(self.box_list)
 
         clear_btn = QPushButton("Clear Boxes")
@@ -793,7 +793,7 @@ class AnnotationToolDialog(QDialog):
             "#1565C0",  # Dark Blue
             "#0097A7",  # Dark Cyan
         ]
-        from PyQt5.QtGui import QColor
+        from PyQt6.QtGui import QColor
         colors = {}
         # Hash-based color assignment: each class ALWAYS gets unique color (deterministic)
         for name in (names or []):
@@ -820,10 +820,10 @@ class AnnotationToolDialog(QDialog):
                 ordered.append(c)
         self.class_combo.clear()
         # Add items with color indicators
-        from PyQt5.QtGui import QPixmap, QIcon
+        from PyQt6.QtGui import QPixmap, QIcon
         for class_name in ordered:
             # Get the color for this class
-            color = self.class_colors.get(class_name, Qt.gray)
+            color = self.class_colors.get(class_name, Qt.GlobalColor.gray)
             # Create a small colored square icon
             icon_pixmap = QPixmap(16, 16)
             icon_pixmap.fill(color)
@@ -1411,12 +1411,12 @@ class AnnotationToolDialog(QDialog):
                 self,
                 "Unclassified Annotations",
                 "There are unclassified boxes. Assign them to 'Unclassified'?",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes
             )
-            if reply == QMessageBox.Cancel:
+            if reply == QMessageBox.StandardButton.Cancel:
                 return False
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 # Ensure class exists in mappings and colors
                 if "Unclassified" not in self.class_id_map:
                     self.class_id_map["Unclassified"] = max(self.class_id_map.values() or [0]) + 1
@@ -1436,12 +1436,12 @@ class AnnotationToolDialog(QDialog):
                 self,
                 "Unsaved Annotations",
                 "You have unsaved annotations for this frame. Save before leaving?",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes
             )
-            if reply == QMessageBox.Cancel:
+            if reply == QMessageBox.StandardButton.Cancel:
                 return False
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 self.save_current_frame()
         return True
 
@@ -1451,34 +1451,34 @@ class AnnotationToolDialog(QDialog):
         modifiers = event.modifiers()
         
         # Ctrl+Z: Undo
-        if key == Qt.Key_Z and (modifiers & Qt.ControlModifier):
+        if key == Qt.Key.Key_Z and (modifiers & Qt.KeyboardModifier.ControlModifier):
             self.undo()
             event.accept()
             return
         
         # Ctrl+Y or Ctrl+Shift+Z: Redo
-        if (key == Qt.Key_Y and (modifiers & Qt.ControlModifier)) or \
-           (key == Qt.Key_Z and (modifiers & Qt.ControlModifier) and (modifiers & Qt.ShiftModifier)):
+        if (key == Qt.Key.Key_Y and (modifiers & Qt.KeyboardModifier.ControlModifier)) or \
+           (key == Qt.Key.Key_Z and (modifiers & Qt.KeyboardModifier.ControlModifier) and (modifiers & Qt.KeyboardModifier.ShiftModifier)):
             self.redo()
             event.accept()
             return
         
         # ESC cancels polygon drawing
-        if key == Qt.Key_Escape and hasattr(self.canvas, '_drawing_polygon') and self.canvas._drawing_polygon:
+        if key == Qt.Key.Key_Escape and hasattr(self.canvas, '_drawing_polygon') and self.canvas._drawing_polygon:
             self.canvas._polygon_points = []
             self.canvas._drawing_polygon = False
             self.canvas.update()
             event.accept()
             return
-        if key in (Qt.Key_J, Qt.Key_Left):
+        if key in (Qt.Key.Key_J, Qt.Key.Key_Left):
             self.prev_frame()
             event.accept()
             return
-        if key in (Qt.Key_K, Qt.Key_Right):
+        if key in (Qt.Key.Key_K, Qt.Key.Key_Right):
             self.next_frame()
             event.accept()
             return
-        if key in (Qt.Key_Space,):
+        if key in (Qt.Key.Key_Space,):
             self.toggle_play()
             event.accept()
             return
