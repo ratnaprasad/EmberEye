@@ -13,7 +13,7 @@
 
 | Phase | Name | Effort | Deliverable |
 |-------|------|--------|-------------|
-| 0 | PyQt6 Migration & Base Environment | 2 weeks | PyQt6/Python 3.11 baseline |
+| 0 | PyQt6 Migration & Base Environment | 2 weeks | ✅ **ACHIEVED** — PyQt6/Python 3.11 baseline |
 | 1 | Core Library & Licensing | 6 weeks | EmberEye-Base package, license manager, UI |
 | 2 | Marketplace & Plugin System | 6 weeks | Plugin manager, card UI, import flow |
 | 3 | Analytics Execution Engine | 8 weeks | DAG scheduler, NodeGraphQt editor, JSON fallback |
@@ -25,25 +25,28 @@
 
 ## Phase 0: PyQt6 Migration & Base Environment
 **Effort:** 2 weeks  
+**Status:** ✅ **ACHIEVED** — 23 March 2026  
 **Goal:** Upgrade the existing 1.x codebase to Python 3.11 and PyQt6, ensuring no regressions.
 
 ### Background
 The current codebase uses PyQt5 (5.15.11) with 316 import lines and 123 `exec_()` call sites. PyQt6 6.10.2 and PyQt6-WebEngine 6.10.0 are available for Python 3.11. See [PyQt5→PyQt6 Migration Notes](#appendix-a-pyqt5--pyqt6-migration-notes) for the full change inventory.
 
 ### Tasks
-- [ ] Create branch `feature/pyqt6-migration` from `develop/2.x`.
-- [ ] Run automated pass: replace all `from PyQt5` → `from PyQt6` and `exec_()` → `exec()` via `sed`.
-- [ ] Update Qt enum access to fully-qualified form (e.g., `Qt.AlignCenter` → `Qt.AlignmentFlag.AlignCenter`) — this is the most labour-intensive step.
-- [ ] Fix `event.pos()` → `event.position().toPoint()` at 6 call sites in `embereye-field`.
-- [ ] Replace `matplotlib.use('Qt5Agg')` → `matplotlib.use('QtAgg')` and `backend_qt5agg` → `backend_qtagg` in 4 source files.
-- [ ] Move `QAction` imports from `QtWidgets` → `QtGui` in affected files.
-- [ ] Update `requirements.txt`: remove `PyQt5`, `PyQtWebEngine`; add `PyQt6`, `PyQt6-WebEngine`.
-- [ ] Update `build_windows.py` and `EmberEye_win.spec` / `embereye-studio.spec` for PyQt6.
-- [ ] Verify application starts on Windows, Linux, and macOS with PyQt6.
-- [ ] Run existing smoke tests and fix failures.
-- [ ] Merge into `develop/2.x` and tag `embereye-suite/v2.0.0-dev.1`.
+- [x] Create branch `feature/pyqt6-migration` from `develop/2.x`.
+- [x] Run automated pass: replace all `from PyQt5` → `from PyQt6` and `exec_()` → `exec()` via `sed`.
+- [x] Update Qt enum access to fully-qualified form (e.g., `Qt.AlignCenter` → `Qt.AlignmentFlag.AlignCenter`) — this is the most labour-intensive step.
+- [x] Fix `event.pos()` → `event.position().toPoint()` at 6 call sites in `embereye-field`.
+- [x] Replace `matplotlib.use('Qt5Agg')` → `matplotlib.use('QtAgg')` and `backend_qt5agg` → `backend_qtagg` in 4 source files.
+- [x] Move `QAction` imports from `QtWidgets` → `QtGui` in affected files.
+- [x] Update `requirements.txt`: remove `PyQt5`, `PyQtWebEngine`; add `PyQt6`, `PyQt6-WebEngine`.
+- [x] Update `build_windows.py` and `EmberEye_win.spec` / `embereye-studio.spec` for PyQt6.
+- [x] Verify application starts on Windows, Linux, and macOS with PyQt6.
+- [x] Run existing smoke tests and fix failures.
+- [x] Merge into `develop/2.x` and tag `embereye-suite/v2.0.0-dev.1`.
 
 **Deliverables:** Working PyQt6/Python 3.11 baseline with no functional changes.
+
+**Achieved:** All three apps (embereye-base, embereye-field, embereye-studio) running on PyQt6 6.x / Python 3.11+. UI bugs fixed (VIDEOWALL maximize/minimize flash, LIVE PFDS focus loss, filter state, device count accuracy). Tagged `embereye-suite/v2.0.0-dev.1`.
 
 ---
 
@@ -129,11 +132,17 @@ The current codebase uses PyQt5 (5.15.11) with 316 import lines and 123 `exec_()
 - [ ] Isolate import errors: if module import fails, mark as `load_error`, continue.
 
 ### Week 4 – Analytics Card UI
+**Traceability:** SRS `F3.6-F3.10`, `F5.1`, `F5.7`.
 - [ ] Create `AnalyticsCardWidget` (card component): name, version, license badge, enable/disable toggle.
 - [ ] Create `AnalyticsCardsView` (grid layout): receives signals from `PluginManager`, adds/removes cards dynamically.
 - [ ] Toggle is enabled only if `LicenseManager.is_analytic_licensed(id)` returns `True`.
 - [ ] Context menu per card: **Configure**, **Remove**.
 - [ ] "Remove" action deletes `.eapkg` from Marketplace folder; `PluginManager` handles the rest.
+- [ ] Add card display mode selector in Field banner settings: `Auto` (layout-driven) and `Manual` (operator-selected visibility).
+- [ ] Add per-card visibility controls (on/off) in UI and persist settings in config (for example `banner_cards_config.json`).
+- [ ] Enforce card visibility policy: in `Manual` mode, hidden cards stay hidden even when analytics are active; in `Auto` mode, runtime/layout decides.
+- [ ] License-aware visibility: unlicensed analytics cannot be forced visible in banner cards.
+- [ ] Define precedence rules for display state: License/availability > Manual on/off > Auto layout fallback.
 
 ### Week 5 – Import from USB/Local
 - [ ] Add "Import Analytics" button to Field toolbar.
@@ -145,9 +154,24 @@ The current codebase uses PyQt5 (5.15.11) with 316 import lines and 123 `exec_()
   - Summary screen: N imported, M failed (with error details per package).
 
 ### Week 6 – Integration & Testing
+**Traceability:** Validates SRS `F3.7-F3.10`, `F5.7-F5.11`.
 - [ ] Integration tests for the full import-load-display cycle.
 - [ ] Error handling tests: corrupt ZIP, missing `metadata.json`, invalid module, duplicate ID.
 - [ ] `pytest-qt` tests for card enable/disable toggling and import dialog flow.
+- [ ] Add tests for banner display configuration persistence and runtime reload.
+- [ ] Add tests for per-card manual on/off behavior in both single-analytic and multi-analytics sessions.
+- [ ] Add tests for mode switching (`Auto` ↔ `Manual`) without restart.
+- [ ] Add tests for precedence behavior across license state, plugin enabled state, and manual visibility.
+
+### Phase 2 Multi-Analytics Display Provision (explicit)
+**Traceability:** SRS `F5.8-F5.11`.
+- [ ] Define multi-analytics banner composition policy when multiple analytics are enabled at once:
+  - Use priority and severity to choose visible cards when space is constrained.
+  - Support grouped tabs or paged sections when active cards exceed capacity.
+  - Keep critical cards (alarm/safety) pinned and non-evictable.
+- [ ] Define deterministic merge rules for cards targeting the same semantic slot (for example multiple temperature-like outputs).
+- [ ] Define a fallback summary card for overflow (`+N active analytics`) with drill-down to full list.
+- [ ] Document these rules in Field UI spec and add example scenarios.
 - [ ] Tag `embereye-suite/v2.0.0-dev.3`.
 
 **Deliverables:** Plugin manager, card UI, import functionality, integration tests.

@@ -3,7 +3,7 @@ import numpy as np
 import os
 import glob
 import json
-from PyQt5.QtCore import pyqtSignal, QObject
+from PyQt6.QtCore import pyqtSignal, QObject
 
 class CameraCalibrator(QObject):
     calibration_progress = pyqtSignal(int, int)  # current, total

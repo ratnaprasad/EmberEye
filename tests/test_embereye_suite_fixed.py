@@ -35,16 +35,10 @@ def test_tcp_packet_parsing():
     print("\n=== Testing TCP Packet Parsing ===")
     
     try:
-        from tcp_sensor_server import TCPSensorServer
+        from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
         import ip_loc_resolver
-        
-        # Test data collector
-        received_packets = []
-        
-        def packet_callback(packet):
-            received_packets.append(packet)
-        
-        server = TCPSensorServer(port=9001, packet_callback=packet_callback)
+
+        server = TCPAsyncSensorServer(host='127.0.0.1', port=9001)
         
         # Test parser directly
         test_cases = [
@@ -81,14 +75,8 @@ def test_tcp_packet_parsing():
         ]
         
         for tc in test_cases:
-            received_packets.clear()
-            # First send locid packet for context
-            server.handle_packet('#locid:test room!', '127.0.0.1')
-            received_packets.clear()
-            # Now test the actual packet
-            server.handle_packet(tc['packet'], '127.0.0.1')
-            if received_packets:
-                packet = received_packets[0]
+            packet = server._parse_packet(tc['packet'], '127.0.0.1:9001', '127.0.0.1')
+            if packet:
                 passed = packet.get('type') == tc['expected_type'] and tc['check'](packet)
                 log_test(f"Parse {tc['name']}", passed, 
                         None if passed else f"Got {packet}")
@@ -329,17 +317,31 @@ def test_integration_tcp_server():
     print("\n=== Integration Test: TCP Server ===")
     
     try:
-        from tcp_sensor_server import TCPSensorServer
+        import asyncio
         import threading
+        from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
         
         received = []
         
         def callback(packet):
             received.append(packet)
-        
-        server = TCPSensorServer(port=9002, packet_callback=callback)
-        server.start()
-        time.sleep(0.5)  # Let server start
+
+        server = TCPAsyncSensorServer(host='127.0.0.1', port=9002, packet_callback=callback)
+        loop_holder = {}
+        ready = threading.Event()
+
+        def _run_server_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop_holder['loop'] = loop
+            loop.run_until_complete(server.start())
+            ready.set()
+            loop.run_forever()
+
+        server_thread = threading.Thread(target=_run_server_loop, daemon=True)
+        server_thread.start()
+        ready.wait(timeout=3)
+        time.sleep(0.2)
         
         try:
             # Connect and send test packets
@@ -367,8 +369,13 @@ def test_integration_tcp_server():
                     None if has_sensor else f"Received: {received}")
                     
         finally:
-            server.stop()
-            time.sleep(0.3)
+            loop = loop_holder.get('loop')
+            if loop is not None:
+                stop_future = asyncio.run_coroutine_threadsafe(server.stop(), loop)
+                stop_future.result(timeout=5)
+                loop.call_soon_threadsafe(loop.stop)
+            server_thread.join(timeout=2)
+            time.sleep(0.1)
             
     except Exception as e:
         log_test("Integration TCP Server", False, str(e))

@@ -25,23 +25,23 @@ from embereye_base.core.stream_config import StreamConfig
 from embereye_base.utils.tcp_server_logger import log_info as log_server_info, log_error as log_server_error
 from embereye_base.utils.resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
 from embereye_base.utils.debug_config import debug_print, is_debug_enabled, set_debug_enabled
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
     QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog, QLineEdit,
     QListWidget, QListWidgetItem, QProgressBar, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem,
     QSlider, QGroupBox, QCompleter, QCheckBox, QDoubleSpinBox, QFormLayout, QInputDialog,
-    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QScrollArea,
+    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QScrollArea, QListView, QAbstractItemView,
     QProgressDialog, QApplication, QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QDialogButtonBox
 )
-from PyQt5.QtCore import (
-    Qt, pyqtSignal, pyqtSlot, QMutex, QObject, QTimer, QUrl, QThread, QPropertyAnimation, QEasingCurve, QMetaObject
+from PyQt6.QtCore import (
+    Qt, pyqtSignal, pyqtSlot, QMutex, QObject, QTimer, QUrl, QThread, QPropertyAnimation, QEasingCurve, QMetaObject, QSize, QAbstractAnimation
 )
-from PyQt5.QtGui import (
+from PyQt6.QtGui import (
     QPixmap, QImage, QPainter, QPen, QColor
 )
 # Optional import: QWebEngineView may not be available in minimal builds
 try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
     HAS_WEBENGINE = True
 except Exception:
     HAS_WEBENGINE = False
@@ -55,6 +55,11 @@ from embereye_base.core.pipeline_logs import VISION_LOG, FUSION_LOG, log_fusion_
 from embereye_base.core.baseline_manager import BaselineManager
 from hawkcore.emberhawk_manager import EmberHawkManager, is_valid_ip
 from embereye_base.core.class_config import load_master_classes, get_leaf_classes
+from embereye_base.core.analytics import (
+    ANALYTICS_CATEGORY_NAMES,
+    DEFAULT_ANALYTICS_CATEGORY,
+    get_model_hint,
+)
 from incidents import (
     ThermalROIExtractor,
     IncidentRecord,
@@ -155,7 +160,7 @@ class BEMainWindow(QMainWindow):
         try:
             # Minimal placeholder: create empty tab if tabs exist
             if hasattr(self, 'tabs'):
-                from PyQt5.QtWidgets import QWidget
+                from PyQt6.QtWidgets import QWidget
                 placeholder = QWidget()
                 self.tabs.addTab(placeholder, "VIDEOWALL")
         except Exception:
@@ -236,20 +241,20 @@ class BEMainWindow(QMainWindow):
         raise AttributeError(f"{self.__class__.__name__!s} object has no attribute {name!s}")
 
     def _on_screen_geometry_changed(self, *args, **kwargs):
-        """Adjust window when screen resolution changes.
-        If maximized, re-maximize to fit new available area; otherwise resize to available geometry.
-        """
+        """Handle monitor geometry changes without forcing window state transitions."""
+        if bool(getattr(self, '_screen_geometry_change_in_progress', False)):
+            return
+        if self.isMinimized():
+            return
+        self._screen_geometry_change_in_progress = True
         try:
-            from PyQt5.QtGui import QGuiApplication
-            screen = QGuiApplication.primaryScreen()
-            avail = screen.availableGeometry()
-            if self.isMaximized():
-                self.showMaximized()
-            else:
-                self.setGeometry(avail)
+            # Avoid calling showMaximized()/setGeometry() here: those can re-trigger
+            # geometry callbacks and fight user-initiated maximize/restore actions.
             self._apply_responsive_dashboard_scaling()
         except Exception:
             pass
+        finally:
+            self._screen_geometry_change_in_progress = False
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -350,7 +355,7 @@ class BEMainWindow(QMainWindow):
             self._entry_fade_animation.setDuration(320)
             self._entry_fade_animation.setStartValue(0.0)
             self._entry_fade_animation.setEndValue(1.0)
-            self._entry_fade_animation.setEasingCurve(QEasingCurve.OutCubic)
+            self._entry_fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
             self._entry_fade_animation.start()
         except Exception:
             pass
@@ -373,7 +378,7 @@ class BEMainWindow(QMainWindow):
         for loc_id, cand in self.baseline_manager.candidates.items():
             # Thumbnail
             import cv2
-            from PyQt5.QtGui import QImage, QPixmap
+            from PyQt6.QtGui import QImage, QPixmap
             frame = cand['frame']
             # Convert to RGB if needed
             if len(frame.shape) == 2:
@@ -382,8 +387,8 @@ class BEMainWindow(QMainWindow):
                 frame_rgb = frame.astype('uint8')
             h, w, ch = frame_rgb.shape
             bytes_per_line = ch * w
-            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            thumb = QPixmap.fromImage(q_img).scaled(64, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            thumb = QPixmap.fromImage(q_img).scaled(64, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             thumb_label = QLabel()
             thumb_label.setPixmap(thumb)
             # Timestamp
@@ -428,6 +433,103 @@ class BEMainWindow(QMainWindow):
             'vision_confidence_weight': float(getattr(self, 'fusion_vision_confidence_weight', fusion_config.vision_confidence_weight)),
             'enable_temporal_fusion': bool(getattr(self, 'fusion_enable_temporal', False)),
         }
+
+    def _normalize_analytics_category(self, value):
+        category = str(value or '').strip().lower()
+        if category in ANALYTICS_CATEGORY_NAMES:
+            return category
+        return DEFAULT_ANALYTICS_CATEGORY
+
+    def _resolve_model_path_for_category(self, category):
+        """Resolve a model path for the active analytics category.
+
+        Priority:
+        1. Explicit override from stream_config.json analytics_model_paths[category]
+        2. Legacy override from <category>_model_path
+        3. Newest .pt file whose filename matches the category hint
+        """
+        config = getattr(self, 'config', {}) or {}
+        category = self._normalize_analytics_category(category)
+
+        raw_model_paths = config.get('analytics_model_paths', {})
+        if isinstance(raw_model_paths, dict):
+            explicit_path = str(raw_model_paths.get(category, '') or '').strip()
+            if explicit_path:
+                explicit_candidate = Path(explicit_path).expanduser()
+                if not explicit_candidate.is_absolute():
+                    explicit_candidate = Path.cwd() / explicit_candidate
+                if explicit_candidate.exists():
+                    return str(explicit_candidate)
+
+        legacy_path = str(config.get(f'{category}_model_path', '') or '').strip()
+        if legacy_path:
+            legacy_candidate = Path(legacy_path).expanduser()
+            if not legacy_candidate.is_absolute():
+                legacy_candidate = Path.cwd() / legacy_candidate
+            if legacy_candidate.exists():
+                return str(legacy_candidate)
+
+        hint = str(get_model_hint(category) or '').strip().lower()
+        if not hint:
+            return None
+        model_dirs = []
+        try:
+            model_dirs.append(Path(get_data_path('models')))
+        except Exception:
+            pass
+        try:
+            model_dirs.append(Path(get_resource_path('models')))
+        except Exception:
+            pass
+        # Local-dev fallback
+        model_dirs.append(Path.cwd() / 'models')
+
+        candidates = []
+        seen_dirs = set()
+        for model_dir in model_dirs:
+            try:
+                resolved_dir = model_dir.resolve()
+            except Exception:
+                continue
+            if not resolved_dir.exists() or resolved_dir in seen_dirs:
+                continue
+            seen_dirs.add(resolved_dir)
+            try:
+                for pt_path in resolved_dir.glob('*.pt'):
+                    name = pt_path.name.lower()
+                    if hint in name:
+                        try:
+                            mtime = pt_path.stat().st_mtime
+                        except Exception:
+                            mtime = 0.0
+                        candidates.append((mtime, str(pt_path)))
+            except Exception:
+                continue
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _reload_rule_engine_for_active_category(self):
+        """Reload vision inference model based on active analytics category."""
+        self.active_analytics_category = self._normalize_analytics_category(
+            getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)
+        )
+        model_path = self._resolve_model_path_for_category(self.active_analytics_category)
+        try:
+            if model_path:
+                self._rule_engine = VisionDetector(yolo_model_path=model_path)
+                self._rule_engine_model_path = model_path
+                print(f"[ANALYTICS] Category={self.active_analytics_category} using model: {model_path}")
+            else:
+                self._rule_engine = VisionDetector(yolo_model_path="__no_model__")
+                self._rule_engine_model_path = None
+                print(f"[ANALYTICS] Category={self.active_analytics_category} has no matching model; heuristic-only mode")
+        except Exception as e:
+            self._rule_engine = None
+            self._rule_engine_model_path = None
+            print(f"[ANALYTICS] Rule engine init failed for category={self.active_analytics_category}: {e}")
 
     def _update_fusion_engine_config(self):
         if hasattr(self, 'fusion_orchestrator') and self.fusion_orchestrator is not None:
@@ -475,13 +577,21 @@ class BEMainWindow(QMainWindow):
             'alarm': bool(fusion_result.alarm),
             'alarm_reason': fusion_result.metadata.get('reason'),
             'confidence': float(fusion_result.confidence),
+            'analytics_category': str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)),
             'sources': source_names,
             'hot_cells': hot_cells,
             'thermal_max': thermal_max,
             'gas_ppm': float(gas_ppm) if gas_ppm is not None else 0.0,
             'smoke_pct': float(kwargs.get('smoke_pct', 0.0) or 0.0),
+            'smoke_level': float(kwargs.get('smoke_level', kwargs.get('smoke_pct', 0.0)) or 0.0),
             'flame_analog_pct': float(kwargs.get('flame_analog_pct', 0.0) or 0.0),
             'flame_digital': int(kwargs.get('flame_digital', frame_data.get('flame_digital', 0)) or 0),
+            # PPE analytics keys (ignored in fire mode; consumed by PPE fusion banner).
+            'helmet_count': int(kwargs.get('helmet_count', 0) or 0),
+            'no_helmet_count': int(kwargs.get('no_helmet_count', 0) or 0),
+            'vest_count': int(kwargs.get('vest_count', 0) or 0),
+            'no_vest_count': int(kwargs.get('no_vest_count', 0) or 0),
+            'total_persons': int(kwargs.get('total_persons', 0) or 0),
             'temp_threshold': float(cfg.get('temp_threshold', fusion_config.temp_threshold)),
             'critical_temp_threshold': float(cfg.get('critical_temp_threshold', fusion_config.critical_temp_threshold)),
             'gas_ppm_threshold': float(cfg.get('gas_ppm_threshold', fusion_config.gas_ppm_threshold)),
@@ -521,7 +631,31 @@ class BEMainWindow(QMainWindow):
                     break
 
                 # Run fusion with only vision score (other sources can be cached for full fusion)
-                fusion_result = self._run_fusion(vision_score=score)
+                ppe_kwargs = {}
+                try:
+                    if str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower() == 'ppe':
+                        loc_key = str(loc_id) if loc_id is not None else '_broadcast'
+                        cache = getattr(self, '_ppe_stats_by_loc_id', {}) or {}
+                        ppe_kwargs.update(cache.get(loc_key, {}))
+
+                        # Prefer freshest stats from the active rule engine when available.
+                        details = getattr(getattr(self, '_rule_engine', None), 'last_details', None)
+                        if isinstance(details, dict):
+                            stats = details.get('ppe_stats', {})
+                            if isinstance(stats, dict):
+                                ppe_kwargs.update({
+                                    'helmet_count': int(stats.get('helmet_count', ppe_kwargs.get('helmet_count', 0)) or 0),
+                                    'no_helmet_count': int(stats.get('no_helmet_count', ppe_kwargs.get('no_helmet_count', 0)) or 0),
+                                    'vest_count': int(stats.get('vest_count', ppe_kwargs.get('vest_count', 0)) or 0),
+                                    'no_vest_count': int(stats.get('no_vest_count', ppe_kwargs.get('no_vest_count', 0)) or 0),
+                                    'total_persons': int(stats.get('total_persons', ppe_kwargs.get('total_persons', 0)) or 0),
+                                })
+                                cache[loc_key] = dict(ppe_kwargs)
+                                self._ppe_stats_by_loc_id = cache
+                except Exception:
+                    ppe_kwargs = {}
+
+                fusion_result = self._run_fusion(vision_score=score, **ppe_kwargs)
                 try:
                     log_fusion_event(str(loc_id), f"source=vision_only vision_score={float(score):.3f} alarm={fusion_result.get('alarm')} confidence={float(fusion_result.get('confidence', 0.0)):.3f} reason={fusion_result.get('alarm_reason', '-')}")
                 except Exception:
@@ -938,6 +1072,7 @@ class BEMainWindow(QMainWindow):
             is_authorized = bool(device.get('is_authorized', True))
             if mapped_loc and is_linked and is_authorized:
                 self._pending_device_by_serial.pop(serial, None)
+                self.emberhawk.touch_device_seen(serial, client_ip)
                 print(f"🔐 Identity mapped: serial={serial} -> device_id={device.get('id')} loc_id={device.get('location_id')}")
                 self._emit_device_telemetry(
                     'identity_mapped',
@@ -1027,6 +1162,19 @@ class BEMainWindow(QMainWindow):
         pkt_type = packet.get('type') if isinstance(packet, dict) else 'unknown'
         client_ip = self._normalize_loc_key(packet.get('client_ip')) if isinstance(packet, dict) else None
         packet_loc = self._normalize_loc_key(packet.get('loc_id')) if isinstance(packet, dict) else None
+
+        def _touch_pending_identity(state_name: str = 'pending_identity', device_id=None):
+            if not serial:
+                return
+            prior = dict(self._pending_device_by_serial.get(serial) or {})
+            prior['serial_number'] = serial
+            prior['client_ip'] = client_ip or prior.get('client_ip') or ''
+            prior['last_seen'] = time.time()
+            prior['state'] = state_name
+            if device_id is not None:
+                prior['device_id'] = device_id
+            self._pending_device_by_serial[serial] = prior
+
         if serial:
             packet['serial_number'] = serial
 
@@ -1051,6 +1199,7 @@ class BEMainWindow(QMainWindow):
             if loc_device:
                 loc_serial = self._normalize_serial_key(loc_device.get('serial_number'))
                 if loc_serial and loc_serial != serial:
+                    _touch_pending_identity('pending_identity')
                     if not self._pending_warned_tokens.get(f"loc-serial-mismatch:{serial}:{packet_loc}"):
                         print(
                             f"⛔ Dropping packet for serial={serial}: "
@@ -1081,6 +1230,7 @@ class BEMainWindow(QMainWindow):
                         pass
 
         if not device:
+            _touch_pending_identity('pending_identity')
             if not self._pending_warned_tokens.get(f"pending:{serial}"):
                 print(f"⏳ Dropping packet for serial={serial}: device not linked in dashboard")
                 self._pending_warned_tokens[f"pending:{serial}"] = time.time()
@@ -1098,6 +1248,8 @@ class BEMainWindow(QMainWindow):
         is_linked = bool(device.get('is_linked', True))
         state = self._get_device_lifecycle_state(device)
         if not is_authorized or not is_linked:
+            pending_state = 'unauthorized' if not is_authorized else 'unlinked'
+            _touch_pending_identity(pending_state, device_id=device.get('id'))
             if not self._pending_warned_tokens.get(f"blocked:{serial}"):
                 print(
                     f"⛔ Dropping packet for serial={serial}: "
@@ -1325,6 +1477,49 @@ class BEMainWindow(QMainWindow):
             print(f"Rule evaluation error: {e}")
         return result
 
+    def _extract_ppe_counts_from_detections(self, detections):
+        """Extract PPE summary counters from raw detection events."""
+        stats = {
+            'helmet_count': 0,
+            'no_helmet_count': 0,
+            'vest_count': 0,
+            'no_vest_count': 0,
+            'total_persons': 0,
+        }
+        try:
+            for det in detections or []:
+                raw_name = ''
+                if isinstance(det, dict):
+                    raw_name = str(det.get('class', '') or '').strip().lower().replace(' ', '_').replace('-', '_')
+                elif det is not None:
+                    raw_name = str(det).strip().lower().replace(' ', '_').replace('-', '_')
+
+                if raw_name in {'person', 'worker'}:
+                    stats['total_persons'] += 1
+                elif raw_name in {'helmet', 'hardhat', 'safety_helmet'}:
+                    stats['helmet_count'] += 1
+                elif raw_name in {'no_helmet', 'without_helmet', 'head', 'head_no_helmet'}:
+                    stats['no_helmet_count'] += 1
+                elif raw_name in {'vest', 'safety_vest', 'high_visibility_vest'}:
+                    stats['vest_count'] += 1
+                elif raw_name in {'no_vest', 'without_vest'}:
+                    stats['no_vest_count'] += 1
+
+            if stats['total_persons'] == 0:
+                stats['total_persons'] = max(
+                    stats['helmet_count'] + stats['no_helmet_count'],
+                    stats['vest_count'] + stats['no_vest_count'],
+                )
+        except Exception:
+            return {
+                'helmet_count': 0,
+                'no_helmet_count': 0,
+                'vest_count': 0,
+                'no_vest_count': 0,
+                'total_persons': 0,
+            }
+        return stats
+
     def apply_sensor_config(self, settings: dict):
         """Apply sensor configuration settings from dialog to runtime objects.
         Expects keys: temp_threshold, gas_ppm_threshold, smoke_threshold_pct, flame_threshold_pct,
@@ -1392,7 +1587,7 @@ class BEMainWindow(QMainWindow):
         self.theme_manager = theme_manager
         try:
             if self.theme_manager is not None:
-                from PyQt5.QtWidgets import QApplication
+                from PyQt6.QtWidgets import QApplication
                 app = QApplication.instance()
                 if app is not None:
                     self.theme_manager.apply_theme(app)
@@ -1417,7 +1612,11 @@ class BEMainWindow(QMainWindow):
         self.maximized_widget = None
         self.original_layout = None
         self.original_grid_size = None
+        self._live_pfds_transition_inflight = False
+        self._live_pfds_refresh_inflight = False
+        self._live_pfds_deferred_filter = None
         self.config = StreamConfig.load_config()
+        self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
         self.video_widgets = {}  # loc_id -> VideoWidget
         self.tcp_server = tcp_server  # Reuse existing or create new
         self.tcp_sensor_server = tcp_sensor_server or tcp_server
@@ -1425,7 +1624,7 @@ class BEMainWindow(QMainWindow):
         self.current_rtsp_page = 1
         self.current_graph_page = 1
         self.grid_rebuild_pending = False  # Track if rebuild is scheduled
-        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         # Incidents config defaults
         import os
         self.incident_threshold = 0.4
@@ -1487,6 +1686,16 @@ class BEMainWindow(QMainWindow):
         self._pending_device_by_serial = {}
         self._pending_warned_tokens = {}
         self._device_ghost_after_s = int(self.config.get('device_ghost_after_s', 120))
+        raw_pending_from_telemetry = self.config.get('pending_from_telemetry_enabled', False)
+        if isinstance(raw_pending_from_telemetry, str):
+            self._pending_from_telemetry_enabled = raw_pending_from_telemetry.strip().lower() in (
+                '1',
+                'true',
+                'yes',
+                'on',
+            )
+        else:
+            self._pending_from_telemetry_enabled = bool(raw_pending_from_telemetry)
         self._pending_telemetry_retention_s = int(self.config.get('pending_telemetry_retention_s', 24 * 60 * 60))
         self._device_alert_window_ms = int(self.config.get('device_alert_window_ms', 30000))
         self._device_drop_alert_per_min = float(self.config.get('device_drop_alert_per_min', 20.0))
@@ -1505,10 +1714,9 @@ class BEMainWindow(QMainWindow):
         self._reconcile_last_summary = {}
         self._reconcile_timer = None
         self._operator_id = str(self.config.get('operator_id', '')).strip()
-        try:
-            self._rule_engine = VisionDetector(yolo_model_path="__no_model__")
-        except Exception:
-            self._rule_engine = None
+        self._rule_engine = None
+        self._rule_engine_model_path = None
+        self._reload_rule_engine_for_active_category()
         self.heuristic_threshold = float(self.config.get('heuristic_threshold', 0.20))
         self.force_yolo_every_n_frames = int(self.config.get('force_yolo_every_n_frames', 10))
         self.yolo_conf_threshold = float(self.config.get('yolo_conf_threshold', 0.05))
@@ -1572,7 +1780,7 @@ class BEMainWindow(QMainWindow):
             self.emberhawk.start_scheduler()
         
         # Connect TCP packet signal to handler (QueuedConnection ensures execution on GUI thread)
-        self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
+        self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.ConnectionType.QueuedConnection)
         
         # TCP Server initialization (reuse if provided, otherwise create new)
         if self.tcp_server is not None:
@@ -1623,7 +1831,7 @@ class BEMainWindow(QMainWindow):
         
         # Install X-ray effect event filter for global mouse tracking
         try:
-            from PyQt5.QtWidgets import QApplication
+            from PyQt6.QtWidgets import QApplication
             app = QApplication.instance()
             if app is not None:
                 app.installEventFilter(self)
@@ -1866,7 +2074,7 @@ class BEMainWindow(QMainWindow):
             os.environ['QT_LOGGING_RULES'] = '*=false'
             warnings.filterwarnings('ignore')
             
-            from PyQt5.QtWidgets import QApplication
+            from PyQt6.QtWidgets import QApplication
             app = QApplication.instance()
             # Force modern layout to match expected UI (compact header with gear/profile)
             is_modern = True
@@ -1874,7 +2082,7 @@ class BEMainWindow(QMainWindow):
             self.setWindowTitle("Ember Eye Command Center" if is_modern else "Main")
             # Adapt initial size to current screen resolution
             try:
-                from PyQt5.QtGui import QGuiApplication
+                from PyQt6.QtGui import QGuiApplication
                 screen = QGuiApplication.primaryScreen()
                 avail = screen.availableGeometry()
                 self.setGeometry(avail)
@@ -1884,9 +2092,8 @@ class BEMainWindow(QMainWindow):
                 self.showMaximized()
             # React to resolution changes (monitor switch or scaling changes)
             try:
-                from PyQt5.QtGui import QGuiApplication
+                from PyQt6.QtGui import QGuiApplication
                 screen = QGuiApplication.primaryScreen()
-                screen.geometryChanged.connect(self._on_screen_geometry_changed)
                 try:
                     screen.availableGeometryChanged.connect(self._on_screen_geometry_changed)
                 except Exception:
@@ -2062,10 +2269,15 @@ class BEMainWindow(QMainWindow):
                 }
             """)
             # Set tab bar to not expand and center align
-            from PyQt5.QtCore import Qt
+            from PyQt6.QtCore import Qt
             tab_bar = self.tabs.tabBar()
             tab_bar.setExpanding(False)
             tab_bar.setDrawBase(False)
+            # Re-activate the main window when the tab changes.  On macOS in
+            # maximised mode Qt sometimes loses window-level activation during
+            # tab switches; calling activateWindow() after a short delay
+            # restores normal focus so the user doesn't have to click the Dock.
+            self.tabs.currentChanged.connect(self._on_tab_changed)
             
             main_layout.addWidget(self.tabs)
             
@@ -2121,7 +2333,7 @@ class BEMainWindow(QMainWindow):
 
     def init_incidents_tab(self):
         """Create a tactical Incidents tab for post-mission analysis."""
-        from PyQt5.QtCore import QSize
+        from PyQt6.QtCore import QSize
         incidents_tab = QWidget()
         layout = QVBoxLayout(incidents_tab)
 
@@ -2224,7 +2436,7 @@ class BEMainWindow(QMainWindow):
         # Tactical card body (3-column responsive grid in scroll area).
         self.incident_cards_scroll = QScrollArea()
         self.incident_cards_scroll.setWidgetResizable(True)
-        self.incident_cards_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.incident_cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
         cards_host = QWidget()
         self.incident_cards_grid = QGridLayout(cards_host)
         self.incident_cards_grid.setContentsMargins(8, 8, 8, 8)
@@ -2279,9 +2491,9 @@ class BEMainWindow(QMainWindow):
         self.incident_table.setVisible(False)
         self.incident_list = QListWidget()
         self.incident_list.setVisible(False)
-        self.incident_list.setViewMode(self.incident_list.IconMode)
+        self.incident_list.setViewMode(QListView.ViewMode.IconMode)
         self.incident_list.setIconSize(QSize(160, 120))
-        self.incident_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.incident_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
         # Legacy capture toggle remains functional but no longer shown in tactical UI.
         self.incident_capture_btn = QPushButton("⏸ Pause Capture")
@@ -2321,7 +2533,7 @@ class BEMainWindow(QMainWindow):
         clear_btn.clicked.connect(on_clear)
 
         # Determine tab label based on theme
-        from PyQt5.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
         is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
         self.tabs.addTab(incidents_tab, "INCIDENTS" if is_modern else "Incidents")
@@ -2338,7 +2550,7 @@ class BEMainWindow(QMainWindow):
 
     def _create_sandbox_tab(self) -> QWidget:
         """Create sandbox testing UI for model evaluation."""
-        from PyQt5.QtWidgets import QScrollArea
+        from PyQt6.QtWidgets import QScrollArea
         
         # Main container with scroll area
         sandbox_widget = QWidget()
@@ -2348,8 +2560,8 @@ class BEMainWindow(QMainWindow):
         # Scrollable content area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
         scroll_content = QWidget()
         sandbox_layout = QVBoxLayout(scroll_content)
@@ -2478,7 +2690,7 @@ class BEMainWindow(QMainWindow):
         input_layout = QVBoxLayout()
         input_layout.setSpacing(3)
         self.sandbox_input_label = QLabel("No input")
-        self.sandbox_input_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_input_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sandbox_input_label.setStyleSheet("border: 1px dashed #75602a; background: #141d2a; color: #c9a95a;")
         self.sandbox_input_label.setScaledContents(False)
         self.sandbox_input_label.setFixedHeight(350)
@@ -2500,7 +2712,7 @@ class BEMainWindow(QMainWindow):
         results_inner.setSpacing(6)
         
         self.sandbox_results_label = QLabel("Results appear here")
-        self.sandbox_results_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_results_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sandbox_results_label.setStyleSheet("border: 1px solid #333; background: #111;")
         self.sandbox_results_label.setScaledContents(False)
         self.sandbox_results_label.setFixedHeight(380)
@@ -2510,7 +2722,7 @@ class BEMainWindow(QMainWindow):
 
         # Overlay stats on top-left of result frame (transparent, compact)
         self.sandbox_stats_overlay = QLabel("Waiting for inference...", self.sandbox_results_label)
-        self.sandbox_stats_overlay.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.sandbox_stats_overlay.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.sandbox_stats_overlay.setWordWrap(True)
         self.sandbox_stats_overlay.setFixedWidth(210)
         self.sandbox_stats_overlay.setMinimumHeight(150)
@@ -2519,7 +2731,7 @@ class BEMainWindow(QMainWindow):
             "background: rgba(0, 0, 0, 0.65); color: #f1f1f1; padding: 8px;"
             "font-family: monospace; font-size: 10px; border-radius: 5px;"
         )
-        self.sandbox_stats_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.sandbox_stats_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.sandbox_stats_overlay.raise_()
         
         results_layout.addLayout(results_inner)
@@ -2632,7 +2844,7 @@ class BEMainWindow(QMainWindow):
                     # Display with info about video
                     pixmap = QPixmap(temp_path)
                     if not pixmap.isNull():
-                        scaled = pixmap.scaled(520, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        scaled = pixmap.scaled(520, 350, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                         self.sandbox_input_label.setPixmap(scaled)
                         self.sandbox_input_label.setText("")
                     
@@ -2729,7 +2941,7 @@ class BEMainWindow(QMainWindow):
             
             # Show progress dialog
             progress = QProgressDialog("Exporting model package...", None, 0, 0, self)
-            progress.setWindowModality(Qt.WindowModal)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.setMinimumDuration(0)
             QApplication.processEvents()
             
@@ -2924,7 +3136,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             return
         
         # Show selection dialog
-        from PyQt5.QtWidgets import QInputDialog
+        from PyQt6.QtWidgets import QInputDialog
         items = [os.path.basename(f) for f in image_files]
         item, ok = QInputDialog.getItem(self, "Select Frame", 
                                        "Choose annotated frame:", items, 0, False)
@@ -2939,7 +3151,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             pixmap = QPixmap(image_path)
             if not pixmap.isNull():
                 # Scale to fit label constraints (~350px tall)
-                scaled = pixmap.scaled(520, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                scaled = pixmap.scaled(520, 350, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.sandbox_input_label.setPixmap(scaled)
                 self.sandbox_input_label.setText("")
             else:
@@ -2965,7 +3177,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.sandbox_progress.setRange(0, 0)  # Indeterminate
         
         # Start inference worker
-        from PyQt5.QtCore import QThread, pyqtSignal
+        from PyQt6.QtCore import QThread, pyqtSignal
         
         class InferenceWorker(QThread):
             finished = pyqtSignal(bool, object, str)  # success, results_dict, message
@@ -3196,7 +3408,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if frame_path and os.path.exists(frame_path):
             pixmap = QPixmap(frame_path)
             if not pixmap.isNull():
-                scaled = pixmap.scaled(520, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                scaled = pixmap.scaled(520, 350, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.sandbox_input_label.setPixmap(scaled)
 
     def _on_sandbox_inference_finished(self, success: bool, results: dict, message: str):
@@ -3214,11 +3426,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             annotated_img = results['annotated_image']
             height, width, channel = annotated_img.shape
             bytes_per_line = 3 * width
-            q_img = QImage(annotated_img.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            q_img = QImage(annotated_img.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(q_img.rgbSwapped())
             
             # Scale to fit enlarged result frame
-            scaled = pixmap.scaled(520, 380, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled = pixmap.scaled(520, 380, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.sandbox_results_label.setPixmap(scaled)
             self.sandbox_results_label.setText("")
             
@@ -3428,7 +3640,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def _sparkline_from_values(self, values, width=180, height=38):
         pix = QPixmap(max(1, int(width)), max(1, int(height)))
-        pix.fill(Qt.transparent)
+        pix.fill(Qt.GlobalColor.transparent)
         if not values:
             return pix
         try:
@@ -3436,7 +3648,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             mn, mx = min(v), max(v)
             span = (mx - mn) if mx != mn else 1.0
             painter = QPainter(pix)
-            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(QPen(QColor('#ffd200'), 2))
             count = len(v)
             prev_x = 0
@@ -3516,11 +3728,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
             views = QHBoxLayout()
             rgb_lbl = QLabel('RGB')
-            rgb_lbl.setAlignment(Qt.AlignCenter)
+            rgb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             rgb_lbl.setMinimumSize(440, 300)
             rgb_lbl.setStyleSheet('background:#11161d; border:1px solid #4a5460;')
             therm_lbl = QLabel('THERMAL')
-            therm_lbl.setAlignment(Qt.AlignCenter)
+            therm_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             therm_lbl.setMinimumSize(440, 300)
             therm_lbl.setStyleSheet('background:#11161d; border:1px solid #4a5460;')
             views.addWidget(rgb_lbl)
@@ -3528,7 +3740,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             root.addLayout(views)
 
             max_frames = max(len(video_files), len(thermal_files), 1)
-            slider = QSlider(Qt.Horizontal)
+            slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(0, max_frames - 1)
             root.addWidget(slider)
 
@@ -3558,11 +3770,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if p1 and os.path.exists(p1):
                     px1 = QPixmap(p1)
                     if not px1.isNull():
-                        rgb_lbl.setPixmap(px1.scaled(rgb_lbl.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                        rgb_lbl.setPixmap(px1.scaled(rgb_lbl.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
                 if p2 and os.path.exists(p2):
                     px2 = QPixmap(p2)
                     if not px2.isNull():
-                        therm_lbl.setPixmap(px2.scaled(therm_lbl.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                        therm_lbl.setPixmap(px2.scaled(therm_lbl.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
             def _tick():
                 cur = slider.value()
@@ -3577,7 +3789,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             pause_btn.clicked.connect(lambda: timer.stop())
             close_btn.clicked.connect(dlg.accept)
             _render(0)
-            dlg.exec_()
+            dlg.exec()
         except Exception as e:
             QMessageBox.warning(self, 'Playback Error', f'Unable to open dual-view playback:\n{e}')
 
@@ -3595,7 +3807,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         card = QFrame()
         card.setObjectName('IncidentCard')
         card.setProperty('status', 'verified' if is_verified else 'pending')
-        card.setAttribute(Qt.WA_Hover, True)
+        card.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         bg = '#291414' if is_night else '#131920'
         border_color = '#ffd200' if is_verified else '#5c6672'
         border_style = 'solid' if is_verified else 'dashed'
@@ -3628,17 +3840,17 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         rgb, therm = self._load_session_preview_pixmaps(session)
         media = QHBoxLayout()
         rgb_lbl = QLabel('RGB')
-        rgb_lbl.setAlignment(Qt.AlignCenter)
+        rgb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         rgb_lbl.setMinimumSize(150, 92)
         rgb_lbl.setStyleSheet('background:#0f141a; border:1px solid #4f5b67;')
         therm_lbl = QLabel('THERMAL')
-        therm_lbl.setAlignment(Qt.AlignCenter)
+        therm_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         therm_lbl.setMinimumSize(150, 92)
         therm_lbl.setStyleSheet('background:#0f141a; border:1px solid #4f5b67;')
         if rgb and not rgb.isNull():
-            rgb_lbl.setPixmap(rgb.scaled(150, 92, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            rgb_lbl.setPixmap(rgb.scaled(150, 92, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         if therm and not therm.isNull():
-            therm_lbl.setPixmap(therm.scaled(150, 92, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            therm_lbl.setPixmap(therm.scaled(150, 92, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         media.addWidget(rgb_lbl)
         media.addWidget(therm_lbl)
         v.addLayout(media)
@@ -3949,12 +4161,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 min_interval = 1.0 / fps
                 last_ts = float(session.get('video_writer_last_ts', 0.0) or 0.0)
                 if (now - last_ts) >= min_interval:
-                    img = qimage.convertToFormat(QImage.Format_RGB888)
+                    img = qimage.convertToFormat(QImage.Format.Format_RGB888)
                     w = int(img.width())
                     h = int(img.height())
                     frame_w, frame_h = session.get('video_writer_size') or (w, h)
                     ptr = img.bits()
-                    ptr.setsize(img.byteCount())
+                    ptr.setsize(img.sizeInBytes())
                     bpl = int(img.bytesPerLine())
                     row = np.frombuffer(ptr, np.uint8).reshape((h, bpl))
                     rgb = row[:, : (w * 3)].reshape((h, w, 3))
@@ -4083,6 +4295,17 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """Add a captured incident to the Incidents tab."""
         try:
             debug_print(f"[INCIDENT] Received incident: loc_id={loc_id}, score={score:.3f}, detections={len(detections or [])}")
+            # Cache PPE counters from detections so vision-only fusion updates can render PPE cards.
+            try:
+                if str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower() == 'ppe':
+                    loc_key = str(loc_id) if loc_id is not None else '_broadcast'
+                    stats = self._extract_ppe_counts_from_detections(detections)
+                    cache = getattr(self, '_ppe_stats_by_loc_id', {}) or {}
+                    cache[loc_key] = stats
+                    self._ppe_stats_by_loc_id = cache
+            except Exception:
+                pass
+
             # Hybrid alarm evaluation
             key = str(loc_id) if loc_id is not None else "_broadcast"
             fusion_result = self._fusion_by_loc_id.get(key) or self._fusion_by_loc_id.get("_broadcast")
@@ -4116,8 +4339,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             if not getattr(self, 'incident_capture_enabled', True):
                 debug_print(f"[INCIDENT] Capture disabled, skipping")
                 return
-            from PyQt5.QtGui import QPixmap, QIcon
-            from PyQt5.QtWidgets import QListWidgetItem
+            from PyQt6.QtGui import QPixmap, QIcon
+            from PyQt6.QtWidgets import QListWidgetItem
             import time, os
             from datetime import datetime
             # Convert to pixmap in GUI thread
@@ -4163,9 +4386,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             item = QListWidgetItem()
             # index used as reference back into store
             idx = len(self._incidents_store) - 1
-            item.setData(Qt.UserRole, idx)
+            item.setData(Qt.ItemDataRole.UserRole, idx)
             # Set icon and label
-            icon = QIcon(pixmap.scaled(160, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            icon = QIcon(pixmap.scaled(160, 120, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
             item.setIcon(icon)
             ts_str = datetime.fromtimestamp(entry['ts']).strftime('%H:%M:%S')
             item.setText(f"{entry['loc_id']}\n{ts_str} • {entry['score']:.2f}")
@@ -4217,7 +4440,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             return
         entries = []
         for item in selected_items:
-            idx = item.data(Qt.UserRole)
+            idx = item.data(Qt.ItemDataRole.UserRole)
             if idx is None:
                 continue
             if 0 <= idx < len(self._incidents_store):
@@ -4232,7 +4455,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         import time
         import shutil
         from datetime import datetime
-        from PyQt5.QtWidgets import QProgressDialog
+        from PyQt6.QtWidgets import QProgressDialog
 
         exporter = IncidentExporter()
         temp_dir = tempfile.mkdtemp(prefix="incident_export_")
@@ -4246,7 +4469,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         duration_seconds = max(0.0, max_ts - min_ts)
 
         progress = QProgressDialog("Exporting incidents...", "Cancel", 0, len(entries), self)
-        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.show()
 
         for idx, entry in enumerate(entries):
@@ -4323,7 +4546,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             if Path(logo_path).exists():
                 pixmap = QPixmap(logo_path)
                 if not pixmap.isNull():
-                    scaled_pixmap = pixmap.scaled(50, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(50, 50, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                     self.logo.setPixmap(scaled_pixmap)
                     logo_loaded = True
         except Exception as e:
@@ -4361,7 +4584,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             if Path(logo_path).exists():
                 pixmap = QPixmap(logo_path)
                 if not pixmap.isNull():
-                    scaled_pixmap = pixmap.scaled(36, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    scaled_pixmap = pixmap.scaled(36, 36, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                     self.logo.setPixmap(scaled_pixmap)
                     try:
                         glow = QGraphicsDropShadowEffect(self.logo)
@@ -4419,9 +4642,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _make_tactical_combo_icon(self, kind="grid"):
         """Return a compact icon for ghost-style header combos."""
         pix = QPixmap(14, 14)
-        pix.fill(Qt.transparent)
+        pix.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pix)
-        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         pen = QPen(QColor("#D2D8E0"), 1)
         painter.setPen(pen)
         if str(kind) == "grid":
@@ -4435,7 +4658,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             painter.drawLine(7, 2, 7, 12)
             painter.drawLine(2, 7, 12, 7)
         painter.end()
-        from PyQt5.QtGui import QIcon
+        from PyQt6.QtGui import QIcon
         return QIcon(pix)
     
     def init_header_actions(self, header_layout):
@@ -4446,8 +4669,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         settings_btn.setText("⚙")
         settings_btn.setFixedHeight(38)
         settings_btn.setFixedWidth(38)
-        settings_btn.setPopupMode(QToolButton.InstantPopup)
-        settings_btn.setCursor(Qt.PointingHandCursor)
+        settings_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         settings_btn.setStyleSheet("""
             QToolButton {
                 background-color: rgba(255, 255, 255, 0.02);
@@ -4525,8 +4748,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         profile_btn.setText("👤 PROFILE")
         profile_btn.setFixedHeight(38)
         profile_btn.setMinimumWidth(110)
-        profile_btn.setPopupMode(QToolButton.InstantPopup)
-        profile_btn.setCursor(Qt.PointingHandCursor)
+        profile_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        profile_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         profile_btn.setStyleSheet("""
             QToolButton {
                 background-color: rgba(255, 255, 255, 0.02);
@@ -4673,10 +4896,83 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             }
         """)
 
+    def _begin_live_pfds_modal_guard(self):
+        if not self._is_live_pfds_tab_active():
+            return None
+
+        try:
+            self._stabilize_live_pfds_surface()
+        except Exception:
+            pass
+
+        anim = getattr(self, '_live_pfds_sidebar_anim', None)
+        if anim is not None:
+            try:
+                anim.stop()
+            except Exception:
+                pass
+
+        guarded_widgets = []
+        for attr_name in (
+            'live_pfds_scroll',
+            'live_pfds_grid_host',
+            'live_pfds_sidebar',
+            'live_pfds_pending_host',
+        ):
+            widget = getattr(self, attr_name, None)
+            if widget is None:
+                continue
+            try:
+                guarded_widgets.append((widget, widget.updatesEnabled()))
+                widget.setUpdatesEnabled(False)
+            except Exception:
+                pass
+
+            viewport_getter = getattr(widget, 'viewport', None)
+            if callable(viewport_getter):
+                try:
+                    viewport = viewport_getter()
+                except Exception:
+                    viewport = None
+                if viewport is not None:
+                    try:
+                        guarded_widgets.append((viewport, viewport.updatesEnabled()))
+                        viewport.setUpdatesEnabled(False)
+                    except Exception:
+                        pass
+
+        return guarded_widgets
+
+    def _end_live_pfds_modal_guard(self, guarded_widgets):
+        if not guarded_widgets:
+            return
+
+        for widget, was_enabled in reversed(guarded_widgets):
+            try:
+                widget.setUpdatesEnabled(was_enabled)
+                if was_enabled:
+                    widget.update()
+                    # Do NOT call repaint() here — synchronous paint during unfreeze
+                    # can cause macOS to momentarily release window activation.
+            except Exception:
+                pass
+
+    def _run_live_pfds_modal(self, callback):
+        guarded_widgets = self._begin_live_pfds_modal_guard()
+        try:
+            return callback()
+        finally:
+            self._end_live_pfds_modal_guard(guarded_widgets)
+
+    def _exec_live_pfds_dialog(self, dialog):
+        if dialog is None:
+            return None
+        return self._run_live_pfds_modal(lambda: dialog.exec())
+
     def init_settings_menu(self, title_bar):
         menu_btn = QToolButton()
-        menu_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
-        menu_btn.setPopupMode(QToolButton.InstantPopup)
+        menu_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu()
         self._style_tactical_settings_menu(menu)
         menu.addAction("Profile", self.show_profile)
@@ -4751,7 +5047,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self._tcp_pulse_glow.setColor(QColor(glow_color))
         if hasattr(self, '_tcp_pulse_anim') and self._tcp_pulse_anim is not None:
             if running:
-                if self._tcp_pulse_anim.state() != QPropertyAnimation.Running:
+                if self._tcp_pulse_anim.state() != QAbstractAnimation.State.Running:
                     self._tcp_pulse_anim.start()
             else:
                 self._tcp_pulse_anim.stop()
@@ -4760,8 +5056,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def init_tcp_status_indicator(self):
         """Initialize TCP server status indicator in status bar."""
-        from PyQt5.QtWidgets import QLabel, QPushButton, QWidget, QHBoxLayout, QFrame
-        from PyQt5.QtCore import Qt
+        from PyQt6.QtWidgets import QLabel, QPushButton, QWidget, QHBoxLayout, QFrame
+        from PyQt6.QtCore import Qt
 
         # This can be called before tcp_server_port is initialized in some startup paths.
         cfg = getattr(self, 'config', {}) if isinstance(getattr(self, 'config', {}), dict) else {}
@@ -4858,14 +5154,14 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self._tcp_pulse_anim.setKeyValueAt(0.0, 2.0)
         self._tcp_pulse_anim.setKeyValueAt(0.5, 14.0)
         self._tcp_pulse_anim.setKeyValueAt(1.0, 2.0)
-        self._tcp_pulse_anim.setEasingCurve(QEasingCurve.InOutSine)
+        self._tcp_pulse_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
         self._tcp_pulse_anim.setLoopCount(-1)
         self._set_tcp_pulse_state(True)
         
         # Restart button
         restart_btn = QPushButton("RESTART")
         restart_btn.setFixedHeight(24)
-        restart_btn.setCursor(Qt.PointingHandCursor)
+        restart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         restart_btn.setStyleSheet("""
             QPushButton {
                 background-color: rgba(17, 24, 33, 0.97);
@@ -5125,7 +5421,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         return 'auto_bind'
 
     def show_tcp_binding_mode_dialog(self):
-        from PyQt5.QtWidgets import QInputDialog
+        from PyQt6.QtWidgets import QInputDialog
 
         current_mode = self._get_tcp_binding_mode()
         options = ['auto_bind', 'handshake']
@@ -5164,7 +5460,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def show_tcp_port_dialog(self):
         import inspect
-        from PyQt5.QtWidgets import QInputDialog
+        from PyQt6.QtWidgets import QInputDialog
 
         # Safety gate: non-menu invocations should perform direct restart,
         # never prompt for a port change.
@@ -5207,7 +5503,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 binding_mode = self._get_tcp_binding_mode()
                 self.tcp_message_count = 0
                 # Always connect the signal (PyQt5 does not duplicate connections)
-                self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.QueuedConnection)
+                self.tcp_packet_signal.connect(self.handle_tcp_packet, Qt.ConnectionType.QueuedConnection)
                 if tcp_mode == 'async':
                     from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
                     self.tcp_server = TCPAsyncSensorServer(
@@ -5273,7 +5569,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         dialog = ThermalGridConfigDialog(self, current_settings)
         dialog.settings_changed.connect(self.apply_thermal_grid_settings)
         
-        if dialog.exec_():
+        if dialog.exec():
             # Settings already applied via signal
             QMessageBox.information(self, "Settings Applied", "Thermal grid configuration has been updated.")
     
@@ -5372,7 +5668,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         dialog = SensorConfigDialog(self, current_settings)
         dialog.settings_changed.connect(self.apply_sensor_config)
         
-        if dialog.exec_():
+        if dialog.exec():
             applied = dialog.get_settings()
             applied_scope = str(applied.get('thermal_apply_scope', 'all'))
             applied_pfds = str(applied.get('thermal_target_pfds', applied.get('thermal_target_room', ''))).strip()
@@ -5382,10 +5678,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     self,
                     "Restart Application",
                     "Settings have been applied. Restart EmberEye Field now?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
                 )
-                if confirm == QMessageBox.Yes:
+                if confirm == QMessageBox.StandardButton.Yes:
                     self._restart_application()
                     return
             QMessageBox.information(self, "Settings Applied", f"Sensor configuration updated for {target_text} (no restart required).")
@@ -5419,6 +5715,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             hybrid_detection_config.confirmed_conf_threshold = float(getattr(self, 'confirmed_conf_threshold', hybrid_detection_config.confirmed_conf_threshold))
             hybrid_detection_config.rule_min_yolo_conf = float(getattr(self, '_rule_min_yolo_conf', hybrid_detection_config.rule_min_yolo_conf))
             hybrid_detection_config.rule_min_fusion_conf = float(getattr(self, '_rule_min_fusion_conf', hybrid_detection_config.rule_min_fusion_conf))
+            os.environ['EMBEREYE_ANALYTICS_CATEGORY'] = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
 
             first_widget = next(iter(self.video_widgets.values()), None) if hasattr(self, 'video_widgets') else None
             if first_widget is not None:
@@ -5629,7 +5926,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             from embereye_base.core.class_config import load_master_classes, get_leaf_classes
             
             dlg = MasterClassConfigDialog(self)
-            if dlg.exec_() == QDialog.Accepted:
+            if dlg.exec() == QDialog.DialogCode.Accepted:
                 # Reload taxonomy and refresh dependent UI controls
                 self._master_classes = load_master_classes()
                 self.training_video_classes = get_leaf_classes()
@@ -5649,7 +5946,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def show_pfds_add_dialog(self):
         """Add PFDS/EmberHawk device with mandatory serial binding and access flags."""
-        from PyQt5.QtWidgets import (
+        from PyQt6.QtWidgets import (
             QDialog,
             QFormLayout,
             QLineEdit,
@@ -5699,7 +5996,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         layout.addRow("Access", authorized_check)
         layout.addRow("Link", linked_check)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         layout.addRow(buttons)
 
         def on_ok():
@@ -5755,7 +6052,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         buttons.accepted.connect(on_ok)
         buttons.rejected.connect(dlg.reject)
-        dlg.exec_()
+        dlg.exec()
 
     def _refresh_live_operations_views(self):
         self._refresh_live_pfds_tab()
@@ -5773,6 +6070,14 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             if child_layout is not None:
                 self._clear_dynamic_layout(child_layout)
             if widget is not None:
+                # Hide removed widgets immediately so stale cards do not linger
+                # during the same event loop turn. Do not detach them from the
+                # parent here; on macOS that can momentarily promote them to a
+                # top-level window and steal focus.
+                try:
+                    widget.hide()
+                except Exception:
+                    pass
                 widget.deleteLater()
 
     def _responsive_card_columns(self, viewport_width: int, min_card_width: int = 320) -> int:
@@ -5915,8 +6220,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             devices = []
 
         pending = dict(getattr(self, '_pending_device_by_serial', {}) or {})
-        for serial, info in self._pending_from_recent_telemetry(now_ts=now_ts).items():
-            pending.setdefault(serial, info)
+        if bool(getattr(self, '_pending_from_telemetry_enabled', False)):
+            for serial, info in self._pending_from_recent_telemetry(now_ts=now_ts).items():
+                pending.setdefault(serial, info)
         for device in devices:
             serial = self._normalize_serial_key(device.get('serial_number'))
             if not serial or serial in pending:
@@ -6049,13 +6355,19 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self._notify_live_ops_action(f"Reconnect requested for {target_ip}", 2500)
             ok = bool(self.device_status_manager.manual_reconnect(target_ip))
             if ok:
-                QMessageBox.information(parent or self, 'Reconnect', f'Reconnect initiated for {target_ip}.')
+                self._run_live_pfds_modal(
+                    lambda: QMessageBox.information(parent or self, 'Reconnect', f'Reconnect initiated for {target_ip}.')
+                )
                 self._notify_live_ops_action(f"Reconnect initiated for {target_ip}", 3000)
             else:
-                QMessageBox.warning(parent or self, 'Reconnect Failed', f'Could not trigger reconnect for {target_ip}.')
+                self._run_live_pfds_modal(
+                    lambda: QMessageBox.warning(parent or self, 'Reconnect Failed', f'Could not trigger reconnect for {target_ip}.')
+                )
                 self._notify_live_ops_action(f"Reconnect failed for {target_ip}", 3000)
         except Exception as e:
-            QMessageBox.critical(parent or self, 'Reconnect Failed', f'Could not reconnect {target_ip}: {e}')
+            self._run_live_pfds_modal(
+                lambda: QMessageBox.critical(parent or self, 'Reconnect Failed', f'Could not reconnect {target_ip}: {e}')
+            )
             self._notify_live_ops_action(f"Reconnect error for {target_ip}: {e}", 3500)
         self._refresh_live_operations_views()
 
@@ -6080,24 +6392,140 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             QMessageBox.critical(self, 'Devices Tab', f'Unable to open PFDS dialog: {e}')
             self._notify_live_ops_action(f"Unable to open PFDS dialog: {e}", 3500)
 
+    def _on_tab_changed(self, index):
+        """Handle tab switch: re-activate window on macOS and hard-refresh LIVE PFDS surface."""
+        try:
+            from PyQt6.QtCore import QTimer
+            # Never force activateWindow()/raise_() on tab change.
+            # On macOS this can trigger app focus churn while switching tabs.
+
+            tab_name = ''
+            try:
+                if hasattr(self, 'tabs') and self.tabs is not None and 0 <= int(index) < self.tabs.count():
+                    tab_name = str(self.tabs.tabText(int(index))).strip().upper()
+            except Exception:
+                tab_name = ''
+
+            try:
+                self._set_videowall_render_enabled(tab_name == 'VIDEOWALL')
+            except Exception:
+                pass
+
+            if tab_name == 'LIVE PFDS':
+                if bool(getattr(self, '_live_pfds_transition_inflight', False)):
+                    return
+                self._live_pfds_transition_inflight = True
+
+                def _finish_live_pfds_transition():
+                    self._live_pfds_transition_inflight = False
+                    deferred = getattr(self, '_live_pfds_deferred_filter', None)
+                    if deferred:
+                        self._live_pfds_deferred_filter = None
+                        try:
+                            QTimer.singleShot(0, lambda f=deferred: self._set_live_pfds_filter(f))
+                        except Exception:
+                            pass
+
+                # Ensure VIDEOWALL maximize mode is fully torn down before PFDS actions.
+                # Keeping a maximized tile state alive across tab switches can cause
+                # repaint artifacts and focus churn when PFDS filters trigger refreshes.
+                try:
+                    if getattr(self, 'maximized_widget', None) is not None:
+                        self.handle_minimize()
+                except Exception:
+                    pass
+
+                def _restore_live_pfds_surface():
+                    # Guard: if the user switched away before the timer fired, skip.
+                    if not self._is_live_pfds_tab_active():
+                        _finish_live_pfds_transition()
+                        return
+                    try:
+                        self._stabilize_live_pfds_surface()
+                    except Exception:
+                        pass
+
+                    for attr_name in (
+                        'live_pfds_scroll',
+                        'live_pfds_grid_host',
+                        'live_pfds_sidebar',
+                        'live_pfds_pending_host',
+                    ):
+                        widget = getattr(self, attr_name, None)
+                        if widget is None:
+                            continue
+                        try:
+                            widget.setUpdatesEnabled(True)
+                            widget.update()
+                        except Exception:
+                            pass
+                        viewport_getter = getattr(widget, 'viewport', None)
+                        if callable(viewport_getter):
+                            try:
+                                viewport = viewport_getter()
+                            except Exception:
+                                viewport = None
+                            if viewport is not None:
+                                try:
+                                    viewport.setUpdatesEnabled(True)
+                                    viewport.update()
+                                except Exception:
+                                    pass
+
+                    try:
+                        self._refresh_live_pfds_tab()
+                    except Exception:
+                        pass
+                    finally:
+                        QTimer.singleShot(0, _finish_live_pfds_transition)
+
+                QTimer.singleShot(0, _restore_live_pfds_surface)
+        except Exception:
+            pass
+
     def _open_live_pfds_tab(self):
-        # Keep this action deterministic: always open the PFDS dialog.
-        # If LIVE PFDS tab exists, also focus it first.
+        # Prefer focusing the LIVE PFDS tab in the main window.
+        # Only open the dialog as a fallback when the tab is not present.
         try:
             if hasattr(self, 'tabs') and self.tabs is not None:
                 for idx in range(self.tabs.count()):
                     if str(self.tabs.tabText(idx)).strip().upper() == 'LIVE PFDS':
                         self.tabs.setCurrentIndex(idx)
                         self._refresh_live_operations_views()
-                        break
+                        self._notify_live_ops_action("Opened LIVE PFDS tab", 2000)
+                        return
         except Exception as e:
             print(f"LIVE PFDS tab focus failed: {e}")
 
-        # Always present dialog as a reliable fallback/entry point.
+        # Fallback: if tab is unavailable, use dialog entry point.
         try:
             self.show_pfds_view_dialog()
         except Exception as e:
             QMessageBox.critical(self, 'Live PFDS', f'Unable to open Live PFDS dialog: {e}')
+
+    def _set_videowall_render_enabled(self, enabled: bool):
+        """Enable/disable videowall widget repainting when tab visibility changes."""
+        try:
+            widgets = list(getattr(self, 'video_widgets', {}).values())
+        except Exception:
+            widgets = []
+        for widget in widgets:
+            if widget is None:
+                continue
+            try:
+                widget.setUpdatesEnabled(bool(enabled))
+                if bool(enabled):
+                    widget.update()
+            except Exception:
+                pass
+            try:
+                label = getattr(widget, 'video_label', None)
+                if label is not None:
+                    label.setUpdatesEnabled(bool(enabled))
+                    if bool(enabled):
+                        label.update()
+            except Exception:
+                pass
 
     def _collect_live_asset_entries(self):
         devices, _pending_list, _offline_list, now_ts = self._collect_live_pfds_snapshot()
@@ -6163,7 +6591,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         border_color = '#ffdc00' if (is_active or is_incomplete) else '#c15b5b' if is_offline else '#75808d'
         background = '#10161c' if is_active else '#201519' if is_offline else '#141a22'
         frame.setObjectName('LiveOpCard')
-        frame.setAttribute(Qt.WA_Hover, True)
+        frame.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         frame.setStyleSheet(
             f"QFrame#LiveOpCard {{ background-color: {background}; border: 2px {border_style} {border_color}; border-radius: 4px; }}"
             "QFrame#LiveOpCard:hover { border-color: #ffe564; background-color: #182028; }"
@@ -6183,14 +6611,50 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         menu_btn = QToolButton()
         menu_btn.setObjectName('LiveCardMenuButton')
         menu_btn.setText('⋯')
-        menu_btn.setCursor(Qt.PointingHandCursor)
-        menu_btn.setPopupMode(QToolButton.InstantPopup)
+        menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(menu_btn)
         self._style_tactical_settings_menu(menu)
         for label, callback in actions:
             menu.addAction(label, callback)
         menu_btn.setMenu(menu)
         return menu_btn
+
+    def _close_live_pfds_popups(self):
+        try:
+            popup = QApplication.activePopupWidget()
+            if popup is not None:
+                try:
+                    popup.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        for host_name in ('live_pfds_grid_host', 'live_pfds_pending_host'):
+            host = getattr(self, host_name, None)
+            if host is None:
+                continue
+            try:
+                tool_buttons = host.findChildren(QToolButton)
+            except Exception:
+                tool_buttons = []
+            for button in tool_buttons:
+                try:
+                    menu = button.menu()
+                except Exception:
+                    menu = None
+                if menu is None:
+                    continue
+                try:
+                    menu.close()
+                except Exception:
+                    pass
+
+    def _restore_live_pfds_focus(self):
+        # Intentionally no-op: programmatic focus assignment on macOS causes
+        # activation churn while switching PFDS filters.
+        return
 
     def _build_live_pfds_device_card(self, device):
         state = self._get_device_lifecycle_state(device)
@@ -6432,8 +6896,28 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         return card
 
     def _refresh_live_pfds_tab(self):
+        import time
+        refresh_start = time.time()
+        from PyQt6.QtWidgets import QApplication
+        
         if not hasattr(self, 'live_pfds_grid'):
             return
+        if bool(getattr(self, '_live_pfds_refresh_inflight', False)):
+            self._live_pfds_refresh_pending = True
+            return
+        self._live_pfds_refresh_inflight = True
+
+        try:
+            self._stabilize_live_pfds_surface()
+        except Exception:
+            pass
+
+        # Do NOT freeze PFDS widgets during card rebuild.
+        # On macOS, calling setUpdatesEnabled(False) on widgets and then toggling
+        # sidebar visibility within the frozen state causes the native compositor
+        # to briefly expose the window background, producing a flash and releasing
+        # app activation.  The card rebuild is fast and imperceptible without a freeze.
+        self._live_pfds_refresh_pending = False
         devices, pending_list, offline_list, _now_ts = self._collect_live_pfds_snapshot()
 
         offline_device_ids = set()
@@ -6457,6 +6941,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 did = None
             if did is not None and did in offline_device_ids:
                 continue
+            # Only count as LIVE if device is authorized + linked (active/ghost state).
+            # Unauthorized or unlinked devices appear only in PENDING, not LIVE —
+            # counting them in both causes the ALL total to over-count unique devices.
+            state = self._get_device_lifecycle_state(device, now_ts=_now_ts)
+            if state not in {'active', 'ghost'}:
+                continue
             online_devices.append(device)
 
         live_count = len(online_devices)
@@ -6475,10 +6965,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             current_filter = 'all'
             self._live_pfds_filter = 'all'
         self._sync_live_pfds_filter_buttons()
+        show_pending_sidebar = current_filter != 'pending'
+        self._apply_live_pfds_sidebar_state(None if show_pending_sidebar else False)
 
+        # Do not force-close popups during refresh; on macOS this can trigger
+        # focus churn while operator clicks PFDS filter buttons.
         self._clear_dynamic_layout(self.live_pfds_grid)
         viewport_width = self.live_pfds_scroll.viewport().width() if hasattr(self, 'live_pfds_scroll') else 1200
         cols = self._responsive_card_columns(viewport_width, 320)
+        first_main_card = None
         for c in range(max(1, cols)):
             self.live_pfds_grid.setColumnStretch(c, 1)
 
@@ -6499,15 +6994,26 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             kind, item = payload
             try:
                 if kind == 'pending':
-                    self.live_pfds_grid.addWidget(self._build_pending_identity_card(item), row, col, Qt.AlignTop | Qt.AlignLeft)
+                    card = self._build_pending_identity_card(item)
+                    if first_main_card is None:
+                        first_main_card = card
+                    print(f"  [PENDING_CARD] idx={idx} row={row} col={col} serial={item.get('serial_number')} visible={card.isVisible()}")
+                    self.live_pfds_grid.addWidget(card, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
                 elif kind == 'offline':
-                    self.live_pfds_grid.addWidget(self._build_offline_device_card(item), row, col, Qt.AlignTop | Qt.AlignLeft)
+                    card = self._build_offline_device_card(item)
+                    if first_main_card is None:
+                        first_main_card = card
+                    self.live_pfds_grid.addWidget(card, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
                 else:
-                    self.live_pfds_grid.addWidget(self._build_live_pfds_device_card(item), row, col, Qt.AlignTop | Qt.AlignLeft)
+                    card = self._build_live_pfds_device_card(item)
+                    if first_main_card is None:
+                        first_main_card = card
+                    self.live_pfds_grid.addWidget(card, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             except Exception as e:
+                print(f"  [CARD_RENDER_ERROR] {e}")
                 err = QLabel(f"CARD RENDER ERROR: {e}")
                 err.setStyleSheet('color: #ffb4b4; font-size: 11px; padding: 10px; border: 1px dashed #aa6666;')
-                self.live_pfds_grid.addWidget(err, row, col, Qt.AlignTop | Qt.AlignLeft)
+                self.live_pfds_grid.addWidget(err, row, col, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         if not merged_cards:
             empty = QLabel('No live or offline PFDS devices available')
@@ -6515,20 +7021,66 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.live_pfds_grid.addWidget(empty, 0, 0)
 
         if hasattr(self, 'live_pfds_grid_host'):
+            try:
+                self.live_pfds_grid.activate()
+                self.live_pfds_grid_host.update()
+            except Exception:
+                pass
             self.live_pfds_grid_host.adjustSize()
 
+        first_pending_card = None
         if hasattr(self, 'live_pfds_pending_layout'):
             self._clear_dynamic_layout(self.live_pfds_pending_layout)
-            for info in pending_list:
-                self.live_pfds_pending_layout.addWidget(self._build_pending_identity_card(info))
-            if not pending_list:
+            if show_pending_sidebar:
+                for info in pending_list:
+                    card = self._build_pending_identity_card(info)
+                    if first_pending_card is None:
+                        first_pending_card = card
+                    self.live_pfds_pending_layout.addWidget(card)
+            if show_pending_sidebar and not pending_list:
                 empty = QLabel('No pending or unmapped identities')
                 empty.setStyleSheet('color: #9aa4af; font-size: 12px; padding: 8px 4px;')
                 self.live_pfds_pending_layout.addWidget(empty)
             self.live_pfds_pending_layout.addStretch(1)
 
+        if hasattr(self, 'live_pfds_pending_host'):
+            try:
+                self.live_pfds_pending_layout.activate()
+                self.live_pfds_pending_host.update()
+            except Exception:
+                pass
+            self.live_pfds_pending_host.adjustSize()
+
+        def _restore_live_pfds_scroll_targets():
+            if hasattr(self, 'live_pfds_scroll') and self.live_pfds_scroll is not None:
+                try:
+                    self.live_pfds_scroll.verticalScrollBar().setValue(0)
+                except Exception:
+                    pass
+            if hasattr(self, 'live_pfds_pending_scroll') and self.live_pfds_pending_scroll is not None:
+                try:
+                    self.live_pfds_pending_scroll.verticalScrollBar().setValue(0)
+                except Exception:
+                    pass
+
+        QTimer.singleShot(0, _restore_live_pfds_scroll_targets)
+        QTimer.singleShot(50, _restore_live_pfds_scroll_targets)
+        QTimer.singleShot(0, self._stabilize_live_pfds_surface)
+
+        self._live_pfds_refresh_inflight = False
+
+        if bool(getattr(self, '_live_pfds_refresh_pending', False)):
+            self._live_pfds_refresh_pending = False
+            QTimer.singleShot(0, self._refresh_live_pfds_tab)
+
     def _set_live_pfds_filter(self, filter_name: str):
-        self._live_pfds_filter = str(filter_name or 'all').strip().lower()
+        next_filter = str(filter_name or 'all').strip().lower()
+        if next_filter not in {'all', 'live', 'pending'}:
+            next_filter = 'all'
+        if bool(getattr(self, '_live_pfds_transition_inflight', False)) or bool(getattr(self, '_live_pfds_refresh_inflight', False)):
+            self._live_pfds_deferred_filter = next_filter
+            return
+        self._live_pfds_filter = next_filter
         self._sync_live_pfds_filter_buttons()
         self._refresh_live_pfds_tab()
 
@@ -6578,18 +7130,49 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _toggle_live_pfds_sidebar(self):
         if not hasattr(self, 'live_pfds_sidebar'):
             return
+        if str(getattr(self, '_live_pfds_filter', 'all') or 'all').strip().lower() == 'pending':
+            return
         expanded = bool(getattr(self, 'live_pfds_sidebar_expanded', True))
-        start_width = int(self.live_pfds_sidebar.maximumWidth())
         end_width = 0 if expanded else int(getattr(self, '_live_pfds_sidebar_width', 340))
-        if not expanded:
-            self.live_pfds_sidebar.setVisible(True)
         self.live_pfds_sidebar_expanded = not expanded
         if hasattr(self, 'live_pfds_sidebar_toggle'):
             self.live_pfds_sidebar_toggle.setText('Hide Pending' if not expanded else 'Show Pending')
-        self._live_pfds_sidebar_anim.stop()
-        self._live_pfds_sidebar_anim.setStartValue(start_width)
-        self._live_pfds_sidebar_anim.setEndValue(end_width)
-        self._live_pfds_sidebar_anim.start()
+        # Apply sidebar width immediately (no animation) to avoid transition flicker.
+        self.live_pfds_sidebar.setVisible(end_width > 0)
+        self.live_pfds_sidebar.setMaximumWidth(end_width)
+        self.live_pfds_sidebar.update()
+
+    def _apply_live_pfds_sidebar_state(self, force_visible=None):
+        if not hasattr(self, 'live_pfds_sidebar'):
+            return
+
+        # Stop any running sidebar animation so it cannot override the width we
+        # are about to set directly.
+        anim = getattr(self, '_live_pfds_sidebar_anim', None)
+        if anim is not None:
+            try:
+                anim.stop()
+            except Exception:
+                pass
+
+        if force_visible is None:
+            visible = bool(getattr(self, 'live_pfds_sidebar_expanded', True))
+            toggle_enabled = True
+        else:
+            visible = bool(force_visible)
+            toggle_enabled = False
+
+        target_width = int(getattr(self, '_live_pfds_sidebar_width', 340)) if visible else 0
+        self.live_pfds_sidebar.setVisible(visible)
+        self.live_pfds_sidebar.setMaximumWidth(target_width)
+
+        if hasattr(self, 'live_pfds_sidebar_toggle'):
+            self.live_pfds_sidebar_toggle.setEnabled(toggle_enabled)
+            if toggle_enabled:
+                expanded = bool(getattr(self, 'live_pfds_sidebar_expanded', True))
+                self.live_pfds_sidebar_toggle.setText('Hide Pending' if expanded else 'Show Pending')
+            else:
+                self.live_pfds_sidebar_toggle.setText('Show Pending')
 
     def _on_live_pfds_sidebar_anim_finished(self):
         if not hasattr(self, 'live_pfds_sidebar'):
@@ -6638,7 +7221,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _set_live_device_location(self, device_id, parent=None):
         if not self._ensure_operator_identity(parent or self, action='updating location'):
             return
-        loc_id, ok = QInputDialog.getItem(parent or self, 'Set Location', 'Location Id', self._location_choices_for_live_devices(), 0, True)
+        loc_id, ok = self._run_live_pfds_modal(
+            lambda: QInputDialog.getItem(parent or self, 'Set Location', 'Location Id', self._location_choices_for_live_devices(), 0, True)
+        )
         if not ok:
             return
         loc_id = self._normalize_loc_key(loc_id)
@@ -6654,7 +7239,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _set_live_device_poll_seconds(self, device_id, parent=None):
         if not self._ensure_operator_identity(parent or self, action='updating poll period'):
             return
-        poll, ok = QInputDialog.getInt(parent or self, 'Set Poll', 'Poll seconds', 10, 1, 3600)
+        poll, ok = self._run_live_pfds_modal(
+            lambda: QInputDialog.getInt(parent or self, 'Set Poll', 'Poll seconds', 10, 1, 3600)
+        )
         if not ok:
             return
         try:
@@ -6666,13 +7253,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _remove_live_device(self, device_id, parent=None):
         if not self._ensure_operator_identity(parent or self, action='removing PFDS device'):
             return
-        reply = QMessageBox.question(
-            parent or self,
-            'Remove Device',
-            'Remove selected PFDS device from the active registry?',
-            QMessageBox.Yes | QMessageBox.No,
+        reply = self._run_live_pfds_modal(
+            lambda: QMessageBox.question(
+                parent or self,
+                'Remove Device',
+                'Remove selected PFDS device from the active registry?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
         )
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         try:
             self.emberhawk.remove_device(int(device_id))
@@ -6689,7 +7278,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             QMessageBox.warning(parent or self, 'Invalid Serial', 'Selected pending identity has no serial number.')
             return
 
-        loc_id, ok = QInputDialog.getItem(parent or self, 'Assign Room', 'Location Id', self._location_choices_for_live_devices(), 0, True)
+        loc_id, ok = self._run_live_pfds_modal(
+            lambda: QInputDialog.getItem(parent or self, 'Assign Room', 'Location Id', self._location_choices_for_live_devices(), 0, True)
+        )
         if not ok:
             return
         loc_id = self._normalize_loc_key(loc_id)
@@ -6712,16 +7303,22 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 self.emberhawk.touch_device_seen(serial, peer_ip or None)
             else:
                 default_name = f'PFDS {serial}'
-                name, ok_name = QInputDialog.getText(parent or self, 'Device Name', 'Name', text=default_name)
+                name, ok_name = self._run_live_pfds_modal(
+                    lambda: QInputDialog.getText(parent or self, 'Device Name', 'Name', text=default_name)
+                )
                 if not ok_name:
                     return
                 name = str(name or '').strip() or default_name
 
-                mode, ok_mode = QInputDialog.getItem(parent or self, 'Device Mode', 'Mode', ['Continuous', 'On Demand'], 0, False)
+                mode, ok_mode = self._run_live_pfds_modal(
+                    lambda: QInputDialog.getItem(parent or self, 'Device Mode', 'Mode', ['Continuous', 'On Demand'], 0, False)
+                )
                 if not ok_mode:
                     return
 
-                poll, ok_poll = QInputDialog.getInt(parent or self, 'Poll (seconds)', 'Poll seconds', 10, 1, 3600)
+                poll, ok_poll = self._run_live_pfds_modal(
+                    lambda: QInputDialog.getInt(parent or self, 'Poll (seconds)', 'Poll seconds', 10, 1, 3600)
+                )
                 if not ok_poll:
                     return
 
@@ -6741,17 +7338,17 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self._pending_device_by_serial.pop(serial, None)
             self._refresh_live_operations_views()
             info_box = QMessageBox(parent or self)
-            info_box.setIcon(QMessageBox.Information)
+            info_box.setIcon(QMessageBox.Icon.Information)
             info_box.setWindowTitle('Assigned')
             info_box.setText(f'Serial {serial} assigned to {loc_id}.')
             self._style_tactical_dialog(info_box)
-            info_box.exec_()
+            self._exec_live_pfds_dialog(info_box)
         except Exception as e:
             QMessageBox.critical(parent or self, 'Assign Failed', f'Could not assign pending identity: {e}')
 
     def show_pfds_view_dialog(self):
         """View configured live PFDS devices and pending serial identities."""
-        from PyQt5.QtWidgets import (
+        from PyQt6.QtWidgets import (
             QDialog,
             QVBoxLayout,
             QTableWidget,
@@ -6809,8 +7406,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         table.setItem(row, c, QTableWidgetItem(str(val)))
 
                 pending = dict(self._pending_device_by_serial)
-                for serial, info in self._pending_from_recent_telemetry(now_ts=now_ts).items():
-                    pending.setdefault(serial, info)
+                if bool(getattr(self, '_pending_from_telemetry_enabled', False)):
+                    for serial, info in self._pending_from_recent_telemetry(now_ts=now_ts).items():
+                        pending.setdefault(serial, info)
                 for d in devices:
                     serial = self._normalize_serial_key(d.get('serial_number'))
                     if not serial or serial in pending:
@@ -6860,7 +7458,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         more_btn = QToolButton()
         more_btn.setText("More")
-        more_btn.setPopupMode(QToolButton.InstantPopup)
+        more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         more_menu = QMenu(more_btn)
         self._style_tactical_settings_menu(more_menu)
         dry_run_action = more_menu.addAction("Dry Run Pending")
@@ -7009,11 +7607,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 self._pending_device_by_serial.pop(serial, None)
                 load_rows()
                 info_box = QMessageBox(dlg)
-                info_box.setIcon(QMessageBox.Information)
+                info_box.setIcon(QMessageBox.Icon.Information)
                 info_box.setWindowTitle("Assigned")
                 info_box.setText(f"Serial {serial} assigned to {loc_id}.")
                 self._style_tactical_dialog(info_box)
-                info_box.exec_()
+                info_box.exec()
             except Exception as e:
                 QMessageBox.critical(dlg, "Assign Failed", f"Could not assign pending identity: {e}")
 
@@ -7274,9 +7872,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 dlg,
                 "Remove All Devices",
                 f"Remove all {len(devices)} PFDS devices from registry?",
-                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-            if reply != QMessageBox.Yes:
+            if reply != QMessageBox.StandardButton.Yes:
                 return
 
             removed = 0
@@ -7316,13 +7914,13 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         remove_all_action.triggered.connect(remove_all_devices)
         close_btn.clicked.connect(dlg.accept)
         dlg.resize(1100, 650)
-        dlg.exec_()
+        self._exec_live_pfds_dialog(dlg)
 
     def show_log_viewer_dialog(self):
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QFileDialog, QLineEdit, QComboBox
-        from PyQt5.QtCore import QTimer
-        from PyQt5.QtWidgets import QTabWidget
-        from error_logger import get_error_logger
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QFileDialog, QLineEdit, QComboBox
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QTabWidget
+        from embereye_base.utils.error_logger import get_error_logger
         dlg = QDialog(self)
         dlg.setWindowTitle("Log Viewer")
         self._style_tactical_dialog(dlg)
@@ -7410,7 +8008,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         def do_copy():
             items = list_widget.selectedItems()
             if items:
-                from PyQt5.QtWidgets import QApplication
+                from PyQt6.QtWidgets import QApplication
                 QApplication.clipboard().setText('\n'.join(i.text() for i in items))
                 QMessageBox.information(dlg, "Copied", "Selected entries copied to clipboard")
 
@@ -7428,7 +8026,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         # --- TCP Log Viewer Tab ---
         tcp_tab = QDialog(dlg)
-        from PyQt5.QtWidgets import QTextEdit, QLabel
+        from PyQt6.QtWidgets import QTextEdit, QLabel
         tcp_layout = QVBoxLayout(tcp_tab)
         # Controls: Mode + Location Id filter
         ctrl_row = QHBoxLayout()
@@ -7573,11 +8171,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         tabs.addTab(fusion_tab, "Fusion Algorithm")
 
         dlg.resize(900, 600)
-        dlg.exec_()
+        dlg.exec()
 
     def show_ip_loc_mappings_dialog(self):
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QMessageBox
-        from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QMessageBox
+        from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem
 
         dlg = QDialog(self)
         dlg.setWindowTitle("IP→Loc Mappings")
@@ -7625,7 +8223,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 QMessageBox.critical(dlg, "Load Failed", f"Could not load mappings: {e}")
 
         def add_update_mapping():
-            from PyQt5.QtWidgets import QInputDialog
+            from PyQt6.QtWidgets import QInputDialog
             ip, ok1 = QInputDialog.getText(dlg, "IP", "Enter IP:")
             if not ok1 or not ip:
                 return
@@ -7693,12 +8291,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         load_mappings()
         dlg.resize(780, 500)
-        dlg.exec_()
+        dlg.exec()
 
     def import_deployment_model(self):
         """Import a trained model from Studio for deployment in Field app."""
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, QFileDialog, QProgressDialog
-        from PyQt5.QtCore import Qt
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, QFileDialog, QProgressDialog
+        from PyQt6.QtCore import Qt
         from pathlib import Path
         import shutil
         
@@ -7787,7 +8385,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         layout.addLayout(button_layout)
         
-        dlg.exec_()
+        dlg.exec()
     
     def _browse_model_file(self, parent_dlg):
         """Open file browser for model selection."""
@@ -7818,8 +8416,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     
     def _execute_model_import(self, dialog):
         """Execute model import and activation."""
-        from PyQt5.QtWidgets import QProgressDialog, QMessageBox
-        from PyQt5.QtCore import Qt
+        from PyQt6.QtWidgets import QProgressDialog, QMessageBox
+        from PyQt6.QtCore import Qt
         from pathlib import Path
         import shutil
         
@@ -7839,7 +8437,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         # Show progress
         progress = QProgressDialog("Importing and activating model...", None, 0, 0, dialog)
-        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setWindowTitle("Importing Model")
         progress.show()
         QApplication.processEvents()
@@ -7980,11 +8578,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 f"Version: {version_name}\n\n"
                 f"Do you want to activate this model now for all video streams?"
                 + class_hash_warning,
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
             )
 
-            if activate_now == QMessageBox.Yes:
+            if activate_now == QMessageBox.StandardButton.Yes:
                 activated, activate_msg = manager.promote_to_best(version_name)
                 if not activated:
                     raise RuntimeError(f"Model imported but activation failed: {activate_msg}")
@@ -8042,8 +8640,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """Export current best model to deployment format (ONNX, TorchScript, CoreML, TFLite)."""
         try:
             from embereye_base.core.model_versioning import ModelVersionManager
-            from PyQt5.QtWidgets import QFileDialog, QProgressDialog
-            from PyQt5.QtCore import Qt
+            from PyQt6.QtWidgets import QFileDialog, QProgressDialog
+            from PyQt6.QtCore import Qt
             
             manager = ModelVersionManager()
             current_best = manager.get_current_best()
@@ -8087,7 +8685,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Progress dialog
             progress = QProgressDialog(f"Exporting to {format.upper()}...", None, 0, 0, self)
-            progress.setWindowModality(Qt.WindowModal)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.setWindowTitle("Exporting")
             progress.show()
             QApplication.processEvents()
@@ -8320,7 +8918,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def inject_test_stream_error(self):
         # Force a test error on first available video widget
-        from error_logger import get_error_logger
+        from embereye_base.utils.error_logger import get_error_logger
         get_error_logger().log('TEST', 'Injected test stream error')
         # Attempt to locate a VideoWidget and call its handle_error
         for w in self.findChildren(QWidget):
@@ -8346,9 +8944,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self,
             "Confirm Restore",
             "This will overwrite current configuration. Continue?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.No:
+        if reply == QMessageBox.StandardButton.No:
             return
 
         path, _ = QFileDialog.getOpenFileName(
@@ -8361,6 +8959,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             if StreamConfig.import_config(path):
                 # Reload configuration
                 self.config = StreamConfig.load_config()
+                self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+                self._reload_rule_engine_for_active_category()
                 self.group_combo.clear()
                 self.group_combo.addItems(self.config["groups"])
                 self.schedule_grid_rebuild()
@@ -8431,7 +9031,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         return widgets
     
     def init_rtsp_tab(self):
-        from PyQt5.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
         is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
         
@@ -8501,6 +9101,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         # Container with position: relative for absolute positioning of nav buttons
         grid_container = QWidget()
         grid_container.setObjectName("gridContainer")
+        self.rtsp_grid_container = grid_container  # stored for flash-free max/min
         if is_modern:
             grid_container.setStyleSheet("""
                 #gridContainer {
@@ -8558,7 +9159,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.prev_rtsp = QPushButton("◀", grid_container)
         self.prev_rtsp.clicked.connect(self.prev_rtsp_page)
         self.prev_rtsp.setFixedSize(50, 50)
-        self.prev_rtsp.setCursor(Qt.PointingHandCursor)
+        self.prev_rtsp.setCursor(Qt.CursorShape.PointingHandCursor)
         if is_modern:
             self.prev_rtsp.setStyleSheet("""
                 QPushButton {
@@ -8584,7 +9185,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.next_rtsp = QPushButton("▶", grid_container)
         self.next_rtsp.clicked.connect(self.next_rtsp_page)
         self.next_rtsp.setFixedSize(50, 50)
-        self.next_rtsp.setCursor(Qt.PointingHandCursor)
+        self.next_rtsp.setCursor(Qt.CursorShape.PointingHandCursor)
         if is_modern:
             self.next_rtsp.setStyleSheet("""
                 QPushButton {
@@ -8686,14 +9287,14 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             card_layout.setSpacing(10)
 
             title = QLabel("Grafana Embed Not Available")
-            title.setAlignment(Qt.AlignCenter)
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
             title.setStyleSheet("color: #a8dff0; font-size: 18px; font-weight: 700;")
 
             subtitle = QLabel(
                 "This build does not include QWebEngine. You can still open the dashboard externally."
             )
             subtitle.setWordWrap(True)
-            subtitle.setAlignment(Qt.AlignCenter)
+            subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
             subtitle.setStyleSheet("color: #8ea4b1; font-size: 12px;")
 
             steps = QLabel(
@@ -8701,7 +9302,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 "2. Configure Prometheus datasource (http://localhost:9090)\n"
                 "3. Import dashboard from ADAPTIVE_FPS_METRICS_GUIDE.md"
             )
-            steps.setAlignment(Qt.AlignCenter)
+            steps.setAlignment(Qt.AlignmentFlag.AlignCenter)
             steps.setStyleSheet("color: #7f95a1; font-size: 12px; line-height: 1.5;")
 
             actions = QHBoxLayout()
@@ -8733,7 +9334,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             )
 
             card.setMaximumWidth(760)
-            fallback_layout.addWidget(card, alignment=Qt.AlignHCenter)
+            fallback_layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignHCenter)
             fallback_layout.addStretch()
 
             layout.addWidget(fallback_host)
@@ -8833,12 +9434,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         grafana_url_input.textChanged.connect(lambda _: _refresh_grafana_service_state())
         _refresh_grafana_service_state()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         self.config['enable_grafana'] = bool(enable_grafana_cb.isChecked())
@@ -9161,20 +9762,27 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def mouseMoveEvent(self, event):
         """Handle mouse hover to show/hide overlay header in Modern mode."""
         try:
+            # On LIVE PFDS tab: skip all X-ray/stabilize side-effects on mouse move.
+            # Calling _stabilize_live_pfds_surface (show/raise overlay_header) on every
+            # mouse move causes constant churn that can interfere with filter button
+            # activation on macOS.  The surface is stabilized once on tab entry.
+            if self._is_live_pfds_tab_active():
+                super().mouseMoveEvent(event)
+                return
+
             if hasattr(self, 'overlay_header') and self.overlay_header is not None:
                 # Get cursor position relative to main window
-                cursor_pos = event.pos()
-                
+                cursor_pos = event.position().toPoint()
+
                 # Check if mouse is in header area (top 60px including header height)
                 in_header_zone = cursor_pos.y() < 60
-                
+
                 if in_header_zone:
                     # Show header and cancel any hide timer
                     if not self.overlay_header.isVisible():
                         self.overlay_header.show()
                         self.overlay_header.raise_()
-                        print("🔼 Header shown")
-                    
+
                     # Cancel hide timer if active
                     if hasattr(self, 'header_hide_timer') and self.header_hide_timer:
                         self.header_hide_timer.stop()
@@ -9182,30 +9790,36 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         self.header_countdown_seconds = 0
                         if hasattr(self, 'header_countdown_label'):
                             self.header_countdown_label.hide()
-                        print("⏱️ Timer cancelled")
                 else:
                     # Mouse outside header zone - start timer if header is visible
                     if self.overlay_header.isVisible():
                         if not hasattr(self, 'header_hide_timer') or self.header_hide_timer is None:
-                            from PyQt5.QtCore import QTimer
+                            from PyQt6.QtCore import QTimer
                             self.header_countdown_seconds = 5
                             self.header_hide_timer = QTimer(self)
                             self.header_hide_timer.timeout.connect(self._update_header_countdown)
                             self.header_hide_timer.start(1000)  # Update every second
                             if hasattr(self, 'header_countdown_label'):
-                                self.header_countdown_label.setText(f"⏱ Hiding in {self.header_countdown_seconds}s")
+                                self.header_countdown_label.setText(f"Hiding in {self.header_countdown_seconds}s")
                                 self.header_countdown_label.show()
-                            print("⏱️ Timer started (5 seconds)")
         except Exception as e:
-            print(f"❌ Mouse event error: {e}")
-        
+            print(f"Mouse event error: {e}")
+
         super().mouseMoveEvent(event)
-    
+
     def _update_header_countdown(self):
         """Update countdown timer and hide header when it reaches 0."""
         try:
+            if self._is_live_pfds_tab_active():
+                if hasattr(self, 'header_hide_timer') and self.header_hide_timer:
+                    self.header_hide_timer.stop()
+                    self.header_hide_timer = None
+                if hasattr(self, 'header_countdown_label'):
+                    self.header_countdown_label.hide()
+                return
+
             self.header_countdown_seconds -= 1
-            
+
             if self.header_countdown_seconds <= 0:
                 # Time's up - hide header
                 if hasattr(self, 'overlay_header') and self.overlay_header:
@@ -9215,13 +9829,66 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if hasattr(self, 'header_hide_timer') and self.header_hide_timer:
                     self.header_hide_timer.stop()
                     self.header_hide_timer = None
-                print("🔽 Header hidden (timer expired)")
             else:
                 # Update countdown display
                 if hasattr(self, 'header_countdown_label'):
-                    self.header_countdown_label.setText(f"⏱ Hiding in {self.header_countdown_seconds}s")
+                    self.header_countdown_label.setText(f"Hiding in {self.header_countdown_seconds}s")
         except Exception as e:
-            print(f"❌ Countdown update error: {e}")
+            print(f"Countdown update error: {e}")
+            pass
+
+    def _stabilize_live_pfds_surface(self):
+        """Disable X-ray timers/animations while LIVE PFDS is active to prevent repaint artifacts."""
+        try:
+            # Stop hide timers
+            for timer_attr in ('status_hide_timer', 'header_hide_timer'):
+                timer = getattr(self, timer_attr, None)
+                if timer is not None:
+                    try:
+                        timer.stop()
+                    except Exception:
+                        pass
+                    setattr(self, timer_attr, None)
+
+            if hasattr(self, 'header_countdown_label') and self.header_countdown_label is not None:
+                self.header_countdown_label.hide()
+
+            # Stop and clear X-ray fade animations/effects
+            for slot_name, widget in (
+                ('header', getattr(self, 'overlay_header', None)),
+                ('status', self.statusBar() if hasattr(self, 'statusBar') else None),
+            ):
+                anim_attr = f"_xray_{slot_name}_fade_anim"
+                effect_attr = f"_xray_{slot_name}_opacity_effect"
+
+                anim = getattr(self, anim_attr, None)
+                if anim is not None:
+                    try:
+                        anim.stop()
+                    except Exception:
+                        pass
+                    setattr(self, anim_attr, None)
+
+                effect = getattr(self, effect_attr, None)
+                if widget is not None:
+                    try:
+                        if effect is not None and widget.graphicsEffect() is effect:
+                            widget.setGraphicsEffect(None)
+                    except Exception:
+                        pass
+                setattr(self, effect_attr, None)
+
+            # Keep top/bottom bars visible in a stable state
+            if hasattr(self, 'overlay_header') and self.overlay_header is not None:
+                self.overlay_header.show()
+                self.overlay_header.raise_()
+                self.header_visible = True
+
+            sb = self.statusBar() if hasattr(self, 'statusBar') else None
+            if sb is not None:
+                sb.show()
+                self.statusbar_visible = True
+        except Exception:
             pass
 
     
@@ -9233,8 +9900,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             if widget is None:
                 return
 
-            from PyQt5.QtWidgets import QGraphicsOpacityEffect
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
+            from PyQt6.QtWidgets import QGraphicsOpacityEffect
+            from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
 
             effect_attr = f"_xray_{slot_name}_opacity_effect"
             anim_attr = f"_xray_{slot_name}_fade_anim"
@@ -9270,7 +9937,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             anim.setDuration(max(80, int(duration_ms)))
             anim.setStartValue(start)
             anim.setEndValue(end)
-            anim.setEasingCurve(QEasingCurve.InOutQuad)
+            anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
             def _finish():
                 try:
@@ -9310,6 +9977,18 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if sb is not None:
             self._xray_fade_widget(sb, False, 'status', 180)
             self.statusbar_visible = False
+
+    def _is_live_pfds_tab_active(self):
+        """Return True when the LIVE PFDS tab is currently selected."""
+        try:
+            if not hasattr(self, 'tabs') or self.tabs is None:
+                return False
+            idx = self.tabs.currentIndex()
+            if idx < 0:
+                return False
+            return str(self.tabs.tabText(idx)).strip().upper() == 'LIVE PFDS'
+        except Exception:
+            return False
     
     def eventFilter(self, obj, event):
         """
@@ -9318,11 +9997,17 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         - Implements cursor auto-hide after inactivity
         """
         try:
-            from PyQt5.QtCore import QEvent
-            from PyQt5.QtGui import QCursor
-            from PyQt5.QtWidgets import QApplication
-            
-            if event.type() == QEvent.MouseMove:
+            from PyQt6.QtCore import QEvent
+            from PyQt6.QtGui import QCursor
+            from PyQt6.QtWidgets import QApplication
+
+            # LIVE PFDS: bypass all global X-ray/cursor side effects.
+            # Re-running stabilization and cursor timer logic on every mouse move
+            # causes repaint churn and focus glitches during filter interactions.
+            if self._is_live_pfds_tab_active():
+                return super().eventFilter(obj, event)
+
+            if event.type() == QEvent.Type.MouseMove:
                 # Reset cursor hide timer on any mouse movement
                 if hasattr(self, 'cursor_hide_timer'):
                     self.cursor_hide_timer.stop()
@@ -9368,7 +10053,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 # X-ray effect: Show status bar when mouse near bottom (also show header)
                 # Skip toggling when cursor is over the status bar itself
                 if not hovering_status_bar and hasattr(self, 'statusBar') and hasattr(self, 'statusbar_visible'):
-                    from PyQt5.QtCore import QTimer
+                    from PyQt6.QtCore import QTimer
                     cursor_pos = QCursor.pos()
                     window_pos = self.mapFromGlobal(cursor_pos)
                     window_height = self.height()
@@ -9401,7 +10086,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                                 self.status_hide_timer.start(550)  # slightly longer debounce
                         self._was_in_bottom_zone = False
             
-            elif event.type() == QEvent.KeyPress:
+            elif event.type() == QEvent.Type.KeyPress:
                 # Any key press resets cursor timer
                 if hasattr(self, 'cursor_hide_timer'):
                     self.cursor_hide_timer.stop()
@@ -9421,10 +10106,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.cursor_visible = True
     
     def _hide_cursor(self):
-        """Hide cursor after inactivity (X-ray effect)."""
-        from PyQt5.QtCore import Qt
-        self.setCursor(Qt.BlankCursor)
-        self.cursor_visible = False
+        """Keep cursor visible; hiding breaks tab/navigation usability."""
+        self.unsetCursor()
+        self.cursor_visible = True
 
     def _hide_status_bar(self):
         """Hide the status bar via debounced timer."""
@@ -9582,8 +10266,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def update_rtsp_grid(self):
         try:
             # Check theme for styling
-            from PyQt5.QtWidgets import QApplication
-            from PyQt5.QtWidgets import QSizePolicy
+            from PyQt6.QtWidgets import QApplication
+            from PyQt6.QtWidgets import QSizePolicy
             app = QApplication.instance()
             is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
             
@@ -9599,7 +10283,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             if not filtered_streams:
                 no_streams_label = QLabel(f"No streams in {self.current_group} group")
-                no_streams_label.setAlignment(Qt.AlignCenter)
+                no_streams_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.rtsp_grid.addWidget(no_streams_label, 0, 0)
                 self.page_label.setText("Page 0 of 0")
                 return
@@ -9636,7 +10320,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 try:
                     video_widget = VideoWidget(stream["url"], stream['name'], stream['loc_id'])
                     try:
-                        video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                        video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                     except Exception:
                         pass
                     # Preserve operator-selected per-tile display mode (loaded by VideoWidget).
@@ -9650,21 +10334,21 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     # video_widget.minimize_requested.connect(self.handle_minimize)
                     video_widget.maximize_requested.connect(
                         self.handle_maximize, 
-                        Qt.QueuedConnection
+                        Qt.ConnectionType.QueuedConnection
                     )
                     video_widget.minimize_requested.connect(
                         self.handle_minimize, 
-                        Qt.QueuedConnection
+                        Qt.ConnectionType.QueuedConnection
                     )
                     if hasattr(video_widget, 'alarm_raise_requested'):
                         video_widget.alarm_raise_requested.connect(
                             self.handle_alarm_raise_from_widget,
-                            Qt.QueuedConnection,
+                            Qt.ConnectionType.QueuedConnection,
                         )
                     if hasattr(video_widget, 'alarm_ack_requested'):
                         video_widget.alarm_ack_requested.connect(
                             self.handle_alarm_ack_from_widget,
-                            Qt.QueuedConnection,
+                            Qt.ConnectionType.QueuedConnection,
                         )
                     # Update status
                     video_widget.update_fire_alarm(False)
@@ -9674,7 +10358,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     self.rtsp_grid.addWidget(video_widget, row, col)
                 except Exception as e:
                     error_label = QLabel(f"{stream['name']}\nError: {str(e)}")
-                    error_label.setAlignment(Qt.AlignCenter)
+                    error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     error_label.setStyleSheet("color: red; background-color: black;")
                     self.rtsp_grid.addWidget(error_label, row, col)
 
@@ -9819,13 +10503,13 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self.live_pfds_scroll = QScrollArea()
         self.live_pfds_scroll.setWidgetResizable(True)
-        self.live_pfds_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.live_pfds_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.live_pfds_grid_host = QWidget()
         self.live_pfds_grid = QGridLayout(self.live_pfds_grid_host)
         self.live_pfds_grid.setContentsMargins(0, 0, 0, 0)
         self.live_pfds_grid.setHorizontalSpacing(12)
         self.live_pfds_grid.setVerticalSpacing(12)
-        self.live_pfds_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.live_pfds_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.live_pfds_grid_host.setLayout(self.live_pfds_grid)
         self.live_pfds_scroll.setWidget(self.live_pfds_grid_host)
         body.addWidget(self.live_pfds_scroll, 1)
@@ -9862,12 +10546,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         sidebar_layout.addWidget(sidebar_copy)
         self.live_pfds_pending_scroll = QScrollArea()
         self.live_pfds_pending_scroll.setWidgetResizable(True)
-        self.live_pfds_pending_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.live_pfds_pending_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.live_pfds_pending_host = QWidget()
         self.live_pfds_pending_layout = QVBoxLayout(self.live_pfds_pending_host)
         self.live_pfds_pending_layout.setContentsMargins(0, 0, 0, 0)
         self.live_pfds_pending_layout.setSpacing(10)
-        self.live_pfds_pending_layout.setAlignment(Qt.AlignTop)
+        self.live_pfds_pending_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.live_pfds_pending_layout.addStretch(1)
         self.live_pfds_pending_scroll.setWidget(self.live_pfds_pending_host)
         sidebar_layout.addWidget(self.live_pfds_pending_scroll, 1)
@@ -9879,14 +10563,26 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self._live_pfds_sidebar_width = 340
         self._live_pfds_sidebar_anim = QPropertyAnimation(self.live_pfds_sidebar, b"maximumWidth", self)
         self._live_pfds_sidebar_anim.setDuration(220)
-        self._live_pfds_sidebar_anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._live_pfds_sidebar_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._live_pfds_sidebar_anim.finished.connect(self._on_live_pfds_sidebar_anim_finished)
+
+        self._live_pfds_resize_timer = QTimer(self)
+        self._live_pfds_resize_timer.setSingleShot(True)
+        self._live_pfds_resize_timer.timeout.connect(self._refresh_live_pfds_tab)
 
         original_resize = self.live_pfds_scroll.resizeEvent
         def _live_pfds_resize(event, orig=original_resize):
             orig(event)
-            QTimer.singleShot(0, self._refresh_live_pfds_tab)
+            if not self._is_live_pfds_tab_active():
+                return
+            # Coalesce resize bursts (especially during tab/filter transitions).
+            try:
+                self._live_pfds_resize_timer.start(120)
+            except Exception:
+                pass
         self.live_pfds_scroll.resizeEvent = _live_pfds_resize
+
+        self._live_pfds_refresh_pending = False
 
         self.tabs.addTab(live_tab, "LIVE PFDS")
         self._sync_live_pfds_filter_buttons()
@@ -9968,7 +10664,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self.live_assets_scroll = QScrollArea()
         self.live_assets_scroll.setWidgetResizable(True)
-        self.live_assets_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.live_assets_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.live_assets_host = QWidget()
         self.live_assets_grid = QGridLayout(self.live_assets_host)
         self.live_assets_grid.setContentsMargins(0, 0, 0, 0)
@@ -9991,8 +10687,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         try:
             # Lazy import matplotlib only when needed
             import matplotlib
-            matplotlib.use('Qt5Agg')
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            matplotlib.use('QtAgg')
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
             import matplotlib.pyplot as plt
             
             for i in reversed(range(self.graph_stack.count())): 
@@ -10076,7 +10772,27 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             except Exception as e:
                 print(f"Button visibility error in maximize: {e}")
 
-            # SECOND: Now modify the grid - hide non-sender widgets and maximize sender
+            # SECOND: Now modify the grid - hide non-sender widgets and maximize sender.
+            # Freeze the grid host to suppress intermediate paints (black-flash prevention).
+            # Qt6 does NOT propagate setUpdatesEnabled(False) to children, so we
+            # freeze the container and each VideoWidget individually.
+            _grid_container = getattr(self, 'rtsp_grid_container', None) or self.rtsp_grid.parentWidget()
+            _frozen_widgets = []
+            try:
+                if _grid_container:
+                    _grid_container.setUpdatesEnabled(False)
+                    _frozen_widgets.append(_grid_container)
+            except Exception:
+                pass
+            for item_data in self.original_layout['grid_items']:
+                w = item_data.get('widget')
+                if w is not None:
+                    try:
+                        w.setUpdatesEnabled(False)
+                        _frozen_widgets.append(w)
+                    except Exception:
+                        pass
+
             for item_data in self.original_layout['grid_items']:
                 widget = item_data['widget']
                 try:
@@ -10096,7 +10812,17 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             self.rtsp_grid.setContentsMargins(0, 0, 0, 0)
             self.rtsp_grid.setSpacing(0)
-            sender.setFocus()
+            # Avoid forcing keyboard focus here; it can contribute to focus churn
+            # when the operator switches tabs immediately after maximizing.
+
+            # Re-enable painting now that all widgets are in their final state.
+            # Re-enable all frozen widgets — single composite repaint.
+            for w in reversed(_frozen_widgets):
+                try:
+                    w.setUpdatesEnabled(True)
+                    w.update()
+                except Exception:
+                    pass
             self.rtsp_grid.update()
 
             # Force a redraw after layout settles so fusion overlay appears in maximized mode.
@@ -10129,14 +10855,38 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             except Exception as e:
                 print(f"Button visibility error: {e}")
 
-            # Remove the maximized widget from grid
+            # Freeze grid host to prevent black flash while restoring all tiles at once.
+            # removeWidget is intentionally moved INSIDE the freeze so the grid never
+            # has a visually-empty frame (all tiles hidden + maximized tile removed)
+            # between two paint frames — that gap is what causes the brief black flash.
+            # Qt6 does NOT propagate setUpdatesEnabled(False) to children, so freeze
+            # each VideoWidget explicitly.
+            _grid_container = getattr(self, 'rtsp_grid_container', None) or self.rtsp_grid.parentWidget()
+            _frozen_widgets = []
+            try:
+                if _grid_container:
+                    _grid_container.setUpdatesEnabled(False)
+                    _frozen_widgets.append(_grid_container)
+            except Exception:
+                pass
+            for item in restored_items:
+                w = item.get('widget')
+                if w is not None:
+                    try:
+                        w.setUpdatesEnabled(False)
+                        _frozen_widgets.append(w)
+                    except Exception:
+                        pass
+
+            # Remove the maximized widget from grid (inside freeze so layout is
+            # never in a painted-empty state).
             try:
                 self.rtsp_grid.removeWidget(self.maximized_widget)
             except Exception as e:
                 print(f"Remove widget error: {e}")
 
             # Restore all widgets to their original grid positions
-            for item in self.original_layout.get('grid_items', []):
+            for item in restored_items:
                 widget = item.get('widget')
                 if not widget:
                     continue
@@ -10163,6 +10913,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.original_layout = None
             self.rtsp_grid.setContentsMargins(0, 0, 0, 0)
             self.rtsp_grid.setSpacing(0)
+
+            # Re-enable painting now that all tiles are restored.
+            # Re-enable all frozen widgets — single composite repaint.
+            for w in reversed(_frozen_widgets):
+                try:
+                    w.setUpdatesEnabled(True)
+                    w.update()
+                except Exception:
+                    pass
             self.rtsp_grid.update()
 
             # Refresh all restored widgets after geometry settles.
@@ -10260,8 +11019,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def configure_streams(self):
         old_grafana_enabled = bool(self.config.get('enable_grafana', False))
         dialog = StreamConfigDialog(self.config, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self.config = dialog.get_config()
+            self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+            self._reload_rule_engine_for_active_category()
             StreamConfig.save_config(self.config)
             self._set_grafana_tab_visibility(bool(self.config.get('enable_grafana', False)))
             self.group_combo.clear()
@@ -10298,9 +11059,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self,
             "Reset Streams",
             "This will remove all configured streams and reset to a blank default configuration. Continue?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.No:
+        if reply == QMessageBox.StandardButton.No:
             return
         # Build default empty configuration — preserve all non-stream keys (thresholds, tcp settings, etc.)
         default_config = {k: v for k, v in self.config.items() if k not in ("groups", "streams")}
@@ -10309,6 +11070,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         default_config.setdefault("tcp_port", 9000)
         if StreamConfig.save_config(default_config):
             self.config = default_config
+            self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+            self._reload_rule_engine_for_active_category()
             self.group_combo.clear()
             self.group_combo.addItems(self.config["groups"])
             self.current_group = "Default"
@@ -10329,7 +11092,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         close_btn = QPushButton("Close", clicked=profile_dialog.close)
         layout.addWidget(close_btn)
         profile_dialog.setLayout(layout)
-        profile_dialog.exec_()
+        profile_dialog.exec()
 
     def prev_rtsp_page(self):
         self.current_rtsp_page = max(1, self.current_rtsp_page - 1)
@@ -10410,7 +11173,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             finally:
                 # UI operations must run on the GUI thread.
                 try:
-                    QMetaObject.invokeMethod(self, "_finalize_logout_on_ui_thread", Qt.QueuedConnection)
+                    QMetaObject.invokeMethod(self, "_finalize_logout_on_ui_thread", Qt.ConnectionType.QueuedConnection)
                 except Exception as e:
                     print(f"Logout finalize invoke error: {e}")
                     self._is_logging_out = False

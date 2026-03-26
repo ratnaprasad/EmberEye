@@ -468,8 +468,9 @@ class VisionDetector:
             max_conf = 0.0
             detections = []
 
-            # Only consider detections for fire-relevant classes when available
-            allowed_names = {
+            active_category = str(os.environ.get("EMBEREYE_ANALYTICS_CATEGORY", "fire") or "fire").strip().lower()
+
+            fire_allowed_names = {
                 "fire", "smoke", "flame", "cigarette", "lighter", "match", "matches",
                 "smoke_heavy", "smoke_toxic", "spark", "ember", "hot_surface", "chemical_leak",
                 "steam", "heat_haze", "bare_hand", "no_helmet", "no_gloves", "person", "person_protected",
@@ -481,6 +482,23 @@ class VisionDetector:
                 "alarm_light_active", "sprinkler_active", "evacuation_in_progress", "hazard_contained",
                 "aggressive_posture"
             }
+            ppe_name_aliases = {
+                "helmet": "helmet",
+                "hardhat": "helmet",
+                "safety_helmet": "helmet",
+                "no_helmet": "no_helmet",
+                "without_helmet": "no_helmet",
+                "head_no_helmet": "no_helmet",
+                "head": "head",
+                "person": "person",
+                "worker": "person",
+                "vest": "vest",
+                "safety_vest": "vest",
+                "high_visibility_vest": "vest",
+                "no_vest": "no_vest",
+                "without_vest": "no_vest",
+            }
+            ppe_allowed_names = set(ppe_name_aliases.keys())
             names = {}
             if hasattr(self.model, 'names') and isinstance(self.model.names, (dict, list)):
                 # Normalize to dict index->name
@@ -488,8 +506,11 @@ class VisionDetector:
                     names = {i: n for i, n in enumerate(self.model.names)}
                 else:
                     names = self.model.names
-            # If model doesn't include any fire-relevant class names, ignore YOLO output entirely
-            if names and not any(str(n).strip().lower() in allowed_names for n in names.values()):
+            active_allowed = ppe_allowed_names if active_category == 'ppe' else fire_allowed_names
+
+            # If model doesn't include class names relevant to the active category,
+            # ignore YOLO output entirely and use fallback path.
+            if names and not any(str(n).strip().lower().replace(' ', '_').replace('-', '_') in active_allowed for n in names.values()):
                 return 0.0
             
             for r in results:
@@ -513,20 +534,62 @@ class VisionDetector:
                         else:
                             class_name = raw_class_name
                         
-                        # Consider only fire-relevant classes
-                        if str(raw_class_name).strip().lower() in allowed_names:
-                            detections.append({
-                                'class': class_name,
-                                'confidence': conf
-                            })
-                            if conf > max_conf:
-                                max_conf = conf
+                        normalized = str(raw_class_name).strip().lower().replace(' ', '_').replace('-', '_')
+
+                        if active_category == 'ppe':
+                            canonical_name = ppe_name_aliases.get(normalized)
+                            if canonical_name is None:
+                                continue
+                            class_name_for_event = canonical_name
+                        else:
+                            if normalized not in fire_allowed_names:
+                                continue
+                            class_name_for_event = class_name
+
+                        detections.append({
+                            'class': class_name_for_event,
+                            'confidence': conf
+                        })
+                        if conf > max_conf:
+                            max_conf = conf
+
+            ppe_stats = {
+                'helmet_count': 0,
+                'no_helmet_count': 0,
+                'vest_count': 0,
+                'no_vest_count': 0,
+                'total_persons': 0,
+            }
+            if active_category == 'ppe' and detections:
+                for det in detections:
+                    cls_name = str(det.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                    if cls_name == 'person':
+                        ppe_stats['total_persons'] += 1
+                    elif cls_name == 'helmet':
+                        ppe_stats['helmet_count'] += 1
+                    elif cls_name in {'no_helmet', 'head'}:
+                        ppe_stats['no_helmet_count'] += 1
+                    elif cls_name == 'vest':
+                        ppe_stats['vest_count'] += 1
+                    elif cls_name == 'no_vest':
+                        ppe_stats['no_vest_count'] += 1
+
+                if ppe_stats['total_persons'] == 0:
+                    ppe_stats['total_persons'] = max(
+                        ppe_stats['helmet_count'] + ppe_stats['no_helmet_count'],
+                        ppe_stats['vest_count'] + ppe_stats['no_vest_count'],
+                    )
             
             # Log detections if any found (for debugging)
             if detections and max_conf > 0.5:
                 log_debug(f"YOLO detections: {detections[:3]}")  # Log top 3
             # Cache details for optional consumers
-            self.last_details = {'detections': detections, 'max_conf': max_conf}
+            self.last_details = {
+                'detections': detections,
+                'max_conf': max_conf,
+                'analytics_category': active_category,
+                'ppe_stats': ppe_stats,
+            }
             return max_conf
             
         except Exception as e:

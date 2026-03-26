@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QGridLayout
-from PyQt5.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QGridLayout
+from PyQt6.QtCore import Qt
 
 from _test_utils import get_log_path, log_line, assert_true, capture_widget_screenshot
 

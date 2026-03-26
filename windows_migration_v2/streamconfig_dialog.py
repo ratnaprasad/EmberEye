@@ -1,10 +1,10 @@
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QPushButton, QVBoxLayout, QHBoxLayout,  QDialog,
     QMessageBox, QStyle, QInputDialog, QListWidget, 
     QDialogButtonBox, QProgressDialog, QTreeWidget, QTreeWidgetItem, QLabel
 )
-from PyQt5.QtCore import (
+from PyQt6.QtCore import (
     Qt, QThread
 )
 from .streamconfig_editdialog import StreamEditDialog
@@ -128,7 +128,7 @@ class StreamConfigDialog(QDialog):
         # Default group based on selection
         default_group = self._current_group_name() or (self.config["groups"][0] if self.config["groups"] else "Default")
         dialog = StreamEditDialog(self.config["groups"], self, default_group=default_group)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             stream_data = dialog.get_stream_data()
             self.config["streams"].append(stream_data)
             self.populate_groups()
@@ -154,7 +154,7 @@ class StreamConfigDialog(QDialog):
                       if s["name"] == stream_name and s["group"] == group_name), None)
         if stream:
             dialog = StreamEditDialog(self.config["groups"], self, existing=stream)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.Accepted:
                 new_data = dialog.get_stream_data()
                 stream.update(new_data)
                 self.populate_groups()
@@ -217,7 +217,7 @@ class StreamConfigDialog(QDialog):
         tester.test_complete.connect(handle_result)
         thread.started.connect(tester.test_stream)
         thread.start()
-        progress.exec_()
+        progress.exec()
         return result[0]
 
     def get_config(self):

@@ -133,3 +133,48 @@ def get_classes_hash(class_list: List[str]) -> str:
 def get_config_path() -> Path:
     """Expose the central config path for export and diagnostics."""
     return _CONFIG_PATH
+
+
+# ---------------------------------------------------------------------------
+# Analytics-category helpers
+# ---------------------------------------------------------------------------
+
+#: Maps an analytics_category name to the master_classes.json category keys
+#: that belong to it.  Extend this dict when new categories are added.
+ANALYTICS_CATEGORY_KEYS: Dict[str, List[str]] = {
+    "fire": [
+        "FIRE_CATEGORY",
+        "SMOKE_CATEGORY",
+        "STRUCTURAL_CATEGORY",
+        "HUMAN_CATEGORY",
+        "VEHICLE_CATEGORY",
+        "SAFETY_CATEGORY",
+        "ENVIRONMENT_MARKERS",
+        "SMOKE_SENSITIVITY",
+        "FIRE_SENSITIVITY",
+    ],
+    "ppe": [
+        "PPE_CATEGORY",
+    ],
+}
+
+
+def get_leaf_classes_for_category(
+    analytics_category: str,
+    classes_dict: Optional[Dict[str, List[str]]] = None,
+) -> List[str]:
+    """Return the flat leaf-class list for a specific analytics category.
+
+    Falls back to all leaf classes if the category is unknown.
+    """
+    if classes_dict is None:
+        classes_dict = load_master_classes()
+    category_keys = ANALYTICS_CATEGORY_KEYS.get(str(analytics_category).lower())
+    if not category_keys:
+        # Unknown category — return all leaf classes (safe fallback)
+        return flatten_classes(classes_dict)
+    flat: List[str] = []
+    for key in category_keys:
+        for leaf in classes_dict.get(key, []) or []:
+            flat.append(leaf)
+    return flat

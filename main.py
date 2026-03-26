@@ -42,10 +42,10 @@ except Exception as e:
 if platform.system() != 'Windows':
     import fcntl
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QDialog
 )
-from PyQt5.QtCore import (
+from PyQt6.QtCore import (
     Qt, QThread
 )
 from embereye_base.app.ee_loginwindow import EELoginWindow
@@ -62,12 +62,12 @@ except Exception:
     class LicenseEntryDialog(QDialog):
         def __init__(self, *args, **kwargs):
             super().__init__()
-        def exec_(self):
+        def exec(self):
             return QDialog.Rejected
     class LicenseRenewalDialog(QDialog):
         def __init__(self, *args, **kwargs):
             super().__init__()
-        def exec_(self):
+        def exec(self):
             return QDialog.Rejected
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     
     # Exception handling with logging (thread-safe)
     def _ex_hook(etype, value, tb):
-        from PyQt5.QtCore import QMetaObject, Q_ARG
+        from PyQt6.QtCore import QMetaObject, Q_ARG
         get_error_logger().log('UNCAUGHT', f"{etype.__name__}: {value}")
         # Only show message box if in main thread
         try:
@@ -147,22 +147,22 @@ if __name__ == "__main__":
             elif status == "EXPIRING_SOON":
                 # License expiring soon - warn but allow app
                 dialog = LicenseRenewalDialog(license_data)
-                result = dialog.exec_()
+                result = dialog.exec()
                 if result == QDialog.Accepted:
                     # User wants to enter new license
                     entry_dialog = LicenseEntryDialog()
-                    entry_dialog.exec_()
+                    entry_dialog.exec()
                 return True
             
             elif status == "EXPIRED":
                 # License expired - block app
                 license_info = license_client.get_license_info()
                 dialog = LicenseRenewalDialog(license_info)
-                result = dialog.exec_()
+                result = dialog.exec()
                 if result == QDialog.Accepted:
                     # User wants to enter new license
                     entry_dialog = LicenseEntryDialog()
-                    if entry_dialog.exec_() == QDialog.Accepted:
+                    if entry_dialog.exec() == QDialog.Accepted:
                         # Re-check license after entry
                         return check_license_at_startup()
                 return False
@@ -170,7 +170,7 @@ if __name__ == "__main__":
             else:  # NOT_FOUND
                 # No license found - prompt for entry
                 entry_dialog = LicenseEntryDialog()
-                result = entry_dialog.exec_()
+                result = entry_dialog.exec()
                 if result == QDialog.Accepted:
                     # Re-check license after entry
                     return check_license_at_startup()
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     login.show()
     
     try:
-        exit_code = app.exec_()
+        exit_code = app.exec()
     except Exception as e:
         print(f"Application error: {str(e)}")
         exit_code = 1

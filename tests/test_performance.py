@@ -48,7 +48,7 @@ def test_frame_parsing_performance():
         for _ in range(10):
             try:
                 ThermalFrameParser.parse_frame(test_frame)
-            except:
+            except Exception:
                 pass
         
         # Benchmark
@@ -72,12 +72,12 @@ def test_frame_parsing_performance():
         log_perf_test("Parse latency", avg_ms, " ms", threshold=33.3)
         log_perf_test("Parse success rate", (successful/iterations)*100, "%", threshold=95)
         
-        return fps >= 30
+        assert fps >= 30
         
     except Exception as e:
         log_perf_test("Frame parsing", 0, " fps", status="FAIL")
         print(f"Error: {e}")
-        return False
+        assert False
 
 def test_memory_usage():
     """Test 2: Memory usage under load."""
@@ -102,7 +102,7 @@ def test_memory_usage():
                 parsed = ThermalFrameParser.parse_frame(test_frame)
                 if parsed and 'grid' in parsed:
                     frames_cache.append(parsed['grid'])
-            except:
+            except Exception:
                 pass
         
         # Measure after load
@@ -121,12 +121,12 @@ def test_memory_usage():
         
         log_perf_test("Memory recovered after GC", recovered_mb, " MB", status="INFO")
         
-        return delta_mb < 50
+        assert delta_mb < 50
         
     except Exception as e:
         log_perf_test("Memory usage", 0, " MB", status="FAIL")
         print(f"Error: {e}")
-        return False
+        assert False
 
 def test_eeprom_validation_performance():
     """Test 3: EEPROM validation speed."""
@@ -164,12 +164,12 @@ def test_eeprom_validation_performance():
         accuracy = (valid_result and not invalid_short_result and not invalid_zeros_result)
         log_perf_test("EEPROM validation accuracy", 100 if accuracy else 0, "%", threshold=95)
         
-        return avg_us < 100
+        assert avg_us < 100
         
     except Exception as e:
         log_perf_test("EEPROM validation", 0, " validations/sec", status="FAIL")
         print(f"Error: {e}")
-        return False
+        assert False
 
 def test_tcp_packet_parsing():
     """Test 4: TCP packet parsing speed."""
@@ -210,12 +210,12 @@ def test_tcp_packet_parsing():
         log_perf_test("Packet parsing throughput", packets_per_sec, " packets/sec", threshold=1000)
         log_perf_test("Packet parsing latency", avg_us, " μs", threshold=1000)
         
-        return packets_per_sec >= 1000
+        assert packets_per_sec >= 1000
         
     except Exception as e:
         log_perf_test("TCP packet parsing", 0, " packets/sec", status="FAIL")
         print(f"Error: {e}")
-        return False
+        assert False
 
 def test_concurrent_frame_processing():
     """Test 5: Concurrent frame processing (simulated multi-camera)."""
@@ -261,12 +261,12 @@ def test_concurrent_frame_processing():
         log_perf_test(f"Concurrent processing ({num_cameras} cameras)", fps, " fps", threshold=60)
         log_perf_test("Frame success rate", (results["count"]/total_frames)*100, "%", threshold=95)
         
-        return fps >= 60
+        assert fps >= 60
         
     except Exception as e:
         log_perf_test("Concurrent processing", 0, " fps", status="FAIL")
         print(f"Error: {e}")
-        return False
+        assert False
 
 def generate_report():
     """Generate performance report."""

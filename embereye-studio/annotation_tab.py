@@ -136,7 +136,7 @@ class AnnotationCanvas(QLabel):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         if self._display_pixmap:
             geom = self._pixmap_geometry()
             if geom:
@@ -683,7 +683,7 @@ class AnnotationTab(QWidget):
         right_layout.addWidget(QLabel("Class Label"))
         self.class_combo = QComboBox()
         self.class_combo.setEditable(True)
-        self.class_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.class_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         right_layout.addWidget(self.class_combo)
         
         # Assign button

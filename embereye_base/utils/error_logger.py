@@ -1,7 +1,7 @@
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 
 class ErrorLogger:
     _instance = None
@@ -37,7 +37,7 @@ class ErrorLogger:
 
     def log(self, source: str, message: str):
         entry = {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
             'source': source,
             'message': message
         }

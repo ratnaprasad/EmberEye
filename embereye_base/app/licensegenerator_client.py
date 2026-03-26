@@ -4,7 +4,7 @@ import base64
 from datetime import datetime, timedelta
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QFormLayout, QLineEdit, QPushButton,
     QTextEdit, QLabel, QHBoxLayout, QInputDialog, QMessageBox, QFileDialog
 )
@@ -158,4 +158,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = LicenseGenerator()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

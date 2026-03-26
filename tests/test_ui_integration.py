@@ -6,9 +6,9 @@ Tests login, settings screens, and UI interactions automatically.
 import sys
 import os
 import time
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtTest import QTest
 
 # Test results
 test_log = []
@@ -330,7 +330,7 @@ def main():
     QTimer.singleShot(100, runner.run_all_tests)
     QTimer.singleShot(5000, app.quit)  # Auto-quit after 5 seconds
     
-    return app.exec_()
+    return app.exec()
 
 if __name__ == "__main__":
     sys.exit(main())

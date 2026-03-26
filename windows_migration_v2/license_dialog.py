@@ -7,7 +7,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidKey
 from cryptography.hazmat.primitives.asymmetric import padding
-from PyQt5.QtWidgets import QWizard, QApplication, QFileDialog, QTextEdit,QHBoxLayout, QWizardPage, QDialog, QVBoxLayout, QLineEdit, QPushButton, QLabel, QMessageBox
+from PyQt6.QtWidgets import QWizard, QApplication, QFileDialog, QTextEdit,QHBoxLayout, QWizardPage, QDialog, QVBoxLayout, QLineEdit, QPushButton, QLabel, QMessageBox
 from activationkey_generator import ActivationKeyGenerator
 from license_generator import LicenseKeyGenerator
 

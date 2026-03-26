@@ -228,6 +228,9 @@ curl http://localhost:9090/metrics
 
 ### Stream Configuration (`stream_config.json`)
 
+`stream_config.example.json` is the committed template. Create or keep your local
+`stream_config.json` for machine-specific values; it is intentionally gitignored.
+
 ```json
 {
     "groups": ["Default"],

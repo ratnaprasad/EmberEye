@@ -49,7 +49,7 @@ def ensure_modules():
 def verify_webengine_runtime():
     """Fail fast if QtWebEngine runtime is not importable in current environment."""
     try:
-        from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+        from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
         print("[INFO] PyQtWebEngine runtime import: OK")
     except Exception as exc:
         print(f"[ERROR] PyQtWebEngine runtime import failed: {exc}")

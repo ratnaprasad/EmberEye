@@ -32,8 +32,8 @@ def test_video_widget_lifecycle():
     print("\n=== Testing Video Widget Lifecycle ===")
     
     try:
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import QTimer
         import sys
         
         # Create QApplication if not exists
@@ -203,8 +203,8 @@ def test_main_window_grid_rebuild():
     print("\n=== Testing Main Window Grid Rebuild ===")
     
     try:
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import QTimer
         import sys
         
         # Create QApplication if not exists
@@ -345,8 +345,8 @@ def test_ui_responsiveness():
     print("\n=== Testing UI Responsiveness ===")
     
     try:
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import QTimer, QEventLoop
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import QTimer, QEventLoop
         import sys
         
         # Create QApplication if not exists
@@ -386,7 +386,7 @@ def test_ui_responsiveness():
         
         QTimer.singleShot(100, timeout_task)
         start = time.time()
-        loop.exec_()
+        loop.exec()
         elapsed = time.time() - start
         
         log_test("UI: Event loop processes timers",

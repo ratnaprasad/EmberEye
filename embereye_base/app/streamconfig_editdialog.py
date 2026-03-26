@@ -1,8 +1,8 @@
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QLineEdit,  QVBoxLayout,  QComboBox, QDialog,
     QDialogButtonBox, QHBoxLayout, QPushButton, QProgressDialog, QMessageBox
 )
-from PyQt5.QtCore import Qt, QThread
+from PyQt6.QtCore import Qt, QThread
 from embereye_base.app.steam_tester import StreamTester
 
 try:
@@ -69,7 +69,7 @@ class StreamEditDialog(QDialog):
         actions_row.addWidget(self.test_btn)
         layout.addLayout(actions_row)
         
-        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
@@ -100,7 +100,7 @@ class StreamEditDialog(QDialog):
             QMessageBox.information(self, "Test Stream", "Please enter a stream URL first.")
             return
         progress = QProgressDialog("Testing stream...", "Cancel", 0, 0, self)
-        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
         tester = StreamTester(url)
         thread = QThread()
         tester.moveToThread(thread)
@@ -116,14 +116,14 @@ class StreamEditDialog(QDialog):
         tester.test_complete.connect(handle_result)
         thread.started.connect(tester.test_stream)
         thread.start()
-        progress.exec_()
+        progress.exec()
 
     def discover_stream(self):
         if CameraDiscoveryDialog is None:
             QMessageBox.information(self, "Discover", "Discovery dialog not available.")
             return
         dlg = CameraDiscoveryDialog(self)
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             selected_url = dlg.get_selected_url()
             if selected_url:
                 self.url_input.setText(selected_url)

@@ -5,13 +5,13 @@ import asyncio
 from threading import Thread, Event
 from stream_config import StreamConfig
 from resource_helper import get_resource_path
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QLabel, QTabWidget, QMessageBox,
                              QToolButton, QMenu, QStyle, QFileDialog, QGridLayout, QPushButton, QDialog
                              )
-from PyQt5.QtCore import (
+from PyQt6.QtCore import (
     Qt, pyqtSignal, QMutex, QObject
 )
-from PyQt5.QtGui import (
+from PyQt6.QtGui import (
     QPixmap
 )
 from datetime import datetime
@@ -115,7 +115,7 @@ class BEMainWindow(QMainWindow):
         for loc_id, cand in self.baseline_manager.candidates.items():
             # Thumbnail
             import cv2
-            from PyQt5.QtGui import QImage, QPixmap
+            from PyQt6.QtGui import QImage, QPixmap
             frame = cand['frame']
             # Convert to RGB if needed
             if len(frame.shape) == 2:
@@ -514,8 +514,8 @@ class BEMainWindow(QMainWindow):
 
     def init_tcp_status_indicator(self):
         """Initialize TCP server status indicator in status bar."""
-        from PyQt5.QtWidgets import QLabel, QPushButton, QWidget, QHBoxLayout
-        from PyQt5.QtCore import Qt
+        from PyQt6.QtWidgets import QLabel, QPushButton, QWidget, QHBoxLayout
+        from PyQt6.QtCore import Qt
         
         # Create a container widget for the status indicator
         status_widget = QWidget()
@@ -603,7 +603,7 @@ class BEMainWindow(QMainWindow):
             print(f"TCP status update error: {e}")
 
     def show_tcp_port_dialog(self):
-        from PyQt5.QtWidgets import QInputDialog
+        from PyQt6.QtWidgets import QInputDialog
         current_port = self.config.get('tcp_port', 9001)
         port, ok = QInputDialog.getInt(self, "TCP Server Port", "Enter TCP server port:", value=current_port, min=1024, max=65535)
         if ok and port != current_port:
@@ -658,7 +658,7 @@ class BEMainWindow(QMainWindow):
         dialog = ThermalGridConfigDialog(self, current_settings)
         dialog.settings_changed.connect(self.apply_thermal_grid_settings)
         
-        if dialog.exec_():
+        if dialog.exec():
             # Settings already applied via signal
             QMessageBox.information(self, "Settings Applied", "Thermal grid configuration has been updated.")
     
@@ -714,7 +714,7 @@ class BEMainWindow(QMainWindow):
         dialog = SensorConfigDialog(self, current_settings)
         dialog.settings_changed.connect(self.apply_sensor_config)
         
-        if dialog.exec_():
+        if dialog.exec():
             QMessageBox.information(self, "Settings Applied", "Sensor configuration has been updated.")
     
     def apply_sensor_config(self, settings):
@@ -752,7 +752,7 @@ class BEMainWindow(QMainWindow):
 
     def show_pfds_add_dialog(self):
         """Stub dialog for adding a PFDS device. Will be wired to SQLite and scheduler."""
-        from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox, QDialogButtonBox, QMessageBox
+        from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox, QDialogButtonBox, QMessageBox
         dlg = QDialog(self)
         dlg.setWindowTitle("Add PFDS Device")
         layout = QFormLayout(dlg)
@@ -815,11 +815,11 @@ class BEMainWindow(QMainWindow):
 
         buttons.accepted.connect(on_ok)
         buttons.rejected.connect(dlg.reject)
-        dlg.exec_()
+        dlg.exec()
 
     def show_pfds_view_dialog(self):
         """View configured PFDS devices (loaded from SQLite)."""
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHBoxLayout, QPushButton, QMessageBox
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHBoxLayout, QPushButton, QMessageBox
         dlg = QDialog(self)
         dlg.setWindowTitle("PFDS Devices")
         layout = QVBoxLayout(dlg)
@@ -880,12 +880,12 @@ class BEMainWindow(QMainWindow):
         remove_btn.clicked.connect(remove_selected)
         close_btn.clicked.connect(dlg.accept)
         dlg.resize(700, 400)
-        dlg.exec_()
+        dlg.exec()
 
     def show_log_viewer_dialog(self):
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QFileDialog, QLineEdit, QComboBox
-        from PyQt5.QtCore import QTimer
-        from PyQt5.QtWidgets import QTabWidget
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QFileDialog, QLineEdit, QComboBox
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QTabWidget
         from error_logger import get_error_logger
         dlg = QDialog(self)
         dlg.setWindowTitle("Log Viewer")
@@ -973,7 +973,7 @@ class BEMainWindow(QMainWindow):
         def do_copy():
             items = list_widget.selectedItems()
             if items:
-                from PyQt5.QtWidgets import QApplication
+                from PyQt6.QtWidgets import QApplication
                 QApplication.clipboard().setText('\n'.join(i.text() for i in items))
                 QMessageBox.information(dlg, "Copied", "Selected entries copied to clipboard")
 
@@ -991,7 +991,7 @@ class BEMainWindow(QMainWindow):
 
         # --- TCP Log Viewer Tab ---
         tcp_tab = QDialog(dlg)
-        from PyQt5.QtWidgets import QTextEdit, QLabel
+        from PyQt6.QtWidgets import QTextEdit, QLabel
         tcp_layout = QVBoxLayout(tcp_tab)
         # Controls: Mode + Location Id filter
         ctrl_row = QHBoxLayout()
@@ -1050,7 +1050,7 @@ class BEMainWindow(QMainWindow):
 
         # --- IP→Loc Mappings Admin Tab ---
         map_tab = QDialog(dlg)
-        from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
+        from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem
         map_layout = QVBoxLayout(map_tab)
         map_table = QTableWidget(0, 2)
         map_table.setHorizontalHeaderLabels(["IP", "Location Id"])
@@ -1090,7 +1090,7 @@ class BEMainWindow(QMainWindow):
                 print(f"Load mappings error: {e}")
 
         def add_update_mapping():
-            from PyQt5.QtWidgets import QInputDialog
+            from PyQt6.QtWidgets import QInputDialog
             ip, ok1 = QInputDialog.getText(dlg, "IP", "Enter IP:")
             if not ok1 or not ip:
                 return
@@ -1157,7 +1157,7 @@ class BEMainWindow(QMainWindow):
         tabs.addTab(map_tab, "IP→Loc Mappings")
 
         dlg.resize(900, 600)
-        dlg.exec_()
+        dlg.exec()
 
     def dispatch_pfds_command(self, cmd: dict):
         """Dispatch PFDS commands over TCP to device IP on current TCP port.
@@ -1469,8 +1469,8 @@ class BEMainWindow(QMainWindow):
         try:
             # Lazy import matplotlib only when needed
             import matplotlib
-            matplotlib.use('Qt5Agg')
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            matplotlib.use('QtAgg')
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
             import matplotlib.pyplot as plt
             
             for i in reversed(range(self.graph_stack.count())): 
@@ -1587,7 +1587,7 @@ class BEMainWindow(QMainWindow):
 
     def configure_streams(self):
         dialog = StreamConfigDialog(self.config, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             self.config = dialog.get_config()
             StreamConfig.save_config(self.config)
             self.group_combo.clear()
@@ -1627,7 +1627,7 @@ class BEMainWindow(QMainWindow):
         close_btn = QPushButton("Close", clicked=profile_dialog.close)
         layout.addWidget(close_btn)
         profile_dialog.setLayout(layout)
-        profile_dialog.exec_()
+        profile_dialog.exec()
 
     def prev_rtsp_page(self):
         self.current_rtsp_page = max(1, self.current_rtsp_page - 1)

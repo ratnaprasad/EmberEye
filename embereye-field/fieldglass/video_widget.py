@@ -3,11 +3,11 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vigilstream'))
 
 from video_worker import VideoWorker
-from PyQt5.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy, QApplication
-from PyQt5.QtCore import Qt, QRect, QRectF, pyqtSignal, QThread, QTimer, QObject, QMutexLocker, pyqtSlot
-from PyQt5.QtGui import QColor, QImage
+from PyQt6.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy, QApplication
+from PyQt6.QtCore import Qt, QRect, QRectF, pyqtSignal, QThread, QTimer, QObject, QMutexLocker, pyqtSlot
+from PyQt6.QtGui import QColor, QImage
 from embereye_base.utils.debug_config import debug_print, is_debug_enabled
-from PyQt5.QtCore import QSettings
+from PyQt6.QtCore import QSettings
 from util.fusionbanner import draw_fusion_overlay as render_fusion_overlay
 import json
 import tempfile
@@ -103,21 +103,21 @@ class VideoWidget(QWidget):
         self.display_mode = "default"
         self._last_base_pixmap = None  # Keep an unpainted base frame for stable overlay redraws.
         self._rtsp_connected = False
-        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # Expand to fill grid cell
         self.setMinimumSize(160, 120)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setObjectName("videoTile")
         self._apply_tile_border()
 
         self.video_label = QLabel(self)
         self._apply_video_label_style()
-        self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.detection_overlay = QLabel(self)
-        self.detection_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.detection_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.detection_overlay.setStyleSheet("QLabel { background-color: transparent; border: none; }")
         self.detection_overlay.hide()
 
@@ -336,9 +336,9 @@ class VideoWidget(QWidget):
             if not base_pixmap or base_pixmap.isNull():
                 return
             
-            from PyQt5.QtGui import QPainter, QPen, QFont, QBrush
-            from PyQt5.QtCore import Qt, QRect
-            from PyQt5.QtGui import QPixmap
+            from PyQt6.QtGui import QPainter, QPen, QFont, QBrush
+            from PyQt6.QtCore import Qt, QRect
+            from PyQt6.QtGui import QPixmap
             import time
             
             # Create a copy to draw on
@@ -352,12 +352,12 @@ class VideoWidget(QWidget):
                 label_height = base_pixmap.height()
             
             # Scale base_pixmap to label size for display
-            result = base_pixmap.scaled(label_width, label_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            result = base_pixmap.scaled(label_width, label_height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             
             # If scaled result is smaller than label, pad it
             if result.width() < label_width or result.height() < label_height:
                 padded = QPixmap(label_width, label_height)
-                padded.fill(Qt.black)
+                padded.fill(Qt.GlobalColor.black)
                 painter_tmp = QPainter(padded)
                 x_offset = (label_width - result.width()) // 2
                 y_offset = (label_height - result.height()) // 2
@@ -377,14 +377,14 @@ class VideoWidget(QWidget):
             
         except Exception as e:
             print(f"Grid overlay error: {e}")
-            from error_logger import get_error_logger
+            from embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log('ThermalGrid', f'Redraw error: {e}')
 
     def _render_no_video_fallback(self):
         """Render thermal/fusion overlay even when RTSP frame is unavailable."""
         try:
             self._expire_stale_sensor_overlay()
-            from PyQt5.QtGui import QPixmap
+            from PyQt6.QtGui import QPixmap
 
             base = None
             if self.display_mode == "grid" and self._last_thermal_matrix is not None:
@@ -397,7 +397,7 @@ class VideoWidget(QWidget):
                 w = max(1, self.video_label.width())
                 h = max(1, self.video_label.height())
                 base = QPixmap(w, h)
-                base.fill(Qt.black)
+                base.fill(Qt.GlobalColor.black)
 
             self._last_base_pixmap = base
             self.video_label.setPixmap(base)
@@ -476,8 +476,8 @@ class VideoWidget(QWidget):
                 return
             
             import numpy as np
-            from PyQt5.QtGui import QPainter, QPixmap, QColor, QPen, QFont
-            from PyQt5.QtCore import Qt, QRect
+            from PyQt6.QtGui import QPainter, QPixmap, QColor, QPen, QFont
+            from PyQt6.QtCore import Qt, QRect
             import hashlib
 
             # Always regenerate overlay to ensure proper scaling - disable caching for responsiveness
@@ -502,10 +502,10 @@ class VideoWidget(QWidget):
             
                 # Create transparent overlay pixmap
                 overlay = QPixmap(w, h)
-                overlay.fill(Qt.transparent)
+                overlay.fill(Qt.GlobalColor.transparent)
                 painter = QPainter(overlay)
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.TextAntialiasing, True)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
             
             # If dimensions are invalid, use fallback
             if w < 50 or h < 50:
@@ -526,10 +526,10 @@ class VideoWidget(QWidget):
                 painter = None
             else:
                 overlay = QPixmap(w, h)
-                overlay.fill(Qt.transparent)
+                overlay.fill(Qt.GlobalColor.transparent)
                 painter = QPainter(overlay)
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.TextAntialiasing, True)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
             # Compute stable cell rects to avoid rounding drift
             def _iter_cell_rects(cols, rows, width, height):
@@ -569,7 +569,7 @@ class VideoWidget(QWidget):
                 else:
                     base_font_size = int(cell_min * 0.45)
                 base_font_size = max(6, min(base_font_size, 24))
-                font = QFont("Arial", base_font_size, QFont.Bold)
+                font = QFont("Arial", base_font_size, QFont.Weight.Bold)
                 painter.setFont(font)
 
                 show_text = cell_min >= 8  # Show text if cells are large enough
@@ -601,7 +601,7 @@ class VideoWidget(QWidget):
 
                     # Draw temperature text
                     painter.setPen(tcolor)
-                    painter.drawText(rect, Qt.AlignCenter, txt)
+                    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, txt)
 
                 painter.end()
 
@@ -616,9 +616,9 @@ class VideoWidget(QWidget):
             # Display the overlay on the frame
             # CRITICAL: Use actual display size (w, h from label), not base_pixmap size
             # This ensures overlay scales responsively with tile size
-            scaled_frame = base_pixmap.scaledToWidth(w, Qt.SmoothTransformation)
+            scaled_frame = base_pixmap.scaledToWidth(w, Qt.TransformationMode.SmoothTransformation)
             result = QPixmap(w, h)
-            result.fill(Qt.black)
+            result.fill(Qt.GlobalColor.black)
             
             # Center the scaled frame on result
             frame_painter = QPainter(result)
@@ -635,8 +635,8 @@ class VideoWidget(QWidget):
         """Build a 32x24 grid pixmap with temperature values."""
         try:
             import numpy as np
-            from PyQt5.QtGui import QPainter, QPixmap, QColor, QPen, QFont
-            from PyQt5.QtCore import Qt, QRect
+            from PyQt6.QtGui import QPainter, QPixmap, QColor, QPen, QFont
+            from PyQt6.QtCore import Qt, QRect
 
             arr = np.array(matrix)
             # Try to match configured dimensions
@@ -661,8 +661,8 @@ class VideoWidget(QWidget):
             pix.fill(QColor(0, 0, 0))
 
             painter = QPainter(pix)
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
             # Compute stable cell rects to avoid rounding drift
             def _iter_cell_rects(cols, rows, width, height):
@@ -729,7 +729,7 @@ class VideoWidget(QWidget):
                 if not show_text:
                     continue
                 painter.setPen(tcolor)
-                painter.drawText(rect, Qt.AlignCenter, txt)
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, txt)
 
             painter.end()
             # Cache pixmap for fast resize reuse
@@ -753,7 +753,7 @@ class VideoWidget(QWidget):
         try:
             import numpy as np
             import cv2
-            from PyQt5.QtGui import QImage, QPixmap
+            from PyQt6.QtGui import QImage, QPixmap
 
             arr = np.array(matrix, dtype=np.float32)
             if arr.ndim != 2:
@@ -808,12 +808,12 @@ class VideoWidget(QWidget):
             color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
 
             h, w = color_rgb.shape[:2]
-            q_img = QImage(color_rgb.data, w, h, w * 3, QImage.Format_RGB888).copy()
+            q_img = QImage(color_rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
             pix = QPixmap.fromImage(q_img)
 
             label_w = max(1, self.video_label.width())
             label_h = max(1, self.video_label.height())
-            return pix.scaled(label_w, label_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            return pix.scaled(label_w, label_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         except Exception as e:
             print(f"Thermal heatmap render error: {e}")
         return None
@@ -823,7 +823,7 @@ class VideoWidget(QWidget):
         try:
             import numpy as np
             import cv2
-            from PyQt5.QtGui import QImage, QPixmap
+            from PyQt6.QtGui import QImage, QPixmap
 
             arr = np.array(matrix, dtype=np.float32)
             if arr.ndim != 2:
@@ -841,19 +841,19 @@ class VideoWidget(QWidget):
             color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
 
             h, w = color_rgb.shape[:2]
-            q_img = QImage(color_rgb.data, w, h, w * 3, QImage.Format_RGB888).copy()
+            q_img = QImage(color_rgb.data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
             pix = QPixmap.fromImage(q_img)
 
             label_w = max(1, self.video_label.width())
             label_h = max(1, self.video_label.height())
-            return pix.scaled(label_w, label_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            return pix.scaled(label_w, label_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         except Exception as e:
             print(f"Thermal screen render error: {e}")
         return None
 
     def create_controls(self):
         """Create and position control widgets with theme-aware styling"""
-        from PyQt5.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
         is_modern = app.property("theme") == "modern" if app else False
         
@@ -909,7 +909,7 @@ class VideoWidget(QWidget):
         # Left-edge drawer handle for fusion overlay
         self.fusion_drawer_toggle_btn = self.create_control_button("▴", "Collapse sensor banner")
         self.fusion_drawer_toggle_btn.setFixedSize(20, 20)
-        self.fusion_drawer_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.fusion_drawer_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.fusion_drawer_toggle_btn.clicked.connect(self._toggle_fusion_drawer)
         self.fusion_drawer_toggle_btn.setStyleSheet("""
             QPushButton {
@@ -1033,8 +1033,8 @@ class VideoWidget(QWidget):
 
     def create_control_button(self, text, tooltip=""):
         """Create styled control button with theme awareness"""
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import Qt
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt
         app = QApplication.instance()
         
         btn = QPushButton(text)
@@ -1082,7 +1082,7 @@ class VideoWidget(QWidget):
 
     def position_controls(self):
         """Position control widgets correctly with theme-aware margins"""
-        from PyQt5.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
         
         margin = 10
@@ -1140,7 +1140,7 @@ class VideoWidget(QWidget):
 
         # Setup opacity effect for top-left controls (fade support)
         try:
-            from PyQt5.QtWidgets import QGraphicsOpacityEffect
+            from PyQt6.QtWidgets import QGraphicsOpacityEffect
             self._controls_opacity_effect = QGraphicsOpacityEffect(self.top_left_controls)
             self.top_left_controls.setGraphicsEffect(self._controls_opacity_effect)
             self._controls_opacity_effect.setOpacity(1.0)
@@ -1186,8 +1186,8 @@ class VideoWidget(QWidget):
     def mousePressEvent(self, event):
         """Claim focus on click so D/T/# hotkeys reliably target this tile."""
         try:
-            if event.button() == Qt.LeftButton:
-                self.setFocus(Qt.MouseFocusReason)
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
         except Exception:
             pass
         super().mousePressEvent(event)
@@ -1210,15 +1210,15 @@ class VideoWidget(QWidget):
         try:
             key = int(event.key())
             text = (event.text() or "").strip()
-            if key == Qt.Key_D:
+            if key == Qt.Key.Key_D:
                 self._activate_default_view()
                 event.accept()
                 return
-            if key == Qt.Key_T:
+            if key == Qt.Key.Key_T:
                 self._activate_thermal_view()
                 event.accept()
                 return
-            if text == "#" or key in (Qt.Key_NumberSign,):
+            if text == "#" or key in (Qt.Key.Key_NumberSign,):
                 self._activate_grid_view()
                 event.accept()
                 return
@@ -1229,9 +1229,9 @@ class VideoWidget(QWidget):
     def mouseDoubleClickEvent(self, event):
         """Double-click the fusion banner area to collapse/expand it quickly."""
         try:
-            if event.button() == Qt.LeftButton and bool(self.show_fusion_overlay):
+            if event.button() == Qt.MouseButton.LeftButton and bool(self.show_fusion_overlay):
                 drawer_rect, _ = self._fusion_drawer_rect_for_layout()
-                if drawer_rect.contains(event.pos()):
+                if drawer_rect.contains(event.position().toPoint()):
                     self._toggle_fusion_drawer()
                     event.accept()
                     return
@@ -1261,22 +1261,22 @@ class VideoWidget(QWidget):
         self.worker.moveToThread(self.worker_thread)
 
         # Connect signals
-        self.worker.frame_ready.connect(self.update_frame, Qt.QueuedConnection)
-        self.worker.error_occurred.connect(self.handle_error, Qt.QueuedConnection)   
+        self.worker.frame_ready.connect(self.update_frame, Qt.ConnectionType.QueuedConnection)
+        self.worker.error_occurred.connect(self.handle_error, Qt.ConnectionType.QueuedConnection)   
         self.worker.connection_status.connect(self.handle_connection_status)
-        self.worker.timer.timeout.connect(self.worker.update_frame, Qt.QueuedConnection)
-        self.worker.start_timer_requested.connect(self._start_worker_timer, Qt.QueuedConnection)
-        self.worker.stop_timer_requested.connect(self._stop_worker_timer, Qt.QueuedConnection)
-        self.worker.set_interval_requested.connect(self._set_worker_timer_interval, Qt.QueuedConnection)
+        self.worker.timer.timeout.connect(self.worker.update_frame, Qt.ConnectionType.QueuedConnection)
+        self.worker.start_timer_requested.connect(self._start_worker_timer, Qt.ConnectionType.QueuedConnection)
+        self.worker.stop_timer_requested.connect(self._stop_worker_timer, Qt.ConnectionType.QueuedConnection)
+        self.worker.set_interval_requested.connect(self._set_worker_timer_interval, Qt.ConnectionType.QueuedConnection)
 
         # Vision score signal
-        self.worker.vision_score_ready.connect(self.handle_vision_score, Qt.QueuedConnection)
+        self.worker.vision_score_ready.connect(self.handle_vision_score, Qt.ConnectionType.QueuedConnection)
         # Anomaly frame signal (QImage, score, stream_id, yolo_score, detections)
         if hasattr(self.worker, 'anomaly_frame_ready'):
-            result = self.worker.anomaly_frame_ready.connect(self.handle_anomaly_frame, Qt.QueuedConnection)
+            result = self.worker.anomaly_frame_ready.connect(self.handle_anomaly_frame, Qt.ConnectionType.QueuedConnection)
             print(f"[VIDEO_WIDGET_INIT] Connected anomaly_frame_ready: {result}", flush=True)
         if hasattr(self.worker, 'detection_event'):
-            result = self.worker.detection_event.connect(self.handle_detection_event, Qt.QueuedConnection)
+            result = self.worker.detection_event.connect(self.handle_detection_event, Qt.ConnectionType.QueuedConnection)
             print(f"[VIDEO_WIDGET_INIT] Connected detection_event: {result}", flush=True)
         else:
             print(f"[VIDEO_WIDGET_INIT] Worker does NOT have anomaly_frame_ready signal!", flush=True)
@@ -1325,7 +1325,7 @@ class VideoWidget(QWidget):
                 print(f"[VIDEO_WIDGET] Fallback to handle_anomaly_frame_from_widget", flush=True)
                 mw.handle_anomaly_frame_from_widget(self.loc_id, qimage, float(score))
         except Exception as e:
-            from error_logger import get_error_logger
+            from embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log(self.name, f"Anomaly forward error: {e}")
             print(f"[VIDEO_WIDGET] Exception: {e}", flush=True)
 
@@ -1429,7 +1429,7 @@ class VideoWidget(QWidget):
 
     def update_frame(self, pixmap):
         if pixmap is None or pixmap.isNull():
-            from error_logger import get_error_logger
+            from embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log(self.name, "Null pixmap received")
             self.last_error_message = "Null pixmap received"
             self._render_no_video_fallback()
@@ -1454,8 +1454,8 @@ class VideoWidget(QWidget):
             # Scale video frame to fully fill the tile (allow slight crop to avoid letterboxing)
             scaled_video = pixmap.scaled(
                 self.video_label.size(),
-                Qt.KeepAspectRatioByExpanding,
-                Qt.SmoothTransformation
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation
             )
             
             # Render based on selected display mode
@@ -1499,7 +1499,7 @@ class VideoWidget(QWidget):
         """Overlay detection boxes on the pixmap when recent detections exist."""
         try:
             import time
-            from PyQt5.QtGui import QPainter, QPen, QColor
+            from PyQt6.QtGui import QPainter, QPen, QColor
 
             frame_size = self._latest_detection_frame_size or self._last_frame_size_from_pixmap
             if not self._latest_detections or not frame_size:
@@ -1545,7 +1545,7 @@ class VideoWidget(QWidget):
             return base_pixmap
 
     def handle_error(self, message):
-        from error_logger import get_error_logger
+        from embereye_base.utils.error_logger import get_error_logger
         get_error_logger().log(self.name, message)
         self.last_error_message = message
         self.video_label.setText(f"ERROR: {message}\n{self.rtsp_url}")
@@ -1584,7 +1584,7 @@ class VideoWidget(QWidget):
 
     def update_fire_alarm(self, alarm_active, source="remote"):
         """Update fire alarm indicator with theme-aware styling"""
-        from PyQt5.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
         was_alarm_active = bool(getattr(self, 'alarm_active', False))
 
@@ -1851,8 +1851,8 @@ class VideoWidget(QWidget):
 
     def _draw_sparkline(self, painter, rect, key, color):
         try:
-            from PyQt5.QtGui import QPen
-            from PyQt5.QtCore import QPointF
+            from PyQt6.QtGui import QPen
+            from PyQt6.QtCore import QPointF
             series = (getattr(self, '_fusion_trends', {}) or {}).get(str(key), [])
             if len(series) < 2:
                 return
