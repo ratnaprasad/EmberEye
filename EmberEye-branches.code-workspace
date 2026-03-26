@@ -1,0 +1,24 @@
+{
+  "folders": [
+    {
+      "name": "EmberEye Main (local)",
+      "path": "."
+    },
+    {
+      "name": "EmberEye Stable 1.1",
+      "path": "../EmberEye-stable-1.1"
+    },
+    {
+      "name": "EmberEye Develop 2.x",
+      "path": "../EmberEye-develop-2.x"
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.git": true
+    },
+    "search.exclude": {
+      "**/.git": true
+    }
+  }
+}
