@@ -128,6 +128,12 @@ This gives clear engineering meaning (SemVer) and robust installer/update orderi
   - `embereye-base/v2.0.0`
   - `embereye-field/v2.0.0`
 
+## 9. Branch Mapping
+
+Use the branch map document to distinguish exact release tags from maintenance and development branches:
+
+- [BRANCH_VERSION_MAP.md](d:/EE/EmberEye/docs/BRANCH_VERSION_MAP.md)
+
 ---
 
 Policy status: Active
