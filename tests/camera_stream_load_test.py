@@ -143,13 +143,13 @@ class DummyCapture:
     def release(self):
         self.opened = False
 
-# We only import PyQt5 and VideoWorker if needed.
+# We only import PyQt6 and VideoWorker if needed.
 
 def run_monkeypatch(args):
     import cv2  # local import to patch
-    from PyQt5.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication
     from video_worker import VideoWorker
-    from PyQt5.QtCore import QTimer
+    from PyQt6.QtCore import QTimer
 
     orig_VideoCapture = cv2.VideoCapture
     def patched_VideoCapture(arg, backend=None):  # signature flexible
@@ -205,7 +205,7 @@ def run_monkeypatch(args):
     pt = threading.Thread(target=progress_timer, daemon=True)
     pt.start()
 
-    app.exec_()
+    app.exec()
     # Restore original capture
     cv2.VideoCapture = orig_VideoCapture
     return stats

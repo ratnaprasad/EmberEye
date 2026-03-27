@@ -8,7 +8,8 @@
     "SAFETY_CATEGORY",
     "ENVIRONMENT_MARKERS",
     "SMOKE_SENSITIVITY",
-    "FIRE_SENSITIVITY"
+    "FIRE_SENSITIVITY",
+    "PPE_CATEGORY"
   ],
   "FIRE_CATEGORY": [
     "CLASS A",
@@ -68,5 +69,12 @@
     "WELDING ARC",
     "CUTTING SPARKS",
     "FIRE TORCH"
+  ],
+  "PPE_CATEGORY": [
+    "HELMET",
+    "NO_HELMET",
+    "SAFETY_VEST",
+    "NO_VEST",
+    "HEAD_NO_HELMET"
   ]
 }

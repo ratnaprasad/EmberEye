@@ -1,10 +1,10 @@
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QPushButton, QVBoxLayout, QHBoxLayout,  QDialog,
     QMessageBox, QStyle, QInputDialog, QListWidget, 
-    QDialogButtonBox, QProgressDialog, QTreeWidget, QTreeWidgetItem, QLabel
+    QDialogButtonBox, QProgressDialog, QTreeWidget, QTreeWidgetItem, QLabel, QListWidgetItem
 )
-from PyQt5.QtCore import (
+from PyQt6.QtCore import (
     Qt, QThread
 )
 from embereye_base.app.streamconfig_editdialog import StreamEditDialog
@@ -94,7 +94,7 @@ class StreamConfigDialog(QDialog):
         layout.addLayout(stream_layout, 60)
         
         # Dialog Buttons
-        btn_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
@@ -105,15 +105,66 @@ class StreamConfigDialog(QDialog):
         self.populate_groups()
         self.group_tree.currentItemChanged.connect(self.on_group_tree_selection_changed)
 
+    def _stream_identity(self, stream):
+        return (
+            str(stream.get("group", "") or ""),
+            str(stream.get("name", "") or ""),
+            str(stream.get("loc_id", "") or "")
+        )
+
+    def _find_stream(self, group_name, stream_name=None, loc_id=None):
+        for stream in self.config["streams"]:
+            if str(stream.get("group", "") or "") != str(group_name or ""):
+                continue
+            if stream_name is not None and str(stream.get("name", "") or "") != str(stream_name or ""):
+                continue
+            if loc_id is not None and str(stream.get("loc_id", "") or "") != str(loc_id or ""):
+                continue
+            return stream
+        return None
+
+    def _selected_stream_identity(self):
+        current = self.group_tree.currentItem()
+        if current and current.parent() is not None:
+            payload = current.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(payload, dict):
+                return (
+                    str(payload.get("group", "") or ""),
+                    str(payload.get("name", "") or ""),
+                    str(payload.get("loc_id", "") or "")
+                )
+
+        current_item = self.stream_list.currentItem()
+        if current_item is not None:
+            payload = current_item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(payload, dict):
+                return (
+                    str(payload.get("group", "") or ""),
+                    str(payload.get("name", "") or ""),
+                    str(payload.get("loc_id", "") or "")
+                )
+
+        return None
+
     def populate_groups(self):
         self.group_tree.clear()
+        first_group_item = None
         for group in self.config["groups"]:
             group_item = QTreeWidgetItem([group])
+            if first_group_item is None:
+                first_group_item = group_item
             for stream in self.config["streams"]:
                 if stream["group"] == group:
-                    QTreeWidgetItem(group_item, [stream["name"]])
+                    child = QTreeWidgetItem(group_item, [stream["name"]])
+                    child.setData(0, Qt.ItemDataRole.UserRole, {
+                        "group": stream.get("group", ""),
+                        "name": stream.get("name", ""),
+                        "loc_id": stream.get("loc_id", ""),
+                    })
             self.group_tree.addTopLevelItem(group_item)
         self.group_tree.expandAll()
+        if self.group_tree.currentItem() is None and first_group_item is not None:
+            self.group_tree.setCurrentItem(first_group_item)
         # Also refresh right panel for currently selected group
         self.refresh_stream_list()
 
@@ -133,7 +184,13 @@ class StreamConfigDialog(QDialog):
             return
         for s in self.config["streams"]:
             if s["group"] == group_name:
-                self.stream_list.addItem(f"{s['name']}  |  {s['loc_id']}")
+                item = QListWidgetItem(f"{s['name']}  |  {s['loc_id']}")
+                item.setData(Qt.ItemDataRole.UserRole, {
+                    "group": s.get("group", ""),
+                    "name": s.get("name", ""),
+                    "loc_id": s.get("loc_id", ""),
+                })
+                self.stream_list.addItem(item)
 
     def add_group(self):
         name, ok = QInputDialog.getText(self, "New Group", "Group name:")
@@ -155,54 +212,32 @@ class StreamConfigDialog(QDialog):
         # Default group based on selection
         default_group = self._current_group_name() or (self.config["groups"][0] if self.config["groups"] else "Default")
         dialog = StreamEditDialog(self.config["groups"], self, default_group=default_group)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             stream_data = dialog.get_stream_data()
             self.config["streams"].append(stream_data)
             self.populate_groups()
 
     def edit_stream(self):
-        # Determine selection: prefer a stream child in the tree, else from the list
-        current = self.group_tree.currentItem()
-        group_name = None
-        stream_name = None
-        if current and current.parent():
-            stream_name = current.text(0)
-            group_name = current.parent().text(0)
-        else:
-            # Use selected in list
-            group_name = self._current_group_name()
-            if group_name and self.stream_list.currentItem():
-                # Extract name from "name  |  loc_id" format
-                stream_name = self.stream_list.currentItem().text().split("  |  ")[0]
-        if not (group_name and stream_name):
+        identity = self._selected_stream_identity()
+        if not identity:
             QMessageBox.information(self, "Edit Stream", "Select a group and a stream to edit.")
             return
-        stream = next((s for s in self.config["streams"] 
-                      if s["name"] == stream_name and s["group"] == group_name), None)
+        group_name, stream_name, loc_id = identity
+        stream = self._find_stream(group_name, stream_name=stream_name, loc_id=loc_id)
         if stream:
             dialog = StreamEditDialog(self.config["groups"], self, existing=stream)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
                 new_data = dialog.get_stream_data()
                 stream.update(new_data)
                 self.populate_groups()
 
     def remove_stream(self):
-        # Determine selection from tree child or list
-        current = self.group_tree.currentItem()
-        group_name = None
-        stream_name = None
-        if current and current.parent():
-            stream_name = current.text(0)
-            group_name = current.parent().text(0)
-        else:
-            group_name = self._current_group_name()
-            if group_name and self.stream_list.currentItem():
-                stream_name = self.stream_list.currentItem().text().split("  |  ")[0]
-        if not (group_name and stream_name):
+        identity = self._selected_stream_identity()
+        if not identity:
             QMessageBox.information(self, "Remove Stream", "Select a group and a stream to remove.")
             return
-        stream = next((s for s in self.config["streams"] 
-                      if s["name"] == stream_name and s["group"] == group_name), None)
+        group_name, stream_name, loc_id = identity
+        stream = self._find_stream(group_name, stream_name=stream_name, loc_id=loc_id)
         if stream:
             self.config["streams"].remove(stream)
             self.populate_groups()
@@ -211,7 +246,7 @@ class StreamConfigDialog(QDialog):
 
     def test_stream(self, url):
         progress = QProgressDialog("Testing stream...", "Cancel", 0, 0, self)
-        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
         
         tester = StreamTester(url)
         thread = QThread(self)
@@ -244,7 +279,7 @@ class StreamConfigDialog(QDialog):
         tester.test_complete.connect(handle_result)
         thread.started.connect(tester.test_stream)
         thread.start()
-        progress.exec_()
+        progress.exec()
         return result[0]
 
     def get_config(self):

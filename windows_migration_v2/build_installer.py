@@ -97,7 +97,7 @@ a = Analysis(
     datas=[
         ('logo.png', '.'),
         ('users.db', '.'),
-        ('stream_config.json', '.'),
+        ('stream_config.example.json', '.'),
     ],
     hiddenimports=[
         'passlib.handlers.bcrypt',
@@ -246,11 +246,11 @@ def ensure_resources():
     else:
         print("  ✓ logo.png exists")
     
-    # Check stream config
-    if not Path('stream_config.json').exists():
-        print("  ⚠ stream_config.json not found, will be created on first run")
+    # Check example stream config
+    if not Path('stream_config.example.json').exists():
+        print("  ✗ stream_config.example.json not found")
     else:
-        print("  ✓ stream_config.json exists")
+        print("  ✓ stream_config.example.json exists")
 
 def build_executable():
     """Build the executable using PyInstaller"""

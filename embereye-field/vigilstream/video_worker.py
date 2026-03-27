@@ -6,11 +6,11 @@ print("[VIDEO_WORKER_MODULE] Loading video_worker.py with NEW CODE v2.0", flush=
 
 import cv2
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication
 )
-from PyQt5.QtGui import QPixmap, QImage
-from PyQt5.QtCore import (
+from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import (
     Qt, pyqtSignal, QTimer, QMutex, QMutexLocker,
     QObject, QMetaObject, Q_ARG
 )
@@ -70,6 +70,11 @@ class VideoWorker(QObject):
         self._detection_overlay_ttl_ms = 1500
         self._detection_counter = 0
         self._last_frame_size = None
+        # Local cameras on macOS can intermittently return empty frames during
+        # warm-up or when auto-exposure changes. Avoid tearing down the stream
+        # on a single failed read.
+        self._read_failures = 0
+        self._max_read_failures = 45
         # RTSP buffer management for low latency
         self._is_rtsp_stream = self._check_if_rtsp(rtsp_url)
         self._frame_skip_count = 0  # Track frames skipped for buffer drain
@@ -214,10 +219,11 @@ class VideoWorker(QObject):
                 if is_device:
                     dev_index = int(self.rtsp_url)
                     # Try platform-friendly backends
-                    backend_codes = [getattr(cv2, 'CAP_ANY', 0)]
                     # macOS: AVFoundation
+                    backend_codes = []
                     if hasattr(cv2, 'CAP_AVFOUNDATION'):
                         backend_codes.append(getattr(cv2, 'CAP_AVFOUNDATION'))
+                    backend_codes.append(getattr(cv2, 'CAP_ANY', 0))
                     # Windows: DirectShow and Media Foundation
                     for backend_name in ['CAP_DSHOW', 'CAP_MSMF']:
                         if hasattr(cv2, backend_name):
@@ -281,7 +287,7 @@ class VideoWorker(QObject):
                 self.connection_status.emit(True)
 
         except Exception as e:
-            from error_logger import get_error_logger
+            from embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log(self.rtsp_url, f"start_stream error: {e}")
             self.error_occurred.emit(str(e))
             self.connection_status.emit(False)
@@ -332,7 +338,13 @@ class VideoWorker(QObject):
                     except Exception:
                         pass
                 if not ret:
-                    raise RuntimeError("No frame received")
+                        self._read_failures += 1
+                        if self._read_failures < self._max_read_failures:
+                            return
+                        raise RuntimeError("No frame received")
+
+                # Successful frame read: reset transient failure counter.
+                self._read_failures = 0
 
             # Record frame processed
             self.metrics.record_frame_processed(self.stream_id)
@@ -346,7 +358,7 @@ class VideoWorker(QObject):
             frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
             h, w, ch = frame_rgb.shape
             bytes_per_line = ch * w
-            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
             self.frame_ready.emit(QPixmap.fromImage(q_img))
             # Keep a copy for anomaly capture (thread-safe copy created above)
             self._last_qimage = q_img
@@ -411,7 +423,7 @@ class VideoWorker(QObject):
                     self.set_interval_requested.emit(new_interval)
                 self.metrics.update_fps(self.stream_id, new_fps)
         except Exception as e:
-            from error_logger import get_error_logger
+            from embereye_base.utils.error_logger import get_error_logger
             get_error_logger().log(self.rtsp_url, f"update_frame error: {e}")
             self.error_occurred.emit(str(e))
             self.connection_status.emit(False)

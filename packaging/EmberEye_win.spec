@@ -9,7 +9,7 @@ PROJ = os.path.dirname(SPECPATH)
 # Minimal Windows spec excluding torch/ultralytics to avoid DLL init errors
 datas = [
     (os.path.join(PROJ, 'logo.png'), '.'),
-    (os.path.join(PROJ, 'stream_config.json'), '.'),
+    (os.path.join(PROJ, 'stream_config.example.json'), '.'),
     (os.path.join(PROJ, 'training_config.json'), '.'),
 ]
 

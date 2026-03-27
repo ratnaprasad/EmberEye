@@ -3,8 +3,8 @@ Theme Manager for EmberEye Application
 Modern UI theme with dark styling only
 """
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QSettings
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QSettings
 
 
 class ThemeManager:

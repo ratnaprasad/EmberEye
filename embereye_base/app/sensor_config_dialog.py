@@ -1,7 +1,7 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QDoubleSpinBox, QSpinBox, QPushButton, QGroupBox, QCheckBox, QTabWidget, QWidget, QMessageBox,
-                             QRadioButton, QListWidget, QListWidgetItem, QStackedWidget, QComboBox)
-from PyQt5.QtCore import Qt, pyqtSignal
+                             QRadioButton, QListWidget, QListWidgetItem, QStackedWidget, QComboBox, QAbstractItemView)
+from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class SensorConfigDialog(QDialog):
@@ -470,7 +470,7 @@ class SensorConfigDialog(QDialog):
 
     def create_anomalies_tab(self):
         """Create anomalies capture configuration tab."""
-        from PyQt5.QtWidgets import QLineEdit, QFileDialog
+        from PyQt6.QtWidgets import QLineEdit, QFileDialog
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -830,7 +830,7 @@ class SensorConfigDialog(QDialog):
         box_layout.addWidget(self.box_mode_specific_radio)
 
         self.box_class_list = QListWidget()
-        self.box_class_list.setSelectionMode(QListWidget.MultiSelection)
+        self.box_class_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         available_classes = self.settings.get('detection_available_classes', []) or []
         selected_classes = set(self.settings.get('detection_box_classes', []) or [])
         for class_name in available_classes:

@@ -14,23 +14,34 @@ import sys
 import os
 import shutil
 import zipfile
+import json
 from pathlib import Path
 from datetime import datetime
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QPushButton, QLabel, QMessageBox, QProgressBar, QGroupBox,
     QFormLayout, QSpinBox, QComboBox, QTextEdit, QFileDialog,
     QListWidget, QGridLayout, QScrollArea, QDoubleSpinBox,
     QTreeWidget, QTreeWidgetItem, QDialog, QInputDialog, QToolButton,
-    QSizePolicy
+    QSizePolicy, QFrame
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QUrl, QThread
-from PyQt5.QtGui import QFont, QPixmap, QImage, QIcon
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl, QThread
+from PyQt6.QtGui import QFont, QPixmap, QImage, QIcon
 
 from forgelab import (
     TrainingConfig, TrainingProgress, TrainingStatus, YOLOTrainingPipeline, DeviceManager
 )
 from studio_db_manager import StudioDatabaseManager
+from external_dataset_importer import (
+    download_kaggle,
+    download_roboflow,
+    import_external_dataset,
+)
+try:
+    from embereye_base.core.analytics import ANALYTICS_CATEGORY_NAMES, DEFAULT_ANALYTICS_CATEGORY
+except Exception:
+    ANALYTICS_CATEGORY_NAMES = ["fire", "ppe"]
+    DEFAULT_ANALYTICS_CATEGORY = "fire"
 
 # Import centralized get_data_path from embereye (keep Studio path first)
 embereye_path = str(Path(__file__).parent.parent / "embereye")
@@ -319,7 +330,7 @@ class TrainingTab(QWidget):
         elif has_images:
             annotations_dir = self._annotations_dir_for_images(self.training_selected_image_paths)
         elif has_imported_zip:
-            from PyQt5.QtWidgets import QInputDialog
+            from PyQt6.QtWidgets import QInputDialog
             bases = getattr(self, 'imported_zip_bases', [])
             
             # Bug fix: Verify bases actually have annotations before showing dialog
@@ -376,7 +387,7 @@ class TrainingTab(QWidget):
                 return
             
             # Let user select which media base to review
-            from PyQt5.QtWidgets import QInputDialog
+            from PyQt6.QtWidgets import QInputDialog
             if len(media_bases) == 1:
                 annotations_dir = os.path.join(workspace_annotations, media_bases[0])
             else:
@@ -402,9 +413,9 @@ class TrainingTab(QWidget):
         
         from qc_review_dialog import QCReviewDialog
         dialog = QCReviewDialog(annotations_dir, parent=self.parent_window)
-        result = dialog.exec_()
+        result = dialog.exec()
         
-        if result == QCReviewDialog.Accepted:
+        if result == QDialog.DialogCode.Accepted:
             moved = self._move_to_qc_approved(annotations_dir)
             ann_count = self._count_annotation_files(self._qc_approved_root())
             QMessageBox.information(
@@ -449,7 +460,7 @@ class TrainingTab(QWidget):
                 QMessageBox.warning(self, "Training", "QC Review not completed for this media. Please run QC Review first.")
                 return
         else:
-            from PyQt5.QtWidgets import QInputDialog
+            from PyQt6.QtWidgets import QInputDialog
             # Use workspace bases if no media selected, otherwise use imported ZIP bases
             bases = workspace_bases if workspace_bases else getattr(self, 'imported_zip_bases', [])
             items = ["All media bases"] + bases
@@ -536,10 +547,10 @@ class TrainingTab(QWidget):
             "• Remove saved annotations\n"
             "• Clear the imported media reference\n\n"
             "Proceed?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             try:
                 if has_video:
                     annotations_dir = self._annotations_dir_for_video(self.training_selected_video_path)
@@ -633,7 +644,7 @@ class TrainingTab(QWidget):
                 _, lbl_path, img_path, _ = candidates[idx]
                 target = img_path or lbl_path
                 try:
-                    from PyQt5.QtGui import QDesktopServices
+                    from PyQt6.QtGui import QDesktopServices
                     QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(target)))
                 except Exception as e:
                     QMessageBox.warning(dlg, "Open", f"Failed to open folder: {e}")
@@ -645,7 +656,7 @@ class TrainingTab(QWidget):
             btn_row.addWidget(close_btn)
             lay.addLayout(btn_row)
             dlg.resize(500, 300)
-            dlg.exec_()
+            dlg.exec()
         except Exception as e:
             QMessageBox.critical(self.parent_window, "Error", f"Failed to review unclassified items: {str(e)}")
 
@@ -1166,7 +1177,7 @@ class TrainingTab(QWidget):
                 return
             
             # Ask user where to save
-            from PyQt5.QtWidgets import QFileDialog
+            from PyQt6.QtWidgets import QFileDialog
             export_path, _ = QFileDialog.getSaveFileName(
                 self,
                 "Export Model Package",
@@ -1280,10 +1291,10 @@ For issues or questions, refer to the main EmberEye documentation.
                 f"Model {version_name} has been exported to:\n\n{export_path}\n\n"
                 f"File size: {export_path.stat().st_size / (1024*1024):.2f} MB\n\n"
                 f"Would you like to open the destination folder?",
-                QMessageBox.Yes | QMessageBox.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 import subprocess
                 subprocess.Popen(f'explorer /select,"{export_path}"')
             
@@ -1300,9 +1311,9 @@ For issues or questions, refer to the main EmberEye documentation.
         reply = QMessageBox.question(
             self, "Delete Version", 
             f"Delete version {selected.text()}?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             self._refresh_model_versions()
 
     def _refresh_training_ready_count(self):
@@ -1312,7 +1323,7 @@ For issues or questions, refer to the main EmberEye documentation.
             return
 
         try:
-            from PyQt5.QtWidgets import QTreeWidgetItem
+            from PyQt6.QtWidgets import QTreeWidgetItem
             training_ann_base = get_data_path(os.path.join("training_data", "annotations"))
             total = self._count_annotation_files(training_ann_base)
 
@@ -1446,9 +1457,9 @@ For issues or questions, refer to the main EmberEye documentation.
         reply = QMessageBox.question(
             self, "Delete All", 
             "Delete ALL training data? This cannot be undone!",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             try:
                 import shutil
                 training_root = Path(get_data_path("training_data"))
@@ -1469,7 +1480,7 @@ For issues or questions, refer to the main EmberEye documentation.
                 QMessageBox.critical(self, "Delete All", f"Failed to delete training data: {e}")
 
     def _export_annotations_package(self):
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
         try:
             default_path = os.path.join(os.path.expanduser("~"), "annotations_export.json")
             path, _ = QFileDialog.getSaveFileName(self, "Export Annotations", default_path, "JSON (*.json)")
@@ -1486,7 +1497,7 @@ For issues or questions, refer to the main EmberEye documentation.
             QMessageBox.critical(self, "Export Annotations", f"Error: {e}")
 
     def _import_annotations_package(self):
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox, QInputDialog
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox, QInputDialog
         try:
             path, _ = QFileDialog.getOpenFileName(self, "Import Annotations", "", "JSON (*.json)")
             if not path:
@@ -1500,16 +1511,16 @@ For issues or questions, refer to the main EmberEye documentation.
             report = import_annotations_v2(path, mode=mode, dry_run=True)
             conf = report.get('report', {}).get('conflicts', {})
             dlg = ConflictReviewDialog(self, class_conflicts={}, ann_conflicts=conf)
-            if dlg.exec_() == QDialog.Accepted:
+            if dlg.exec() == QDialog.DialogCode.Accepted:
                 if mode == "override":
                     confirm = QMessageBox.warning(
                         self,
                         "Override Confirmation",
                         "Override will replace existing frame labels where present. Backup will be taken. Continue?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
                     )
-                    if confirm != QMessageBox.Yes:
+                    if confirm != QMessageBox.StandardButton.Yes:
                         return
                 resolutions = dlg.get_resolutions()
                 applied = import_annotations_v2(path, mode=mode, dry_run=False, resolutions=resolutions)
@@ -1529,7 +1540,7 @@ For issues or questions, refer to the main EmberEye documentation.
             QMessageBox.critical(self, "Import Annotations", f"Error: {e}")
 
     def _revert_classes_from_backup(self):
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
         try:
             from embereye.app.training_sync import list_class_backups, restore_classes_backup
             backups = list_class_backups()
@@ -1541,10 +1552,10 @@ For issues or questions, refer to the main EmberEye documentation.
                 self,
                 "Revert Classes",
                 "This will replace master_classes.json. Continue?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
             )
-            if confirm != QMessageBox.Yes:
+            if confirm != QMessageBox.StandardButton.Yes:
                 return
             result = restore_classes_backup(path)
             QMessageBox.information(
@@ -1560,7 +1571,7 @@ For issues or questions, refer to the main EmberEye documentation.
             QMessageBox.critical(self, "Revert Classes", f"Error: {e}")
 
     def _revert_annotations_from_backup(self):
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
         try:
             from embereye.app.training_sync import list_annotation_backups, restore_annotations_backup
             backups = list_annotation_backups()
@@ -1572,10 +1583,10 @@ For issues or questions, refer to the main EmberEye documentation.
                 self,
                 "Revert Annotations",
                 "This will replace current annotations with the backup. Continue?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
             )
-            if confirm != QMessageBox.Yes:
+            if confirm != QMessageBox.StandardButton.Yes:
                 return
             result = restore_annotations_backup(path)
             QMessageBox.information(
@@ -1591,7 +1602,7 @@ For issues or questions, refer to the main EmberEye documentation.
             QMessageBox.critical(self, "Revert Annotations", f"Error: {e}")
 
     def _export_annotations_zip(self):
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
         try:
             default_path = os.path.join(os.path.expanduser("~"), "annotations_full.zip")
             path, _ = QFileDialog.getSaveFileName(self, "Export Annotations + Frames (ZIP)", default_path, "ZIP (*.zip)")
@@ -1608,7 +1619,7 @@ For issues or questions, refer to the main EmberEye documentation.
             QMessageBox.critical(self, "Export ZIP", f"Error: {e}")
 
     def _import_annotations_zip(self):
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
         try:
             path, _ = QFileDialog.getOpenFileName(self, "Import Annotations + Frames (ZIP)", "", "ZIP (*.zip)")
             if not path:
@@ -1655,7 +1666,7 @@ For issues or questions, refer to the main EmberEye documentation.
 
     def _create_sandbox_tab(self) -> QWidget:
         """Create sandbox testing UI with Active Learning"""
-        from PyQt5.QtWidgets import QScrollArea, QSplitter
+        from PyQt6.QtWidgets import QScrollArea, QSplitter
         
         # Main container with scroll area
         self.sandbox_widget = QWidget()
@@ -1669,9 +1680,9 @@ For issues or questions, refer to the main EmberEye documentation.
         # Create scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         
         # Scroll content widget
         scroll_content = QWidget()
@@ -1679,7 +1690,7 @@ For issues or questions, refer to the main EmberEye documentation.
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         
         # Create horizontal splitter for left panel (preview) and right panel (review queue)
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         
         # === LEFT PANEL: Model Testing ===
@@ -1792,15 +1803,15 @@ For issues or questions, refer to the main EmberEye documentation.
         results_layout.addWidget(self.sandbox_progress)
         
         self.sandbox_results_label = QLabel("Results appear here")
-        self.sandbox_results_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_results_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sandbox_results_label.setStyleSheet("border: 1px solid #333; background: #111;")
         self.sandbox_results_label.setMinimumSize(280, 210)
         self.sandbox_results_label.setMaximumSize(500, 375)
         self.sandbox_results_label.setScaledContents(False)
-        self.sandbox_results_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.sandbox_results_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Click to popup full image
         self.sandbox_results_label.mousePressEvent = lambda event: self._sandbox_show_popup_frame(self.sandbox_results_label)
-        self.sandbox_results_label.setCursor(Qt.PointingHandCursor)
+        self.sandbox_results_label.setCursor(Qt.CursorShape.PointingHandCursor)
         results_layout.addWidget(self.sandbox_results_label)
         
         self.sandbox_stats_label = QLabel("Detections: - | Time: -")
@@ -1815,15 +1826,15 @@ For issues or questions, refer to the main EmberEye documentation.
         frame_viewer_layout = QVBoxLayout()
         
         self.sandbox_frame_label = QLabel("No frame selected")
-        self.sandbox_frame_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sandbox_frame_label.setStyleSheet("border: 1px solid #ccc; background: #f5f5f5;")
         self.sandbox_frame_label.setMinimumSize(280, 210)
         self.sandbox_frame_label.setMaximumSize(500, 375)
         self.sandbox_frame_label.setScaledContents(False)
-        self.sandbox_frame_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.sandbox_frame_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Click to popup full image
         self.sandbox_frame_label.mousePressEvent = lambda event: self._sandbox_show_popup_frame(self.sandbox_frame_label)
-        self.sandbox_frame_label.setCursor(Qt.PointingHandCursor)
+        self.sandbox_frame_label.setCursor(Qt.CursorShape.PointingHandCursor)
         frame_viewer_layout.addWidget(self.sandbox_frame_label)
         
         # Navigation buttons
@@ -2134,15 +2145,15 @@ For issues or questions, refer to the main EmberEye documentation.
             self.sandbox_progress.setValue(80)
             height, width, channel = img_rgb.shape
             bytes_per_line = 3 * width
-            q_img = QImage(img_rgb.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            q_img = QImage(img_rgb.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(q_img)
             # Scale to fit within label bounds
             label_size = self.sandbox_results_label.size()
             scaled_pixmap = pixmap.scaled(
                 label_size.width() - 4,
                 label_size.height() - 4,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
             )
             self.sandbox_results_label.setPixmap(scaled_pixmap)
             
@@ -2280,14 +2291,14 @@ For issues or questions, refer to the main EmberEye documentation.
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     h, w, c = frame_rgb.shape
                     bytes_per_line = 3 * w
-                    q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                    q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
                     pixmap = QPixmap.fromImage(q_img)
                     label_size = self.sandbox_results_label.size()
                     scaled_pixmap = pixmap.scaled(
                         label_size.width() - 4,
                         label_size.height() - 4,
-                        Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
                     )
                     self.sandbox_results_label.setPixmap(scaled_pixmap)
             
@@ -2327,10 +2338,10 @@ For issues or questions, refer to the main EmberEye documentation.
                 f"Processing time: {processing_time:.1f}s\n\n"
                 f"Output saved to:\n{output_path}\n\n"
                 f"Would you like to open the output folder?",
-                QMessageBox.Yes | QMessageBox.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 import subprocess
                 subprocess.Popen(f'explorer /select,"{output_path}"')
             
@@ -2427,7 +2438,7 @@ For issues or questions, refer to the main EmberEye documentation.
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, c = frame_rgb.shape
             bytes_per_line = 3 * w
-            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            q_img = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
             pixmap = QPixmap.fromImage(q_img)
             
             # Store for popup
@@ -2438,8 +2449,8 @@ For issues or questions, refer to the main EmberEye documentation.
             scaled_pixmap = pixmap.scaled(
                 label_size.width() - 4,
                 label_size.height() - 4,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
             )
             self.sandbox_frame_label.setPixmap(scaled_pixmap)
             
@@ -2487,7 +2498,7 @@ For issues or questions, refer to the main EmberEye documentation.
             # Create a NEW label inside the popup (don't reuse the original label)
             img_label = QLabel()
             img_label.setPixmap(self.sandbox_current_pixmap)
-            img_label.setAlignment(Qt.AlignCenter)
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             scroll.setWidget(img_label)
             
             layout.addWidget(scroll)
@@ -2499,7 +2510,7 @@ For issues or questions, refer to the main EmberEye documentation.
             
             # Handle ESC key to close popup
             def handle_key(event):
-                if event.key() == Qt.Key_Escape:
+                if event.key() == Qt.Key.Key_Escape:
                     popup.close()
             
             popup.keyPressEvent = handle_key
@@ -2696,8 +2707,12 @@ class DatasetTab(QWidget):
         import_btn = QPushButton("Import ZIP File")
         import_btn.clicked.connect(self.import_dataset)
 
+        import_external_btn = QPushButton("Import External Dataset")
+        import_external_btn.clicked.connect(self.import_external_dataset)
+
         import_layout.addWidget(info)
         import_layout.addWidget(import_btn)
+        import_layout.addWidget(import_external_btn)
         import_group.setLayout(import_layout)
         layout.addWidget(import_group)
 
@@ -2715,16 +2730,193 @@ class DatasetTab(QWidget):
         layout.addStretch()
         self.setLayout(layout)
 
+    def _shared_stream_config_path(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "stream_config.json"
+
+    def _load_active_analytics_category(self) -> str:
+        path = self._shared_stream_config_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = str(data.get("active_analytics_category", DEFAULT_ANALYTICS_CATEGORY) or DEFAULT_ANALYTICS_CATEGORY).strip().lower()
+        except Exception:
+            raw = DEFAULT_ANALYTICS_CATEGORY
+        return raw if raw in ANALYTICS_CATEGORY_NAMES else DEFAULT_ANALYTICS_CATEGORY
+
+    def _resolve_external_label(self, label: str, existing_classes: list[str], target_category: str):
+        """Interactive resolver for unknown external class labels."""
+        action_options = [
+            "Create new class in current analytics domain",
+            "Map to existing class",
+            "Skip this class",
+        ]
+        action, ok = QInputDialog.getItem(
+            self,
+            "Class Conflict",
+            f"External class '{label}' not found.\nChoose resolution:",
+            action_options,
+            0,
+            False,
+        )
+        if not ok:
+            return "skip", None
+
+        if action == "Skip this class":
+            return "skip", None
+
+        if action == "Map to existing class":
+            mapped, ok_map = QInputDialog.getItem(
+                self,
+                "Map Class",
+                f"Map '{label}' to:",
+                sorted(existing_classes),
+                0,
+                False,
+            )
+            if ok_map and mapped:
+                return "map", mapped
+            return "skip", None
+
+        # Create mode
+        new_name, ok_new = QInputDialog.getText(
+            self,
+            "Create Class",
+            f"Create new class under {target_category}:",
+            text=label,
+        )
+        if ok_new and new_name.strip():
+            return "create", new_name.strip()
+        return "skip", None
+
     def import_dataset(self):
-        """Import dataset from ZIP"""
+        """Import EmberEye annotations ZIP (restored functional flow)."""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Incident ZIP", "", "ZIP Files (*.zip)"
         )
-        if file_path:
-            QMessageBox.information(
-                self, "Import", 
-                f"Dataset import feature coming soon!\n\nSelected: {Path(file_path).name}"
+        if not file_path:
+            return
+
+        try:
+            from embereye.app.training_sync import import_annotations_zip
+            result = import_annotations_zip(file_path)
+            self.dataset_list.append(
+                f"[ZIP] Imported {result.get('media', 0)} media base(s), {result.get('extracted', 0)} files\n"
+                f"Destination: {result.get('dest', '')}\n"
             )
+            QMessageBox.information(
+                self,
+                "Import Complete",
+                f"Imported {result.get('media', 0)} media base(s), {result.get('extracted', 0)} files.\n\n"
+                "Next step: run QC Review in Training tab.",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Import ZIP", f"Failed to import ZIP: {e}")
+
+    def import_external_dataset(self):
+        """Import external datasets (Local/Kaggle/Roboflow) into current analytics domain."""
+        source_options = [
+            "Local Folder",
+            "Local ZIP",
+            "Kaggle (API)",
+            "Kaggle (Manual Folder/ZIP)",
+            "Roboflow (API)",
+            "Roboflow (Manual Folder/ZIP)",
+        ]
+        source_type, ok = QInputDialog.getItem(
+            self,
+            "Import External Dataset",
+            "Select source:",
+            source_options,
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        active_domain = self._load_active_analytics_category()
+
+        try:
+            source_path = None
+
+            if source_type == "Local Folder":
+                folder = QFileDialog.getExistingDirectory(self, "Select Dataset Folder")
+                if not folder:
+                    return
+                source_path = Path(folder)
+
+            elif source_type == "Local ZIP":
+                zip_path, _ = QFileDialog.getOpenFileName(self, "Select Dataset ZIP", "", "ZIP Files (*.zip)")
+                if not zip_path:
+                    return
+                source_path = Path(zip_path)
+
+            elif source_type == "Kaggle (API)":
+                dataset_id, ok_id = QInputDialog.getText(self, "Kaggle Dataset", "Enter Kaggle dataset id (owner/dataset):")
+                if not ok_id or not dataset_id.strip():
+                    return
+                source_path = download_kaggle(dataset_id.strip())
+
+            elif source_type == "Kaggle (Manual Folder/ZIP)":
+                path_str, _ = QFileDialog.getOpenFileName(self, "Select Kaggle ZIP", "", "ZIP Files (*.zip)")
+                if not path_str:
+                    path_str = QFileDialog.getExistingDirectory(self, "Select Kaggle Folder")
+                if not path_str:
+                    return
+                source_path = Path(path_str)
+
+            elif source_type == "Roboflow (API)":
+                api_key, ok_key = QInputDialog.getText(self, "Roboflow", "API key:")
+                if not ok_key or not api_key.strip():
+                    return
+                workspace, ok_ws = QInputDialog.getText(self, "Roboflow", "Workspace slug:")
+                if not ok_ws or not workspace.strip():
+                    return
+                project, ok_proj = QInputDialog.getText(self, "Roboflow", "Project slug:")
+                if not ok_proj or not project.strip():
+                    return
+                version, ok_ver = QInputDialog.getText(self, "Roboflow", "Version number:")
+                if not ok_ver or not version.strip().isdigit():
+                    return
+                source_path = download_roboflow(api_key.strip(), workspace.strip(), project.strip(), version.strip())
+
+            elif source_type == "Roboflow (Manual Folder/ZIP)":
+                path_str, _ = QFileDialog.getOpenFileName(self, "Select Roboflow ZIP", "", "ZIP Files (*.zip)")
+                if not path_str:
+                    path_str = QFileDialog.getExistingDirectory(self, "Select Roboflow Folder")
+                if not path_str:
+                    return
+                source_path = Path(path_str)
+
+            if source_path is None:
+                return
+
+            summary = import_external_dataset(
+                source_path=source_path,
+                active_domain=active_domain,
+                resolver=self._resolve_external_label,
+            )
+
+            self.dataset_list.append(
+                f"[EXTERNAL] {summary.dataset_id}\n"
+                f"Format: {summary.source_format}\n"
+                f"Domain: {summary.domain}\n"
+                f"Images: {summary.images}, Annotations: {summary.annotations}\n"
+                f"Created classes: {len(summary.created_classes)}\n"
+                f"Skipped classes: {len(summary.skipped_classes)}\n"
+                f"Domain storage: {summary.domain_storage}\n"
+                f"QC pending: {summary.qc_pending_storage}\n"
+            )
+
+            QMessageBox.information(
+                self,
+                "External Import Complete",
+                f"Imported dataset: {summary.dataset_id}\n"
+                f"Domain: {summary.domain}\n"
+                f"Images: {summary.images}\n"
+                f"Created classes: {len(summary.created_classes)}\n\n"
+                "Next step: use QC Review in Training tab.",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "External Import", f"Import failed: {e}")
 
 
 class SettingsTab(QWidget):
@@ -2734,6 +2926,7 @@ class SettingsTab(QWidget):
         super().__init__()
         self.classes_tree = None
         self._classes_dict = None
+        self.analytics_category_combo = None
         self.init_ui()
 
     def init_ui(self):
@@ -2763,6 +2956,21 @@ class SettingsTab(QWidget):
         models_dir = QLabel("./workspace_data/models")
         ws_layout.addRow("Models Directory:", models_dir)
 
+        self.analytics_category_combo = QComboBox()
+        self.analytics_category_combo.setMinimumWidth(140)
+        self.analytics_category_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        for name in ANALYTICS_CATEGORY_NAMES:
+            self.analytics_category_combo.addItem(str(name).lower())
+        if self.analytics_category_combo.view() is not None:
+            self.analytics_category_combo.view().setMinimumWidth(140)
+        self.analytics_category_combo.setCurrentText(self._load_active_analytics_category())
+        ws_layout.addRow("Active Analytics Category:", self.analytics_category_combo)
+
+        save_analytics_btn = QPushButton("Save Analytics Category")
+        save_analytics_btn.setToolTip("Updates stream_config.json active_analytics_category used by EmberEye Field + Studio")
+        save_analytics_btn.clicked.connect(self._save_active_analytics_category)
+        ws_layout.addRow("", save_analytics_btn)
+
         ws_group.setLayout(ws_layout)
         general_layout.addWidget(ws_group)
 
@@ -2776,7 +2984,7 @@ class SettingsTab(QWidget):
             "ForgeLab Module - Phoenix Cycle Training\n"
             "© EmberEye Team 2026"
         )
-        about_text.setAlignment(Qt.AlignCenter)
+        about_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         about_layout.addWidget(about_text)
         about_group.setLayout(about_layout)
         general_layout.addWidget(about_group)
@@ -2804,6 +3012,10 @@ class SettingsTab(QWidget):
         open_manager_icon.setFixedSize(32, 32)
         open_manager_icon.clicked.connect(self.show_master_class_config)
         refresh_layout.addWidget(open_manager_icon)
+        open_manager_btn = QPushButton("Open Class Manager")
+        open_manager_btn.setToolTip("Open the class editor to add, remove, or organize classes")
+        open_manager_btn.clicked.connect(self.show_master_class_config)
+        refresh_layout.addWidget(open_manager_btn)
         import_icon = QToolButton()
         import_icon.setText("⬇")
         import_icon.setToolTip("Import classes")
@@ -2826,12 +3038,16 @@ class SettingsTab(QWidget):
         refresh_btn.setFixedSize(32, 32)
         refresh_btn.clicked.connect(self._refresh_classes_tree)
         refresh_layout.addWidget(refresh_btn)
+        refresh_classes_btn = QPushButton("Refresh Class List")
+        refresh_classes_btn.setToolTip("Reload the class tree from the saved configuration")
+        refresh_classes_btn.clicked.connect(self._refresh_classes_tree)
+        refresh_layout.addWidget(refresh_classes_btn)
         classes_layout.addWidget(refresh_bar)
 
         self.classes_tree = QTreeWidget()
         self.classes_tree.setHeaderLabels(["Class", "Subclasses"])
         self.classes_tree.setColumnWidth(0, 260)
-        self.classes_tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.classes_tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         classes_layout.addWidget(self.classes_tree)
 
         settings_tabs.addTab(classes_tab, "Classes")
@@ -2867,6 +3083,39 @@ class SettingsTab(QWidget):
         self._refresh_classes_tree()
         self._refresh_models_list()
 
+    def _shared_stream_config_path(self) -> Path:
+        # embereye-studio/ -> workspace root -> stream_config.json
+        return Path(__file__).resolve().parent.parent / "stream_config.json"
+
+    def _load_active_analytics_category(self) -> str:
+        path = self._shared_stream_config_path()
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            raw = str(data.get("active_analytics_category", DEFAULT_ANALYTICS_CATEGORY) or DEFAULT_ANALYTICS_CATEGORY).strip().lower()
+        except Exception:
+            raw = DEFAULT_ANALYTICS_CATEGORY
+        return raw if raw in ANALYTICS_CATEGORY_NAMES else DEFAULT_ANALYTICS_CATEGORY
+
+    def _save_active_analytics_category(self):
+        if self.analytics_category_combo is None:
+            return
+        selected = str(self.analytics_category_combo.currentText() or DEFAULT_ANALYTICS_CATEGORY).strip().lower()
+        if selected not in ANALYTICS_CATEGORY_NAMES:
+            selected = DEFAULT_ANALYTICS_CATEGORY
+        path = self._shared_stream_config_path()
+        try:
+            data = {}
+            if path.exists():
+                with path.open("r", encoding="utf-8") as fh:
+                    data = json.load(fh) or {}
+            data["active_analytics_category"] = selected
+            with path.open("w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=4)
+            QMessageBox.information(self, "Saved", f"Active analytics category set to '{selected}'.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save analytics category: {e}")
+
     def show_master_class_config(self):
         """Open the master class configuration dialog and refresh classes on save."""
         try:
@@ -2874,7 +3123,7 @@ class SettingsTab(QWidget):
             from embereye.core.class_config import load_master_classes
 
             dlg = MasterClassConfigDialog(self)
-            if dlg.exec_() == QDialog.Accepted:
+            if dlg.exec() == QDialog.DialogCode.Accepted:
                 self._classes_dict = load_master_classes()
                 self._refresh_classes_tree()
                 QMessageBox.information(self, "Updated", "Classes updated successfully.")
@@ -2929,16 +3178,16 @@ class SettingsTab(QWidget):
             report = import_classes_v2(path, mode=mode, dry_run=True)
             conflicts = report.get('report', {}).get('conflicts', {})
             dlg = ConflictReviewDialog(self, class_conflicts=conflicts, ann_conflicts={})
-            if dlg.exec_() == QDialog.Accepted:
+            if dlg.exec() == QDialog.DialogCode.Accepted:
                 if mode == "override":
                     confirm = QMessageBox.warning(
                         self,
                         "Override Confirmation",
                         "Override will replace current class hierarchy. Continue?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
                     )
-                    if confirm != QMessageBox.Yes:
+                    if confirm != QMessageBox.StandardButton.Yes:
                         return
                 resolutions = dlg.get_resolutions()
                 applied = import_classes_v2(path, mode=mode, dry_run=False, resolutions=resolutions)
@@ -2964,7 +3213,7 @@ class SettingsTab(QWidget):
             full_path = f"{parent_path}:{class_name}"
         else:
             full_path = class_name
-        item.setData(0, Qt.UserRole, full_path)
+        item.setData(0, Qt.ItemDataRole.UserRole, full_path)
 
         children = self._classes_dict.get(class_name, []) if self._classes_dict else []
         if children:
@@ -3012,10 +3261,10 @@ class SettingsTab(QWidget):
                             self,
                             "File Exists",
                             f"Model '{dest_path.name}' already exists. Overwrite?",
-                            QMessageBox.Yes | QMessageBox.No,
-                            QMessageBox.No
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.No
                         )
-                        if reply != QMessageBox.Yes:
+                        if reply != QMessageBox.StandardButton.Yes:
                             return
 
                     with zipf.open(preferred_name, "r") as src, dest_path.open("wb") as dst:
@@ -3045,10 +3294,10 @@ class SettingsTab(QWidget):
                     self,
                     "File Exists",
                     f"Model '{model_name}' already exists. Overwrite?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
                 )
-                if reply != QMessageBox.Yes:
+                if reply != QMessageBox.StandardButton.Yes:
                     return
             
             shutil.copy2(file_path, dest_path)
@@ -3149,7 +3398,7 @@ class StudioMainWindow(QMainWindow):
         # Header with orange banner
         banner = QLabel("🧠 LABS EDITION - Training & Model Development Hub")
         banner.setStyleSheet("background-color: #FF9800; color: white; padding: 8px; font-weight: bold; font-size: 12px;")
-        banner.setAlignment(Qt.AlignCenter)
+        banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(banner)
 
         header_layout = QHBoxLayout()
@@ -3160,7 +3409,7 @@ class StudioMainWindow(QMainWindow):
         title.setFont(title_font)
 
         user_label = QLabel(f"User: {self.username}")
-        user_label.setAlignment(Qt.AlignRight)
+        user_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         user_label.setStyleSheet("color: #666; font-size: 11px;")
 
         header_layout.addWidget(title)
@@ -3332,10 +3581,10 @@ class StudioMainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    from PyQt5.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication
     import sys
     
     app = QApplication(sys.argv)
     window = StudioMainWindow("admin")
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

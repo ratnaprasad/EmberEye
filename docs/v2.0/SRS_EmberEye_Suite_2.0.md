@@ -201,6 +201,10 @@ The components communicate via file system (exported packages, license files, co
 | F3.4 | Emit signals when analytics are added/removed so UI can update cards. |
 | F3.5 | Provide "Import Analytics" dialog that lets user select any folder, finds all `.eapkg` files, validates them, and copies them to watched folder. Show progress and summary. |
 | F3.6 | Cards in UI display analytic name, version, license status (licensed/unlicensed). Enable/disable toggle only if licensed. |
+| F3.7 | Provide card display mode selection for banner cards: `Auto` (layout/runtime-managed) and `Manual` (operator-managed visibility). |
+| F3.8 | Persist per-card banner visibility settings in configuration and reload them on startup without requiring restart after runtime changes. |
+| F3.9 | Apply deterministic display precedence for banner cards: license/availability constraints first, manual visibility second, auto layout fallback last. |
+| F3.10 | In `Manual` mode, hidden cards remain hidden even if analytics are active; unlicensed analytics cannot be forced visible. |
 
 #### 3.2.4 Analytics Execution Engine
 
@@ -224,6 +228,11 @@ The components communicate via file system (exported packages, license files, co
 | F5.4 | **Settings Tab:** Options to change watched folder path, license folder path, scheduler thread pool size, and logging level. |
 | F5.5 | **Fallback JSON Support:** The workflow editor reads/writes `workflow.json`. If the file is manually edited, the app validates it on load; if invalid, shows error and falls back to last valid state. |
 | F5.6 | **Studio Export:** Add menu option "Export as Analytics Package" that packages current analytic (model, metadata, code) into `.eapkg` with a signed manifest (optional). |
+| F5.7 | **Banner Card Controls:** Provide Field UI controls for per-card on/off visibility and a mode selector (`Auto`/`Manual`) for banner display. |
+| F5.8 | **Multi-Analytics Banner Composition:** When multiple analytics are active, compose banner cards using deterministic priority/severity rules under constrained width. |
+| F5.9 | **Critical Card Pinning:** Safety-critical cards (alarm/emergency) must remain visible and non-evictable when overflow management is applied. |
+| F5.10 | **Overflow Summary Card:** If active cards exceed visible capacity, show a summary card (for example `+N active analytics`) with drill-down to full active list. |
+| F5.11 | **Conflicting Slot Resolution:** If multiple analytics target the same banner semantic slot, resolve using deterministic merge rules and expose the active source in UI details. |
 
 ---
 

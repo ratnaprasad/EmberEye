@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QWizardPage,    QDialog, QFormLayout, QLineEdit, QPushButton, QDateEdit, QMessageBox
+from PyQt6.QtWidgets import QWizardPage,    QDialog, QFormLayout, QLineEdit, QPushButton, QDateEdit, QMessageBox
 
 class UserCreationDialog(QDialog):
     def __init__(self, db):
@@ -10,7 +10,7 @@ class UserCreationDialog(QDialog):
         self.first_name = QLineEdit()
         self.last_name = QLineEdit()
         self.username = QLineEdit()
-        self.password = QLineEdit(echoMode=QLineEdit.Password)
+        self.password = QLineEdit(echoMode=QLineEdit.EchoMode.Password)
         self.dob = QDateEdit(calendarPopup=True)
         self.questions = [QLineEdit() for _ in range(3)]
         self.answers = [QLineEdit() for _ in range(3)]
@@ -69,8 +69,8 @@ class UserCreationPage(QWizardPage):
         self.first_name = QLineEdit()
         self.last_name = QLineEdit()
         self.username = QLineEdit()
-        self.password = QLineEdit(echoMode=QLineEdit.Password)
-        self.confirm_pass = QLineEdit(echoMode=QLineEdit.Password)
+        self.password = QLineEdit(echoMode=QLineEdit.EchoMode.Password)
+        self.confirm_pass = QLineEdit(echoMode=QLineEdit.EchoMode.Password)
         self.dob = QDateEdit(calendarPopup=True)
         
         # Security Questions

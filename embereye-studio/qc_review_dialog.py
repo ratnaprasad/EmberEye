@@ -3,13 +3,13 @@ Quality Control Review Dialog for EmberEye Training Data.
 Review and edit annotations before moving to training dataset.
 """
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QComboBox, QListWidget, QListWidgetItem, QMessageBox, QFrame, QSlider, QCheckBox, QApplication
 )
-from PyQt5.QtGui import QGuiApplication
-from PyQt5.QtCore import Qt, QRectF, QSize, QTimer
-from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QFont
+from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtCore import Qt, QRectF, QSize, QTimer
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
 import os
 import cv2
 import numpy as np
@@ -32,7 +32,7 @@ class QCReviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("QC Review - Annotation Quality Control")
         self.resize(1000, 700)
-        self.setWindowState(Qt.WindowMaximized)
+        self.setWindowState(Qt.WindowState.WindowMaximized)
         
         self.annotations_dir = Path(annotations_dir)
         self.image_dir = Path(image_dir) if image_dir else None
@@ -149,7 +149,7 @@ class QCReviewDialog(QDialog):
         top_layout.addWidget(prev_btn)
         
         # Slider to scrub through frames quickly
-        self.frame_slider = QSlider(Qt.Horizontal)
+        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setMinimum(1)
         self.frame_slider.setMaximum(max(1, len(self.annotation_files)))
         self.frame_slider.setValue(1)
@@ -170,21 +170,21 @@ class QCReviewDialog(QDialog):
         
         # Left: Image display
         self.image_frame = QFrame()
-        self.image_frame.setFrameStyle(QFrame.Box | QFrame.Sunken)
-        from PyQt5.QtWidgets import QSizePolicy
-        self.image_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.image_frame.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Sunken)
+        from PyQt6.QtWidgets import QSizePolicy
+        self.image_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         image_layout = QVBoxLayout(self.image_frame)
         image_layout.setContentsMargins(0, 0, 0, 0)
         
         self.image_label = _FixedImageLabel()
-        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background-color: #2b2b2b;")
         self.image_label.setScaledContents(False)
         self.image_label.setMinimumSize(1, 1)
         # Set maximum size to prevent label from expanding beyond screen
         self.image_label.setMaximumSize(1920, 1080)
-        from PyQt5.QtWidgets import QSizePolicy
-        self.image_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        from PyQt6.QtWidgets import QSizePolicy
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         image_layout.addWidget(self.image_label)
 
         main_layout.addWidget(self.image_frame, 4)
@@ -306,10 +306,10 @@ class QCReviewDialog(QDialog):
         display_image = self._draw_annotations(image.copy())
         
         # Convert to QPixmap
-        from PyQt5.QtGui import QImage
+        from PyQt6.QtGui import QImage
         height, width, channel = display_image.shape
         bytes_per_line = 3 * width
-        q_image = QImage(display_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
+        q_image = QImage(display_image.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
         q_pixmap = QPixmap.fromImage(q_image)
         
         # Store pixmap and apply scaling to current dialog size
@@ -392,10 +392,10 @@ class QCReviewDialog(QDialog):
         safe_height = max(1, target_size.height() - 10)
         target_size = QSize(safe_width, safe_height)
 
-        transform_mode = Qt.FastTransformation if fast_mode else Qt.SmoothTransformation
+        transform_mode = Qt.TransformationMode.FastTransformation if fast_mode else Qt.TransformationMode.SmoothTransformation
         scaled = self._last_pixmap.scaled(
             target_size,
-            Qt.KeepAspectRatio,
+            Qt.AspectRatioMode.KeepAspectRatio,
             transform_mode
         )
         self.image_label.setPixmap(scaled)
@@ -440,7 +440,7 @@ class QCReviewDialog(QDialog):
             self.load_current_frame()
 
     def _on_filter_toggled(self, state: int):
-        checked = state == Qt.Checked
+        checked = state == Qt.CheckState.Checked
         self.filter_base_enabled = checked
         if checked and self.base_combo.currentIndex() > 0:
             self._apply_base_filter(self.base_combo.currentText())
@@ -638,10 +638,10 @@ class QCReviewDialog(QDialog):
             self, 
             "Delete Frame",
             f"Delete this frame and its annotation file?\n\n{self.annotation_files[self.current_index].name}",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             ann_file = self.annotation_files[self.current_index]
             image_file = self._find_image_for_annotation(ann_file)
             

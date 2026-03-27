@@ -1,7 +1,7 @@
-from PyQt5.QtWidgets import (QWizard, QWizardPage, QLabel, QLineEdit, 
+from PyQt6.QtWidgets import (QWizard, QWizardPage, QLabel, QLineEdit, 
                             QVBoxLayout, QFormLayout, QDateEdit, 
                             QMessageBox, QCheckBox)
-from PyQt5.QtGui import (
+from PyQt6.QtGui import (
     QPixmap
 )
 from .license_dialog import LicenseKeyPage

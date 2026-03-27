@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QWizardPage,    QDialog, QFormLayout, QLineEdit, QPushButton, QDateEdit, QMessageBox
+from PyQt6.QtWidgets import QWizardPage,    QDialog, QFormLayout, QLineEdit, QPushButton, QDateEdit, QMessageBox
 
 class UserCreationDialog(QDialog):
     def __init__(self, db):

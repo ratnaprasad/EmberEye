@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 import shutil
 import sys
 import json
@@ -68,14 +68,14 @@ def _write_line(path: str, line: str):
 
 def log_raw_packet(raw: str, locationId: str = None, location_id: str = None):
     """Log raw TCP packet. Accepts both locationId and location_id for compatibility."""
-    ts = datetime.utcnow().isoformat() + 'Z'
+    ts = datetime.now(UTC).isoformat().replace('+00:00', 'Z')
     loc = locationId or location_id or ''
     line = f"{ts}\t{loc}\tRAW\t{raw}"
     _write_line(DEBUG_LOG, line)
 
 def log_error_packet(reason: str, raw: str, loc_id: str = None, location_id: str = None):
     """Log error packet. Accepts both loc_id and location_id for compatibility."""
-    ts = datetime.utcnow().isoformat() + 'Z'
+    ts = datetime.now(UTC).isoformat().replace('+00:00', 'Z')
     loc = loc_id or location_id or ''
     line = f"{ts}\t{loc}\tERROR\t{reason}\t{raw}"
     _write_line(ERROR_LOG, line)
@@ -85,7 +85,7 @@ def log_device_telemetry(event: str, payload: dict):
     """Append structured device telemetry to JSONL log with UTC timestamp."""
     try:
         record = {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
             'event': str(event),
             'payload': payload if isinstance(payload, dict) else {'value': payload},
         }
@@ -99,7 +99,7 @@ def log_device_audit(event: str, payload: dict):
     """Append device access audit events to JSONL log with UTC timestamp."""
     try:
         record = {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(UTC).isoformat().replace('+00:00', 'Z'),
             'event': str(event),
             'payload': payload if isinstance(payload, dict) else {'value': payload},
         }

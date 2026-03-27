@@ -2,10 +2,10 @@ import sys
 import cv2
 import numpy as np
 import random
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, 
                              QPushButton, QVBoxLayout, QWidget, QSpinBox)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QPoint
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen
 
 class VideoThread(QThread):
     change_pixmap = pyqtSignal(QImage)
@@ -276,7 +276,7 @@ class MainWindow(QMainWindow):
     def mousePressEvent(self, event):
         if self.drawing_roi:
             # Convert to video label coordinates
-            pos = event.pos()
+            pos = event.position().toPoint()
             local_pos = self.video_label.mapFrom(self, pos)
             
             if 0 <= local_pos.x() < 640 and 0 <= local_pos.y() < 480:
@@ -323,4 +323,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

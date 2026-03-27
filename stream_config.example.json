@@ -1,0 +1,48 @@
+{
+    "groups": [
+        "Default"
+    ],
+    "streams": [
+        {
+            "loc_id": "TEST",
+            "name": "NEW",
+            "url": "0",
+            "group": "Default"
+        }
+    ],
+    "tcp_port": 4888,
+    "operator_id": "s3micro",
+    "smoke_threshold_pct": 25.0,
+    "flame_threshold_pct": 39.0,
+    "temp_threshold": 30.0,
+    "gas_ppm_threshold": 395.0,
+    "vision_threshold": 0.4,
+    "vision_confidence_weight": 0.5,
+    "flame_active_value": 1,
+    "min_sources": 2,
+    "critical_temp_threshold": 60.0,
+    "anomaly_threshold": 0.4,
+    "anomaly_max_items": 200,
+    "anomaly_save_enabled": false,
+    "anomaly_save_dir": "",
+    "anomaly_retention_days": 7,
+    "heuristic_threshold": 0.2,
+    "force_yolo_every_n_frames": 10,
+    "yolo_conf_threshold": 0.05,
+    "possible_conf_threshold": 0.6,
+    "confirmed_conf_threshold": 0.8,
+    "rule_min_fusion_conf": 0.3,
+    "rule_min_yolo_conf": 0.6,
+    "detection_box_mode": "all",
+    "detection_box_classes": [],
+    "detection_selected_preset": "Custom",
+    "thermal_render_mode": "fixed_scale_inferno",
+    "thermal_emissivity": 0.95,
+    "thermal_auto_window": true,
+    "thermal_window_min": 20.0,
+    "thermal_window_max": 120.0,
+    "thermal_apply_scope": "all",
+    "thermal_target_pfds": "",
+    "thermal_target_room": "",
+    "detection_default_profile": {}
+}

@@ -6,13 +6,13 @@ Handles authentication and user login
 import sys
 import os
 from pathlib import Path
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
     QLabel, QMessageBox, QGroupBox, QFormLayout
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QPixmap, QFont, QIcon
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtGui import QPixmap, QFont, QIcon
+from PyQt6.QtCore import Qt
 import bcrypt
 
 
@@ -86,16 +86,16 @@ class StudioLoginWindow(QWidget):
         # Logo and title
         title = QLabel("🔥 EmberEye Studio")
         title.setObjectName("titleLabel")
-        title.setAlignment(Qt.AlignCenter)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         subtitle = QLabel("Training & Model Development Hub")
         subtitle.setObjectName("subtitleLabel")
-        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         # Add distinctive banner
         banner = QLabel("🧠 LABS EDITION - NOT FIELD APP")
         banner.setStyleSheet("background-color: #FF9800; color: white; padding: 8px; font-weight: bold; font-size: 11px;")
-        banner.setAlignment(Qt.AlignCenter)
+        banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         layout.addWidget(banner)
         layout.addWidget(title)
@@ -114,7 +114,7 @@ class StudioLoginWindow(QWidget):
 
         self.password_input = QLineEdit()
         self.password_input.setPlaceholderText("Enter password")
-        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.returnPressed.connect(self.authenticate)
 
         form_layout.addRow("Username:", self.username_input)
@@ -125,7 +125,7 @@ class StudioLoginWindow(QWidget):
 
         # Status label
         self.status_label = QLabel()
-        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setStyleSheet("color: #666; font-size: 11px;")
         layout.addWidget(self.status_label)
 
@@ -150,7 +150,7 @@ class StudioLoginWindow(QWidget):
         # Test credentials hint (remove in production)
         hint = QLabel("Demo: admin/password, ratna/ratna, s3micro/s3micro")
         hint.setStyleSheet("color: #999; font-size: 10px; text-align: center;")
-        hint.setAlignment(Qt.AlignCenter)
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(hint)
 
         layout.addStretch()
