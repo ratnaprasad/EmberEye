@@ -28,6 +28,12 @@
 **Status:** ✅ **ACHIEVED** — 23 March 2026  
 **Goal:** Upgrade the existing 1.x codebase to Python 3.11 and PyQt6, ensuring no regressions.
 
+### Closure Record (27 March 2026)
+- Phase-0 is formally closed.
+- Latest closure commit on `develop/2.x`: `5523f76` with message `phase-0 is completed`.
+- No remaining deliverable work is tracked under Phase-0.
+- Any residual packaging orchestration hardening is tracked as cross-platform build automation under Phase 4 (Testing & Automation), not Phase-0.
+
 ### Background
 The current codebase uses PyQt5 (5.15.11) with 316 import lines and 123 `exec_()` call sites. PyQt6 6.10.2 and PyQt6-WebEngine 6.10.0 are available for Python 3.11. See [PyQt5→PyQt6 Migration Notes](#appendix-a-pyqt5--pyqt6-migration-notes) for the full change inventory.
 

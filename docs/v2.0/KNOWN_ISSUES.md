@@ -2,8 +2,9 @@
 
 > Status as of 2026-03-20 · Branch: `develop/2.x`
 
-Issues below are tracked for resolution during **Phase 0** of the 2.0 roadmap.
-Where a workaround exists it is noted; otherwise the item is a blocking build concern.
+Phase-0 is now closed (27 March 2026).
+Open items below are carried into **Phase 4 (Testing & Automation)** as cross-platform build automation tasks.
+Where a workaround exists it is noted.
 
 ---
 
@@ -11,7 +12,7 @@ Where a workaround exists it is noted; otherwise the item is a blocking build co
 
 **Severity:** Build-blocking  
 **Component:** `embereye-field` / `build_field_onefile.py`  
-**Phase:** Phase 0 — Build infrastructure
+**Phase:** Phase 4 — Testing & Automation (build orchestration hardening)
 
 ### Description
 
@@ -44,7 +45,7 @@ Skip `build_suite_2x.py` and build each app manually until specs are added.
 
 **Severity:** Build-blocking on macOS / Linux  
 **Component:** `scripts/build_suite_2x.py`  
-**Phase:** Phase 0 — Build infrastructure
+**Phase:** Phase 4 — Testing & Automation (cross-platform CI build parity)
 
 ### Description
 
@@ -73,4 +74,4 @@ On macOS, build each app individually using `pyinstaller <spec>` directly.
 
 ## Resolved Issues
 
-_None yet — this file was created on 2026-03-20._
+- Phase-0 closure recorded on 2026-03-27; remaining entries are no longer Phase-0 blockers.
