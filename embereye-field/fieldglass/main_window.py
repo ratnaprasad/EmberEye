@@ -59,6 +59,7 @@ from embereye_base.core.analytics import (
     ANALYTICS_CATEGORY_NAMES,
     DEFAULT_ANALYTICS_CATEGORY,
     get_model_hint,
+    get_fusion_cards,
 )
 from incidents import (
     ThermalROIExtractor,
@@ -440,6 +441,103 @@ class BEMainWindow(QMainWindow):
             return category
         return DEFAULT_ANALYTICS_CATEGORY
 
+    def _normalize_enabled_analytics_categories(self, value):
+        """Normalize configured analytics categories to a non-empty valid list."""
+        categories = []
+        if isinstance(value, list):
+            categories = [str(item).strip().lower() for item in value]
+        elif isinstance(value, str):
+            categories = [part.strip().lower() for part in value.split(',') if part.strip()]
+
+        valid = []
+        for category in categories:
+            if category in ANALYTICS_CATEGORY_NAMES and category not in valid:
+                valid.append(category)
+
+        if not valid:
+            active = self._normalize_analytics_category(
+                getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)
+            )
+            valid = [active]
+        return valid
+
+    def _default_fusion_card_selection(self):
+        return {
+            category: list(get_fusion_cards(category))
+            for category in ANALYTICS_CATEGORY_NAMES
+        }
+
+    def _normalize_fusion_card_selection(self, value):
+        """Normalize manual fusion card selection map from config."""
+        normalized = self._default_fusion_card_selection()
+        if not isinstance(value, dict):
+            return normalized
+
+        for category in ANALYTICS_CATEGORY_NAMES:
+            raw = value.get(category)
+            allowed = list(get_fusion_cards(category))
+            if isinstance(raw, list):
+                filtered = []
+                for card_key in raw:
+                    key = str(card_key).strip().lower()
+                    if key in allowed and key not in filtered:
+                        filtered.append(key)
+                if filtered:
+                    normalized[category] = filtered
+        return normalized
+
+    def _load_analytics_banner_preferences(self):
+        self.enabled_analytics_categories = self._normalize_enabled_analytics_categories(
+            self.config.get('enabled_analytics_categories', [])
+        )
+        self.fusion_banner_enabled = bool(self.config.get('fusion_banner_enabled', True))
+        mode = str(self.config.get('fusion_banner_mode', 'auto') or 'auto').strip().lower()
+        self.fusion_banner_mode = 'manual' if mode == 'manual' else 'auto'
+        self.fusion_banner_manual_cards = self._normalize_fusion_card_selection(
+            self.config.get('fusion_banner_manual_cards', {})
+        )
+
+    def _persist_analytics_banner_preferences(self):
+        """Persist analytics/banner selection and keep runtime category valid."""
+        selected = self._normalize_enabled_analytics_categories(
+            getattr(self, 'enabled_analytics_categories', [])
+        )
+        self.enabled_analytics_categories = selected
+
+        active = self._normalize_analytics_category(
+            getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)
+        )
+        if active not in selected:
+            active = selected[0]
+            self.active_analytics_category = active
+
+        self.config['enabled_analytics_categories'] = list(selected)
+        self.config['fusion_banner_enabled'] = bool(getattr(self, 'fusion_banner_enabled', True))
+        self.config['fusion_banner_mode'] = str(getattr(self, 'fusion_banner_mode', 'auto'))
+        self.config['fusion_banner_manual_cards'] = self._normalize_fusion_card_selection(
+            getattr(self, 'fusion_banner_manual_cards', {})
+        )
+        self.config['active_analytics_category'] = active
+        StreamConfig.save_config(self.config)
+
+    def _apply_banner_preferences_to_widgets(self):
+        """Push banner preferences into existing tile fusion payloads for immediate redraw."""
+        for widget in self.get_video_widgets():
+            try:
+                payload = dict(widget.fusion_data or {})
+                if payload:
+                    payload['enabled_analytics_categories'] = list(self.enabled_analytics_categories)
+                    payload['fusion_banner_enabled'] = bool(self.fusion_banner_enabled)
+                    payload['fusion_banner_mode'] = str(self.fusion_banner_mode)
+                    payload['fusion_banner_manual_cards'] = dict(self.fusion_banner_manual_cards)
+                    payload['analytics_category'] = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+                    payload['fusion_display_category'] = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+                    widget.set_fusion_data(payload)
+                else:
+                    widget.update()
+            except Exception:
+                continue
+
     def _resolve_model_path_for_category(self, category):
         """Resolve a model path for the active analytics category.
 
@@ -578,6 +676,19 @@ class BEMainWindow(QMainWindow):
             'alarm_reason': fusion_result.metadata.get('reason'),
             'confidence': float(fusion_result.confidence),
             'analytics_category': str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)),
+            'fusion_display_category': str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)),
+            'enabled_analytics_categories': list(
+                getattr(
+                    self,
+                    'enabled_analytics_categories',
+                    [getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)],
+                )
+            ),
+            'fusion_banner_enabled': bool(getattr(self, 'fusion_banner_enabled', True)),
+            'fusion_banner_mode': str(getattr(self, 'fusion_banner_mode', 'auto')),
+            'fusion_banner_manual_cards': dict(
+                getattr(self, 'fusion_banner_manual_cards', self._default_fusion_card_selection())
+            ),
             'sources': source_names,
             'hot_cells': hot_cells,
             'thermal_max': thermal_max,
@@ -1617,6 +1728,7 @@ class BEMainWindow(QMainWindow):
         self._live_pfds_deferred_filter = None
         self.config = StreamConfig.load_config()
         self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+        self._load_analytics_banner_preferences()
         self.video_widgets = {}  # loc_id -> VideoWidget
         self.tcp_server = tcp_server  # Reuse existing or create new
         self.tcp_sensor_server = tcp_sensor_server or tcp_server
@@ -4694,6 +4806,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self._add_settings_menu_section(settings_menu, "STREAM MANAGEMENT")
         settings_menu.addAction("Configure Streams", self.configure_streams)
+        settings_menu.addAction("Analytics & Banner Cards", self.show_analytics_banner_settings)
         settings_menu.addAction("Reset Streams", self.reset_streams)
         settings_menu.addAction("Observability", self.show_observability_settings)
         settings_menu.addSeparator()
@@ -4977,6 +5090,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self._style_tactical_settings_menu(menu)
         menu.addAction("Profile", self.show_profile)
         menu.addAction("Configure Streams", self.configure_streams)
+        menu.addAction("Analytics & Banner Cards", self.show_analytics_banner_settings)
         menu.addAction("Reset Streams", self.reset_streams)
         menu.addAction("Observability...", self.show_observability_settings)
         # Add backup/restore actions
@@ -5685,6 +5799,165 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     self._restart_application()
                     return
             QMessageBox.information(self, "Settings Applied", f"Sensor configuration updated for {target_text} (no restart required).")
+
+    def show_analytics_banner_settings(self):
+        """Configure analytics selection and fusion banner card behavior."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Analytics & Fusion Banner")
+        dialog.setMinimumSize(720, 560)
+        self._style_tactical_dialog(dialog)
+
+        root_layout = QVBoxLayout(dialog)
+        intro = QLabel(
+            "Select analytics categories and control fusion banner rendering. "
+            "Banner cards are rendered from the active analytics context of each stream/frame."
+        )
+        intro.setWordWrap(True)
+        root_layout.addWidget(intro)
+
+        category_group = QGroupBox("Analytics Categories")
+        category_layout = QVBoxLayout(category_group)
+
+        category_list = QListWidget()
+        category_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        category_items = {}
+        for category in ANALYTICS_CATEGORY_NAMES:
+            item = QListWidgetItem(category.upper())
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            checked = category in getattr(self, 'enabled_analytics_categories', [self.active_analytics_category])
+            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, category)
+            category_list.addItem(item)
+            category_items[category] = item
+        category_layout.addWidget(category_list)
+
+        primary_row = QHBoxLayout()
+        primary_row.addWidget(QLabel("Primary runtime analytics"))
+        primary_combo = QComboBox()
+        for category in ANALYTICS_CATEGORY_NAMES:
+            primary_combo.addItem(category.upper(), category)
+        primary_idx = primary_combo.findData(
+            self._normalize_analytics_category(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+        )
+        if primary_idx >= 0:
+            primary_combo.setCurrentIndex(primary_idx)
+        primary_row.addWidget(primary_combo, 1)
+        category_layout.addLayout(primary_row)
+        root_layout.addWidget(category_group)
+
+        banner_group = QGroupBox("Fusion Banner")
+        banner_layout = QVBoxLayout(banner_group)
+        banner_enabled_check = QCheckBox("Display fusion banner cards")
+        banner_enabled_check.setChecked(bool(getattr(self, 'fusion_banner_enabled', True)))
+        banner_layout.addWidget(banner_enabled_check)
+
+        auto_mode_check = QCheckBox("Auto mode (layout chooses cards)")
+        auto_mode_check.setChecked(str(getattr(self, 'fusion_banner_mode', 'auto')) == 'auto')
+        banner_layout.addWidget(auto_mode_check)
+
+        manual_cards = self._normalize_fusion_card_selection(
+            getattr(self, 'fusion_banner_manual_cards', self._default_fusion_card_selection())
+        )
+
+        card_lists_row = QHBoxLayout()
+        fire_box = QGroupBox("Fire Cards")
+        fire_layout = QVBoxLayout(fire_box)
+        fire_cards_list = QListWidget()
+        fire_cards_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        fire_layout.addWidget(fire_cards_list)
+
+        ppe_box = QGroupBox("PPE Cards")
+        ppe_layout = QVBoxLayout(ppe_box)
+        ppe_cards_list = QListWidget()
+        ppe_cards_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        ppe_layout.addWidget(ppe_cards_list)
+
+        card_lists_row.addWidget(fire_box, 1)
+        card_lists_row.addWidget(ppe_box, 1)
+        banner_layout.addLayout(card_lists_row)
+        root_layout.addWidget(banner_group, 1)
+
+        def _populate_cards(list_widget, category):
+            list_widget.clear()
+            selected = set(manual_cards.get(category, []))
+            for key in get_fusion_cards(category):
+                item = QListWidgetItem(key)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if key in selected else Qt.CheckState.Unchecked)
+                item.setData(Qt.ItemDataRole.UserRole, key)
+                list_widget.addItem(item)
+
+        def _selected_categories():
+            selected = []
+            for category in ANALYTICS_CATEGORY_NAMES:
+                item = category_items.get(category)
+                if item and item.checkState() == Qt.CheckState.Checked:
+                    selected.append(category)
+            return selected
+
+        def _selected_card_keys(list_widget):
+            keys = []
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                if item and item.checkState() == Qt.CheckState.Checked:
+                    key = str(item.data(Qt.ItemDataRole.UserRole) or '').strip().lower()
+                    if key:
+                        keys.append(key)
+            return keys
+
+        def _refresh_enabled_state():
+            selected = set(_selected_categories())
+            manual_mode = bool(banner_enabled_check.isChecked() and (not auto_mode_check.isChecked()))
+            fire_box.setEnabled(manual_mode and ('fire' in selected))
+            ppe_box.setEnabled(manual_mode and ('ppe' in selected))
+
+            active_primary = str(primary_combo.currentData() or '').strip().lower()
+            if selected and active_primary not in selected:
+                primary_combo.setCurrentIndex(primary_combo.findData(next(iter(selected))))
+
+        _populate_cards(fire_cards_list, 'fire')
+        _populate_cards(ppe_cards_list, 'ppe')
+        _refresh_enabled_state()
+
+        category_list.itemChanged.connect(lambda _item: _refresh_enabled_state())
+        banner_enabled_check.toggled.connect(lambda _checked: _refresh_enabled_state())
+        auto_mode_check.toggled.connect(lambda _checked: _refresh_enabled_state())
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+
+        def _save():
+            selected = _selected_categories()
+            if not selected:
+                QMessageBox.warning(dialog, "Analytics Required", "Select at least one analytics category.")
+                return
+
+            self.enabled_analytics_categories = selected
+            self.fusion_banner_enabled = bool(banner_enabled_check.isChecked())
+            self.fusion_banner_mode = 'auto' if auto_mode_check.isChecked() else 'manual'
+
+            updated_manual = self._normalize_fusion_card_selection(self.fusion_banner_manual_cards)
+            updated_manual['fire'] = _selected_card_keys(fire_cards_list) or ['global']
+            updated_manual['ppe'] = _selected_card_keys(ppe_cards_list) or ['global']
+            self.fusion_banner_manual_cards = updated_manual
+
+            new_primary = self._normalize_analytics_category(primary_combo.currentData())
+            if new_primary not in selected:
+                new_primary = selected[0]
+            self.active_analytics_category = new_primary
+
+            self._persist_analytics_banner_preferences()
+            self._reload_rule_engine_for_active_category()
+            self._sync_shared_configs()
+            self._apply_banner_preferences_to_widgets()
+            self.statusBar().showMessage("Analytics and fusion banner settings updated", 4000)
+            dialog.accept()
+
+        buttons.accepted.connect(_save)
+        buttons.rejected.connect(dialog.reject)
+        root_layout.addWidget(buttons)
+        dialog.exec()
 
     def _restart_application(self):
         """Restart current application process."""
@@ -8960,6 +9233,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 # Reload configuration
                 self.config = StreamConfig.load_config()
                 self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+                self._load_analytics_banner_preferences()
                 self._reload_rule_engine_for_active_category()
                 self.group_combo.clear()
                 self.group_combo.addItems(self.config["groups"])
@@ -11022,6 +11296,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.config = dialog.get_config()
             self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+            self._load_analytics_banner_preferences()
             self._reload_rule_engine_for_active_category()
             StreamConfig.save_config(self.config)
             self._set_grafana_tab_visibility(bool(self.config.get('enable_grafana', False)))
@@ -11071,6 +11346,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if StreamConfig.save_config(default_config):
             self.config = default_config
             self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+            self._load_analytics_banner_preferences()
             self._reload_rule_engine_for_active_category()
             self.group_combo.clear()
             self.group_combo.addItems(self.config["groups"])

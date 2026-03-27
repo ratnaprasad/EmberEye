@@ -1,15 +1,75 @@
 from math import sin, isfinite
+import os
 from time import time as now_time
 
 from PyQt6.QtCore import QRect, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainterPath, QPen, QRadialGradient
 
 
+def _normalize_category(value):
+    category = str(value or "fire").strip().lower()
+    return category if category in {"fire", "ppe"} else "fire"
+
+
+def _resolve_display_category(widget, fusion):
+    try:
+        window = widget.window() if widget is not None else None
+        if window is not None and hasattr(window, "active_analytics_category"):
+            return _normalize_category(getattr(window, "active_analytics_category", "fire"))
+    except Exception:
+        pass
+
+    env_category = os.environ.get("EMBEREYE_ANALYTICS_CATEGORY")
+    if env_category:
+        return _normalize_category(env_category)
+
+    return _normalize_category(
+        fusion.get("fusion_display_category", fusion.get("analytics_category", "fire"))
+    )
+
+
+def _is_banner_enabled_for_category(fusion, category):
+    if not bool(fusion.get("fusion_banner_enabled", True)):
+        return False
+
+    enabled_categories = fusion.get("enabled_analytics_categories")
+    if isinstance(enabled_categories, (list, tuple, set)):
+        allowed = {str(item).strip().lower() for item in enabled_categories}
+        if allowed and str(category).strip().lower() not in allowed:
+            return False
+    return True
+
+
+def _apply_manual_card_selection(fusion, category, computed_keys, allowed_keys):
+    mode = str(fusion.get("fusion_banner_mode", "auto") or "auto").strip().lower()
+    if mode != "manual":
+        return list(computed_keys)
+
+    cards_map = fusion.get("fusion_banner_manual_cards")
+    if not isinstance(cards_map, dict):
+        return list(computed_keys)
+
+    raw_selected = cards_map.get(str(category).strip().lower())
+    if not isinstance(raw_selected, list):
+        return list(computed_keys)
+
+    selected = []
+    allowed = set(allowed_keys)
+    for item in raw_selected:
+        key = str(item).strip().lower()
+        if key in allowed and key not in selected:
+            selected.append(key)
+
+    return selected or list(computed_keys)
+
+
 def draw_fusion_overlay(widget, painter, width, height):
     """Render the fusion banner using the VideoWidget instance as context."""
     try:
         fusion = widget.fusion_data if isinstance(widget.fusion_data, dict) else {}
-        category = str(fusion.get("analytics_category", "fire") or "fire").lower()
+        category = _resolve_display_category(widget, fusion)
+        if not _is_banner_enabled_for_category(fusion, category):
+            return
         if category == "ppe":
             _draw_ppe_overlay(widget, painter, width, height, fusion)
         else:
@@ -215,6 +275,15 @@ def _draw_ppe_overlay(widget, painter, width, height, fusion):
             if need <= int(inner.width() / min_stretch):
                 visible_keys = candidate
                 break
+
+        visible_keys = _apply_manual_card_selection(
+            fusion,
+            "ppe",
+            visible_keys,
+            [key for key, _icon, _title in cards],
+        )
+        if not visible_keys:
+            return
 
         card_by_key = {k: (k, icon, title) for k, icon, title in cards}
         visible_cards = [card_by_key[k] for k in visible_keys]
@@ -596,6 +665,15 @@ def _draw_fire_overlay(widget, painter, width, height, fusion):
             if need <= int(inner.width() / min_stretch):
                 visible_keys = candidate
                 break
+
+        visible_keys = _apply_manual_card_selection(
+            fusion,
+            "fire",
+            visible_keys,
+            [key for key, _icon, _title in cards],
+        )
+        if not visible_keys:
+            return
 
         visible_cards = [card_by_key[k] for k in visible_keys]
         total_pref = sum(preferred_w[k] for k in visible_keys) + (card_gap * (len(visible_keys) - 1))
