@@ -1,38 +1,18 @@
-# EmberEye PyQt6 Migration & PPE Analytics Validation Suite
-**Date**: March 23, 2026 | **Duration**: 35 seconds | **Status**: ✅ Comprehensive Validation Complete
+# EmberEye PyQt6 Validation Report (Stub)
 
----
+This in-repository-root report has been **deprecated** in order to avoid
+maintaining multiple overlapping PyQt6 validation documents.
 
-## TASK 1: Full PyQt6 Enum Audit (Preventive)
-**Status**: ✅ **PASS** - Preventive audit completed; 8 legacy instances identified
+The **canonical PyQt6 validation reports** now live under the `docs/` folder:
 
-### Summary of Findings
-- **Overall**: 95%+ migration already complete
-- **Total Legacy Issues Found**: 8 instances across active source files
-- **Issue Type**: `QImage.Format_RGB888` (deprecated format enum)
-- **New Issues**: 0 - Only pre-existing isolated patterns
-- **Qt.* Enums**: ✅ 100% correct (all properly namespaced)
-- **QMessageBox/QDialog/QFrame Enums**: ✅ 100% correct
+- `docs/PYQT6_FINAL_VALIDATION_COMPLETE.md` — authoritative, up‑to‑date
+  PyQt6 validation status (including PPE analytics).
+- `docs/PYQT6_MIGRATION_VALIDATION_COMPLETE.md` — historical details of the
+  original PyQt6 migration validation.
 
-### Critical Issues Requiring Fix
-
-| File | Line | Current | Target | Impact |
-|------|------|---------|--------|--------|
-| `embereye-studio/annotation_tab.py` | 107 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Frame annotation display |
-| `embereye-studio/studio_main_window.py` | 2143 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Frame loading |
-| `embereye-studio/studio_main_window.py` | 2289 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Frame processing |
-| `embereye-studio/studio_main_window.py` | 2436 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Frame conversion |
-| `embereye-studio/qc_review_dialog.py` | 312 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | QC display |
-| `embereye_base/app/annotation_tool.py` | 58 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Annotation rendering |
-| `embereye_base/app/qc_review_dialog.py` | 261 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | QC frame display |
-| `embereye_base/app/calibrationcapture.py` | 52 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Calibration capture |
-| `embereye/app/annotation_tool.py` | 58 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Annotation rendering |
-| `tests/field/run_ui_toggle_test.py` | 72 | `QImage.Format_RGB888` | `QImage.Format.Format_RGB888` | Test harness |
-
-### What's Already Correct ✅
-- ✅ `Qt.AspectRatioMode.KeepAspectRatio` — correctly namespaced
-- ✅ `Qt.TransformationMode.SmoothTransformation` — correctly namespaced
-- ✅ `Qt.AlignmentFlag.*` — all variants correct
+Please refer to those files for the complete validation suite, findings,
+and remediation history. This file is intentionally kept as a lightweight
+pointer for discoverability only and will not be updated with new results.
 - ✅ `Qt.ScrollBarPolicy.*` — correct
 - ✅ `Qt.WidgetAttribute.*` — correct
 - ✅ `Qt.ConnectionType.QueuedConnection` — correct
