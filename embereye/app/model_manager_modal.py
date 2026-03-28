@@ -14,13 +14,13 @@ import os
 import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QMessageBox, QFileDialog, QComboBox, QSplitter,
     QWidget, QTabWidget, QListWidget, QListWidgetItem, QStatusBar
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QIcon, QFont, QColor
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtGui import QIcon, QFont, QColor
 import logging
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ class ModelManagerModal(QDialog):
         # ========== HEADER ==========
         header_layout = QHBoxLayout()
         header_label = QLabel("📦 Trained Models Manager")
-        header_label.setFont(QFont("Arial", 12, QFont.Bold))
+        header_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         header_layout.addWidget(header_label)
         header_layout.addStretch()
         
@@ -95,7 +95,7 @@ class ModelManagerModal(QDialog):
         layout.addLayout(header_layout)
         
         # ========== MAIN CONTENT (SPLITTER) ==========
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # Left panel: Available models list
         left_panel = self.create_models_list_panel()
@@ -143,7 +143,7 @@ class ModelManagerModal(QDialog):
         
         # Title
         title = QLabel("Available Models")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
+        title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         layout.addWidget(title)
         
         # Models table
@@ -165,20 +165,20 @@ class ModelManagerModal(QDialog):
         
         # Title
         title = QLabel("Model Details")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
+        title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         layout.addWidget(title)
         
         # Details display
         self.details_text = QLabel("Select a model to view details")
         self.details_text.setWordWrap(True)
-        self.details_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.details_text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.details_text)
         
         layout.addSpacing(20)
         
         # Active model info
         active_label = QLabel("Active Model for Video Analysis")
-        active_label.setFont(QFont("Arial", 10, QFont.Bold))
+        active_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         layout.addWidget(active_label)
         
         self.active_model_label = QLabel("None (Using default)")
@@ -189,7 +189,7 @@ class ModelManagerModal(QDialog):
         
         # Actions
         actions_label = QLabel("Actions")
-        actions_label.setFont(QFont("Arial", 10, QFont.Bold))
+        actions_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         layout.addWidget(actions_label)
         
         activate_btn = QPushButton("✓ Activate for Video Analysis")
@@ -398,10 +398,10 @@ class ModelManagerModal(QDialog):
             self,
             "Confirm Delete",
             f"Delete model: {model.name}?\n\nThis action cannot be undone.",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             try:
                 model.path.unlink()
                 self.update_status(f"Deleted: {model.name}")
@@ -412,7 +412,7 @@ class ModelManagerModal(QDialog):
     
     def import_model_package(self):
         """Import a model package."""
-        from model_export_deploy import ModelImporter
+        from ...model_export_deploy import ModelImporter
         
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -467,7 +467,7 @@ class ModelManagerModal(QDialog):
             return
         
         try:
-            from model_export_deploy import ModelDeployer
+            from ...model_export_deploy import ModelDeployer
             
             deployer = ModelDeployer(str(self.models_dir / "exports"))
             success, package = deployer.create_deployment_package(version, "auto", "all")
@@ -499,7 +499,7 @@ class ModelManagerIntegration:
         Usage in main_window.py:
             ModelManagerIntegration.add_to_settings_menu(self.settings_menu)
         """
-        settings_menu.addAction("🤖 Model Manager...", lambda: ModelManagerModal().exec_())
+        settings_menu.addAction("🤖 Model Manager...", lambda: ModelManagerModal().exec())
     
     @staticmethod
     def get_active_model_path() -> Optional[Path]:
@@ -520,9 +520,9 @@ class ModelManagerIntegration:
 
 if __name__ == "__main__":
     import sys
-    from PyQt5.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication
     
     app = QApplication(sys.argv)
     manager = ModelManagerModal()
     manager.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

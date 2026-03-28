@@ -4,7 +4,7 @@ import hmac
 import hashlib
 import datetime
 import uuid
-from vendorepojo import Vendor
+from ..vendorepojo import Vendor
  
 
 class LicenseKeyGenerator:

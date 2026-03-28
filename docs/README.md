@@ -11,6 +11,7 @@
 - [Overview](#overview)
 - [Key Features](#key-features)
 - [Architecture](#architecture)
+- [Release Notes](#release-notes)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
@@ -142,6 +143,13 @@ Ember Eye is a sophisticated command center application for real-time thermal vi
 | **WebSocket Client** | Real-time updates | websockets |
 | **Metrics Server** | Prometheus endpoint | HTTP server |
 
+## 🏷 Release Notes
+
+- Product versioning policy: [VERSIONING_POLICY.md](d:/EE/EmberEye/docs/VERSIONING_POLICY.md)
+- Branch and version map: [BRANCH_VERSION_MAP.md](d:/EE/EmberEye/docs/BRANCH_VERSION_MAP.md)
+- Release notes index: [releases/README.md](d:/EE/EmberEye/docs/releases/README.md)
+- Current stable release: [releases/RELEASE_NOTES_2026-03-19.md](d:/EE/EmberEye/docs/releases/RELEASE_NOTES_2026-03-19.md)
+
 ## 📦 Installation
 
 ### Prerequisites
@@ -220,6 +228,9 @@ curl http://localhost:9090/metrics
 ## ⚙️ Configuration
 
 ### Stream Configuration (`stream_config.json`)
+
+`stream_config.example.json` is the committed template. Create or keep your local
+`stream_config.json` for machine-specific values; it is intentionally gitignored.
 
 ```json
 {

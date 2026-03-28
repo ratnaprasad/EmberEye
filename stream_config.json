@@ -1,17 +1,7 @@
 {
-    "groups": [
-        "Default"
-    ],
-    "streams": [
-        {
-            "loc_id": "TEST",
-            "name": "NEW",
-            "url": "rtsp://admin:Admin.12345@192.168.1.15:554/video/live?channel=1&subtype=0",
-            "group": "Default"
-        }
-    ],
     "tcp_port": 5080,
     "operator_id": "s3micro",
+    "active_analytics_category": "ppe",
     "smoke_threshold_pct": 25.0,
     "flame_threshold_pct": 39.0,
     "temp_threshold": 30.0,
@@ -44,5 +34,23 @@
     "thermal_apply_scope": "all",
     "thermal_target_pfds": "",
     "thermal_target_room": "",
-    "detection_default_profile": {}
+    "detection_default_profile": {},
+    "groups": [
+        "Default",
+        "FGCampus-Hill"
+    ],
+    "streams": [
+        {
+            "loc_id": "FrontDesk",
+            "name": "Cam001",
+            "url": "0",
+            "group": "FGCampus-Hill"
+        },
+        {
+            "loc_id": "SecurityRoom",
+            "name": "Cam002",
+            "url": "0",
+            "group": "FGCampus-Hill"
+        }
+    ]
 }

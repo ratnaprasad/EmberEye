@@ -32,7 +32,7 @@ def test_fusion_orchestrator():
         print("\n=== Testing Fusion Orchestrator ===")
 
         try:
-                from embereye.core.fusion import FusionOrchestrator
+                from embereye_base.core.fusion import FusionOrchestrator
 
                 fusion = FusionOrchestrator({
                         'temp_threshold': 40.0,
@@ -206,7 +206,7 @@ def test_vision_detector():
     print("\n=== Testing Vision Detector ===")
     
     try:
-        from vision_detector import VisionDetector
+        from embereye_base.core.vision_detector import VisionDetector
         import cv2
         
         detector = VisionDetector()

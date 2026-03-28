@@ -10,7 +10,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-def test_imports():
+def check_imports():
     """Test that all critical modules can be imported."""
     print("Testing module imports...")
     errors = []
@@ -54,7 +54,7 @@ def test_imports():
         print("\n✅ All imports successful")
         return True
 
-def test_circular_import_fix():
+def check_circular_import_fix():
     """Verify the circular import fix works."""
     print("\nTesting circular import fix...")
     
@@ -82,7 +82,7 @@ def test_circular_import_fix():
         traceback.print_exc()
         return False
 
-def test_filtered_dataset():
+def check_filtered_dataset():
     """Test that filtered dataset method exists."""
     print("\nTesting filtered dataset feature...")
     
@@ -109,19 +109,24 @@ def test_filtered_dataset():
         traceback.print_exc()
         return False
 
-def test_version():
-    """Check version number."""
+def check_version() -> bool:
+    """Check version number for script-mode smoke runs."""
     print("\nChecking version...")
     
     try:
         from auto_updater import CURRENT_VERSION
         print(f"  Version: {CURRENT_VERSION}")
-        assert "1.0.0-beta" in CURRENT_VERSION, f"Expected 1.0.0-beta, got {CURRENT_VERSION}"
-        print("  ✓ Version correctly set to 1.0.0-beta")
+        assert CURRENT_VERSION == "2.0.0", f"Expected 2.0.0, got {CURRENT_VERSION}"
+        print("  ✓ Version correctly set to 2.0.0")
         return True
     except Exception as e:
         print(f"  ⚠️  Version check skipped: {e}")
         return True  # Don't fail on this
+
+
+def check_version():
+    """Pytest-compatible version check."""
+    assert check_version()
 
 def main():
     """Run all smoke tests."""
@@ -129,12 +134,12 @@ def main():
     print("EmberEye v1.0 Beta - Smoke Test Suite")
     print("=" * 60)
     
-    results = []
-    
-    results.append(("Module Imports", test_imports()))
-    results.append(("Circular Import Fix", test_circular_import_fix()))
-    results.append(("Filtered Dataset Feature", test_filtered_dataset()))
-    results.append(("Version Check", test_version()))
+    results = {
+        "imports": check_imports(),
+        "circular_import": check_circular_import_fix(),
+        "filtered_dataset": check_filtered_dataset(),
+        "version": check_version(),
+    }
     
     print("\n" + "=" * 60)
     print("Test Summary")

@@ -3,16 +3,16 @@ Master Class & Threat Rules Dialog for EmberEye.
 Manage taxonomy (classes/subclasses), threat rules, and settings in one place.
 """
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QPushButton,
     QLabel, QMessageBox, QInputDialog, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QFormLayout, QComboBox, QLineEdit, QDialogButtonBox, QWidget, QTextEdit
 )
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 import os
-from resource_helper import get_data_path
+from .resource_helper import get_data_path
 from embereye.core.class_config import load_master_classes, save_master_classes
-from threat_rules import load_threat_rules, save_threat_rules, DEFAULT_SETTINGS, SEVERITIES, DEFAULT_THREAT_RULES, DEFAULT_EXAMPLES
+from .threat_rules import load_threat_rules, save_threat_rules, DEFAULT_SETTINGS, SEVERITIES, DEFAULT_THREAT_RULES, DEFAULT_EXAMPLES
 
 class MasterClassConfigDialog(QDialog):
     """Dialog for configuring taxonomy, rules, and settings."""
@@ -195,7 +195,7 @@ class MasterClassConfigDialog(QDialog):
             full_path = f"{parent_path}:{class_name}"
         else:
             full_path = class_name
-        item.setData(0, Qt.UserRole, full_path)
+        item.setData(0, Qt.ItemDataRole.UserRole, full_path)
         
         # Add children if this class has subclasses
         if class_name in self.classes_dict:
@@ -265,12 +265,12 @@ class MasterClassConfigDialog(QDialog):
         notes_edit = QLineEdit()
         form.addRow("Notes", notes_edit)
         
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         form.addRow(buttons)
         
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             example = {
                 "name": name_edit.text().strip(),
                 "detected": [c.strip() for c in detected_edit.text().split(",") if c.strip()],
@@ -403,12 +403,12 @@ class MasterClassConfigDialog(QDialog):
         notes_edit = QLineEdit(existing.get('notes', '') if existing else '')
         form.addRow("Notes", notes_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         form.addRow(buttons)
 
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             cls = class_edit.text().strip()
             if not cls:
                 QMessageBox.warning(self, "Required", "Class is required")
@@ -438,8 +438,8 @@ class MasterClassConfigDialog(QDialog):
                     "category-specific 'unclassified_*' during training. You can review and reassign after training.\n\n"
                     "Do you want to continue and save the new taxonomy?"
                 )
-                reply = QMessageBox.question(self, "Class Change Impact", msg, QMessageBox.Yes | QMessageBox.No)
-                if reply != QMessageBox.Yes:
+                reply = QMessageBox.question(self, "Class Change Impact", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if reply != QMessageBox.StandardButton.Yes:
                     return
         except Exception:
             pass

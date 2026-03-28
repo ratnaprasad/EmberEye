@@ -3,16 +3,16 @@ Master Class & Threat Rules Dialog for EmberEye.
 Manage taxonomy (classes/subclasses), threat rules, and settings in one place.
 """
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QPushButton,
     QLabel, QMessageBox, QInputDialog, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QFormLayout, QComboBox, QLineEdit, QDialogButtonBox, QWidget, QTextEdit
 )
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 import os
-from resource_helper import get_data_path
+from embereye_base.utils.resource_helper import get_data_path
 from embereye.core.class_config import load_master_classes, save_master_classes
-from threat_rules import load_threat_rules, save_threat_rules, DEFAULT_SETTINGS, SEVERITIES, DEFAULT_THREAT_RULES, DEFAULT_EXAMPLES
+from embereye.core.threat_rules import load_threat_rules, save_threat_rules, DEFAULT_SETTINGS, SEVERITIES, DEFAULT_THREAT_RULES, DEFAULT_EXAMPLES
 
 class MasterClassConfigDialog(QDialog):
     """Dialog for configuring taxonomy, rules, and settings."""
@@ -41,6 +41,7 @@ class MasterClassConfigDialog(QDialog):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Class", "Subclasses"])
         self.tree.setColumnWidth(0, 250)
+        self.tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
         classes_layout.addWidget(self.tree)
         
         btn_layout = QHBoxLayout()
@@ -75,8 +76,8 @@ class MasterClassConfigDialog(QDialog):
             # Rules list for this severity
             table = QTableWidget(0, 2)
             table.setHorizontalHeaderLabels(["Rule", "Actions"])
-            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
             
             # Populate rules for this severity
             rules_list = self.threat_matrix.get(severity, [])
@@ -110,7 +111,7 @@ class MasterClassConfigDialog(QDialog):
         
         self.scenarios_table = QTableWidget(0, 5)
         self.scenarios_table.setHorizontalHeaderLabels(["Scenario", "Detected", "Classification", "Rule", "Notes"])
-        self.scenarios_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.scenarios_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         rules_layout.addWidget(self.scenarios_table)
         
         scenarios_btn_layout = QHBoxLayout()
@@ -172,40 +173,51 @@ class MasterClassConfigDialog(QDialog):
     
     def populate_tree(self):
         self.tree.clear()
-        # Start with root level (IncidentEnvironment)
-        if "IncidentEnvironment" in self.classes_dict:
-            root_item = self._build_tree_item(self.tree, "IncidentEnvironment", None)
-            root_item.setExpanded(True)
-        else:
-            # Fallback: show all top-level items
-            for main_class in self.classes_dict:
-                item = self._build_tree_item(self.tree, main_class, None)
-                item.setExpanded(True)
-    
+        # Find true roots (keys that are not a child of any other key)
+        all_referenced = set()
+        for v in self.classes_dict.values():
+            if isinstance(v, list):
+                all_referenced.update(v)
+
+        for key in self.classes_dict:
+            if key not in all_referenced:
+                # This is a root item (e.g. IncidentEnvironment)
+                root_item = QTreeWidgetItem(self.tree, [key, ""])
+                root_item.setData(0, Qt.ItemDataRole.UserRole, key)
+                children = self.classes_dict.get(key, [])
+                root_item.setText(1, f"{len(children)} items")
+                root_item.setExpanded(True)
+                # Add direct children (the categories)
+                for child_name in children:
+                    child_item = QTreeWidgetItem(root_item, [child_name, ""])
+                    child_item.setData(0, Qt.ItemDataRole.UserRole, child_name)
+                    grandchildren = self.classes_dict.get(child_name, [])
+                    if grandchildren:
+                        preview = ", ".join(grandchildren[:3]) + ("..." if len(grandchildren) > 3 else "")
+                        child_item.setText(1, f"{len(grandchildren)} items: {preview}")
+
     def _build_tree_item(self, parent, class_name, parent_path):
-        """Recursively build tree item and its children."""
-        # Create the tree item
+        """Build a single tree item (used by add_class/add_subclass)."""
         if isinstance(parent, QTreeWidget):
             item = QTreeWidgetItem(parent, [class_name, ""])
         else:
             item = QTreeWidgetItem(parent, [class_name, ""])
-        
-        # Set path for identification
-        if parent_path:
-            full_path = f"{parent_path}:{class_name}"
-        else:
-            full_path = class_name
-        item.setData(0, Qt.UserRole, full_path)
-        
-        # Add children if this class has subclasses
-        if class_name in self.classes_dict:
-            subclasses = self.classes_dict[class_name]
-            if subclasses:
-                for subclass in subclasses:
-                    child_item = self._build_tree_item(item, subclass, full_path)
-                    child_item.setExpanded(True)
-        
+        path = f"{parent_path}:{class_name}" if parent_path else class_name
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
         return item
+
+    def on_tree_selection_changed(self):
+        """Update column 2 to show full subclass list when a category is selected."""
+        selected_items = self.tree.selectedItems()
+        if selected_items:
+            selected_item = selected_items[0]
+            class_name = selected_item.text(0)
+            if class_name in self.classes_dict:
+                subclasses = self.classes_dict[class_name]
+                if subclasses:
+                    selected_item.setText(1, ", ".join(subclasses))
+                else:
+                    selected_item.setText(1, "(no subclasses)")
 
     def _add_threat_rule(self, severity, table):
         """Add a new threat rule for a severity level."""
@@ -265,12 +277,12 @@ class MasterClassConfigDialog(QDialog):
         notes_edit = QLineEdit()
         form.addRow("Notes", notes_edit)
         
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         form.addRow(buttons)
         
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             example = {
                 "name": name_edit.text().strip(),
                 "detected": [c.strip() for c in detected_edit.text().split(",") if c.strip()],
@@ -338,6 +350,38 @@ class MasterClassConfigDialog(QDialog):
             return
         item = selected[0]
         class_name = item.text(0)
+
+        # In the simplified tree view, leaf subclasses are not direct nodes.
+        # If a category is selected, offer removing one of its subclasses.
+        if class_name in self.classes_dict and self.classes_dict.get(class_name):
+            parent = item.parent().text(0) if item.parent() else None
+            if parent == "IncidentEnvironment":
+                choice, ok = QInputDialog.getItem(
+                    self,
+                    "Remove from Category",
+                    f"Selected '{class_name}'. Choose action:",
+                    ["Remove a subclass", "Remove entire category"],
+                    0,
+                    False,
+                )
+                if not ok:
+                    return
+                if choice == "Remove a subclass":
+                    subclasses = self.classes_dict.get(class_name, [])
+                    sub_name, ok_sub = QInputDialog.getItem(
+                        self,
+                        "Remove Subclass",
+                        f"Select subclass to remove from '{class_name}':",
+                        subclasses,
+                        0,
+                        False,
+                    )
+                    if not ok_sub:
+                        return
+                    if sub_name in self.classes_dict.get(class_name, []):
+                        self.classes_dict[class_name].remove(sub_name)
+                        self.populate_tree()
+                    return
         
         # Don't allow removing root
         if class_name == "IncidentEnvironment" and not item.parent():
@@ -403,12 +447,12 @@ class MasterClassConfigDialog(QDialog):
         notes_edit = QLineEdit(existing.get('notes', '') if existing else '')
         form.addRow("Notes", notes_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         form.addRow(buttons)
 
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             cls = class_edit.text().strip()
             if not cls:
                 QMessageBox.warning(self, "Required", "Class is required")
@@ -438,8 +482,8 @@ class MasterClassConfigDialog(QDialog):
                     "category-specific 'unclassified_*' during training. You can review and reassign after training.\n\n"
                     "Do you want to continue and save the new taxonomy?"
                 )
-                reply = QMessageBox.question(self, "Class Change Impact", msg, QMessageBox.Yes | QMessageBox.No)
-                if reply != QMessageBox.Yes:
+                reply = QMessageBox.question(self, "Class Change Impact", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if reply != QMessageBox.StandardButton.Yes:
                     return
         except Exception:
             pass

@@ -23,17 +23,17 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Setup crash logger first for debugging
-from crash_logger import setup_crash_logger
+from embereye_base.utils.crash_logger import setup_crash_logger
 setup_crash_logger()
 
 # Ensure runtime folders exist (for both source and packaged modes)
-from embereye.utils.resource_helper import ensure_runtime_folders
+from embereye_base.utils.resource_helper import ensure_runtime_folders
 workspace_dir = ensure_runtime_folders()
 print(f"[INIT] Workspace directory: {workspace_dir}")
 
 # Check for updates in background (non-blocking) - DISABLED FOR OFFLINE MODE
 try:
-    from auto_updater import auto_check_updates_background
+    from embereye_base.core.auto_updater import auto_check_updates_background
     # auto_check_updates_background()  # Disabled - not needed for offline use
 except Exception as e:
     pass  # Silently ignore updater errors
@@ -42,14 +42,14 @@ except Exception as e:
 if platform.system() != 'Windows':
     import fcntl
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QDialog
 )
-from PyQt5.QtCore import (
+from PyQt6.QtCore import (
     Qt, QThread
 )
-from ee_loginwindow import EELoginWindow
-from embereye.utils.error_logger import get_error_logger
+from embereye_base.app.ee_loginwindow import EELoginWindow
+from embereye_base.utils.error_logger import get_error_logger
 # License module may be absent in checkpoint; guard imports
 try:
     from license_module.core import LicenseClient, LicenseNotFoundError
@@ -62,12 +62,12 @@ except Exception:
     class LicenseEntryDialog(QDialog):
         def __init__(self, *args, **kwargs):
             super().__init__()
-        def exec_(self):
+        def exec(self):
             return QDialog.Rejected
     class LicenseRenewalDialog(QDialog):
         def __init__(self, *args, **kwargs):
             super().__init__()
-        def exec_(self):
+        def exec(self):
             return QDialog.Rejected
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     
     # Exception handling with logging (thread-safe)
     def _ex_hook(etype, value, tb):
-        from PyQt5.QtCore import QMetaObject, Q_ARG
+        from PyQt6.QtCore import QMetaObject, Q_ARG
         get_error_logger().log('UNCAUGHT', f"{etype.__name__}: {value}")
         # Only show message box if in main thread
         try:
@@ -147,22 +147,22 @@ if __name__ == "__main__":
             elif status == "EXPIRING_SOON":
                 # License expiring soon - warn but allow app
                 dialog = LicenseRenewalDialog(license_data)
-                result = dialog.exec_()
+                result = dialog.exec()
                 if result == QDialog.Accepted:
                     # User wants to enter new license
                     entry_dialog = LicenseEntryDialog()
-                    entry_dialog.exec_()
+                    entry_dialog.exec()
                 return True
             
             elif status == "EXPIRED":
                 # License expired - block app
                 license_info = license_client.get_license_info()
                 dialog = LicenseRenewalDialog(license_info)
-                result = dialog.exec_()
+                result = dialog.exec()
                 if result == QDialog.Accepted:
                     # User wants to enter new license
                     entry_dialog = LicenseEntryDialog()
-                    if entry_dialog.exec_() == QDialog.Accepted:
+                    if entry_dialog.exec() == QDialog.Accepted:
                         # Re-check license after entry
                         return check_license_at_startup()
                 return False
@@ -170,7 +170,7 @@ if __name__ == "__main__":
             else:  # NOT_FOUND
                 # No license found - prompt for entry
                 entry_dialog = LicenseEntryDialog()
-                result = entry_dialog.exec_()
+                result = entry_dialog.exec()
                 if result == QDialog.Accepted:
                     # Re-check license after entry
                     return check_license_at_startup()
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     login.show()
     
     try:
-        exit_code = app.exec_()
+        exit_code = app.exec()
     except Exception as e:
         print(f"Application error: {str(e)}")
         exit_code = 1

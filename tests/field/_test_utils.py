@@ -43,7 +43,7 @@ def assert_true(condition: bool, message: str) -> None:
 
 def _ensure_qt_app():
     try:
-        from PyQt5.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
     except Exception:
         return None
     app = QApplication.instance()
@@ -89,8 +89,8 @@ def capture_text_screenshot(name: str, text: str, log_path: Optional[Path] = Non
         return None
 
     try:
-        from PyQt5.QtGui import QImage, QPainter, QColor, QFont
-        from PyQt5.QtCore import Qt, QRect
+        from PyQt6.QtGui import QImage, QPainter, QColor, QFont
+        from PyQt6.QtCore import Qt, QRect
     except Exception as e:
         if log_path:
             log_line(log_path, f"WARNING: Qt imports failed: {e}")

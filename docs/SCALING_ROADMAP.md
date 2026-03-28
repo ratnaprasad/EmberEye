@@ -1,5 +1,10 @@
 # EmberEye Scaling Roadmap (100 Cameras + 100 PF Devices)
 
+> Status: RETIRED (as of 2026-03-20)
+>
+> This roadmap is kept for historical reference only and is no longer the active planning document.
+> Use the current suite roadmap at `docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md`.
+
 ## Phase 0 – Stabilization (Week 1)
 Goals: Eliminate crashes; validate async vision + TCP marshaling
 - Implement Qt signal marshaling (DONE)

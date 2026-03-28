@@ -1,0 +1,32 @@
+EmberEye 2.x Root File Retirement Map
+Date: 2026-03-20
+
+Status legend:
+- MOVED: file is required but moved to package location.
+- RETIRED: file is no longer required at root.
+
+MOVED
+- tcp_logger.py -> embereye_base/utils/tcp_logger.py
+- tcp_server_logger.py -> embereye_base/utils/tcp_server_logger.py
+- tcp_sensor_simulator_v3.py -> simulators/tcp_sensor_simulator_v3.py
+- tcp_simulator.py -> simulators/tcp_simulator.py
+- test_hybrid_detection_video.py -> tests/test_hybrid_detection_video.py
+- test_pytorch_studio.py -> tests/test_pytorch_studio.py
+- thermal_grid_config.py -> embereye_base/app/thermal_grid_config.py
+- user_creation.py -> embereye_base/app/user_creation.py
+- vendoredata.py -> embereye_base/app/vendoredata.py
+- vendorepojo.py -> embereye_base/app/vendorepojo.py
+- verify_hybrid_processing.py -> scripts/verify_hybrid_processing.py
+- verify_implementation.py -> scripts/verify_implementation.py
+- verify_optimization.py -> scripts/verify_optimization.py
+
+RETIRED
+- theme_manager.py (use embereye_base/utils/theme_manager.py)
+- threat_rules.py (use embereye_base/core/threat_rules.py)
+- training_pipeline.py (use embereye_base/core/training_pipeline.py)
+- vision_detector.py (use embereye_base/core/vision_detector.py)
+- vision_logger.py (use embereye_base/utils/vision_logger.py)
+
+Notes
+- threat_rules.json and training_config.json remain required runtime config files at root.
+- users.db remains local runtime data and should stay untracked.

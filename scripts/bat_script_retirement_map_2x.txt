@@ -1,0 +1,25 @@
+EmberEye 2.x BAT Script Organization Map
+Date: 2026-03-20
+
+Status legend:
+- MOVED: active script moved out of root.
+- RETIRED: no root BAT files retired in this pass; legacy BATs already under windows_migration_v2 remain untouched.
+
+MOVED (runtime)
+- scripts/runtime/start_field.bat -> scripts/runtime/start_field.bat
+- scripts/runtime/stop_field.bat -> scripts/runtime/stop_field.bat
+- scripts/runtime/start_studio.bat -> scripts/runtime/start_studio.bat
+- scripts/runtime/stop_studio.bat -> scripts/runtime/stop_studio.bat
+
+MOVED (windows)
+- scripts/windows/setup_windows.bat -> scripts/windows/setup_windows.bat
+- scripts/windows/build_windows.bat -> scripts/windows/build_windows.bat
+- scripts/windows/build_installer.bat -> scripts/windows/build_installer.bat
+- scripts/windows/install_cuda_toolkit.bat -> scripts/windows/install_cuda_toolkit.bat
+- scripts/windows/install_pytorch_cuda.bat -> scripts/windows/install_pytorch_cuda.bat
+- scripts/windows/install_pytorch_cuda128.bat -> scripts/windows/install_pytorch_cuda128.bat
+- scripts/windows/install_pytorch_nightly.bat -> scripts/windows/install_pytorch_nightly.bat
+
+Notes
+- Moved BAT files were updated to resolve repository root based on script location.
+- PowerShell launchers now invoke .ps1 files from repository root.

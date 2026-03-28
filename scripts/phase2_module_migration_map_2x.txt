@@ -1,0 +1,24 @@
+EmberEye 2.x Phase 2 Module Migration Map
+Date: 2026-03-20
+
+Moved to package modules:
+- pfds_manager.py -> embereye_base/core/pfds_manager.py
+- stream_config.py -> embereye_base/core/stream_config.py
+- qc_review_dialog.py -> embereye_base/app/qc_review_dialog.py
+- sensor_config_dialog.py -> embereye_base/app/sensor_config_dialog.py
+- steam_tester.py -> embereye_base/app/steam_tester.py
+- streamconfig_dialog.py -> embereye_base/app/streamconfig_dialog.py
+- streamconfig_editdialog.py -> embereye_base/app/streamconfig_editdialog.py
+
+Root compatibility shims retained:
+- pfds_manager.py
+- stream_config.py
+- qc_review_dialog.py
+- sensor_config_dialog.py
+- steam_tester.py
+- streamconfig_dialog.py
+- streamconfig_editdialog.py
+
+Notes:
+- Existing imports continue to work via shims.
+- New package-local imports were applied in embereye_base/app modules.

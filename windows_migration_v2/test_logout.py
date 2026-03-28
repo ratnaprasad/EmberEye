@@ -1,6 +1,6 @@
 import sys
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QTimer
 from main_window import BEMainWindow
 
 """Minimal automated test to exercise logout and ensure no QThread abort.
@@ -15,7 +15,7 @@ def run_test():
     # Trigger logout (which will close and reopen login window) then quit
     QTimer.singleShot(1000, win.logout)
     QTimer.singleShot(3000, app.quit)
-    rc = app.exec_()
+    rc = app.exec()
     print(f"Test logout exit code: {rc}")
     return rc
 

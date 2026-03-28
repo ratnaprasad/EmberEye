@@ -1,18 +1,18 @@
 import sqlite3
 import bcrypt
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QPushButton, QDialog,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLineEdit, QPushButton, QDialog,
                             QMainWindow, QMessageBox, QLabel, QWizard)
-from PyQt5.QtCore import (Qt, pyqtSignal)
-from PyQt5.QtGui import QPixmap
-from resource_helper import get_resource_path
-from main_window import BEMainWindow
-from sensor_server import SensorServer
+from PyQt6.QtCore import (Qt, pyqtSignal)
+from PyQt6.QtGui import QPixmap
+from ..resource_helper import get_resource_path
+from ..main_window import BEMainWindow
+from ..sensor_server import SensorServer
 from threading import Thread
-from database_manager import DatabaseManager
+from ..database_manager import DatabaseManager
 # from license_dialog import LicenseKeyDialog
 # from user_creation import UserCreationDialog
-from setup_wizard import SetupWizard
-from password_reset import PasswordResetDialog
+from ..setup_wizard import SetupWizard
+from ..password_reset import PasswordResetDialog
 
 class EELoginWindow(QWidget):
     success = pyqtSignal(QMainWindow)
@@ -96,15 +96,15 @@ class EELoginWindow(QWidget):
             # Handle admin flow
             if username == 'admin':
                 # license_dialog = LicenseKeyDialog(self.db)
-                # if license_dialog.exec_() != QDialog.Accepted:
+                # if license_dialog.exec() != QDialog.Accepted:
                 #     return
 
                 # user_creation_dialog = UserCreationDialog(self.db)
-                # if user_creation_dialog.exec_() == QDialog.Accepted:
+                # if user_creation_dialog.exec() == QDialog.Accepted:
                 #     QMessageBox.information(self, 'Success', 
                 #                         'User created successfully! New user can now login.')
                 wizard = SetupWizard(self.db)
-                if wizard.exec_() == QWizard.Accepted:
+                if wizard.exec() == QWizard.Accepted:
                     wizard.currentPage().create_user()
                     QMessageBox.information(self, 'Success', 
                                         'User created successfully!')
@@ -128,7 +128,7 @@ class EELoginWindow(QWidget):
 
     def show_password_reset(self):
         reset_dialog = PasswordResetDialog(self.db)
-        reset_dialog.exec_()
+        reset_dialog.exec()
  
     def closeEvent(self, event):
         if self.server:

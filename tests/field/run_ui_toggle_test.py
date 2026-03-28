@@ -1,9 +1,9 @@
 import sys
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
-from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import Qt
 
 root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "embereye-field" / "fieldglass"))
@@ -69,7 +69,7 @@ def main() -> int:
         matrix = _build_matrix()
         widget._handle_thermal_data(matrix)
 
-        img = QImage(640, 480, QImage.Format_RGB888)
+        img = QImage(640, 480, QImage.Format.Format_RGB888)
         img.fill(Qt.black)
         pix = QPixmap.fromImage(img)
 

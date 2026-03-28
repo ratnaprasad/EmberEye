@@ -35,15 +35,9 @@ def test_tcp_packet_parsing():
     print("\n=== Testing TCP Packet Parsing ===")
     
     try:
-        from embereye.core.tcp_sensor_server import TCPSensorServer
-        
-        # Test data collector
-        received_packets = []
-        
-        def packet_callback(packet):
-            received_packets.append(packet)
-        
-        server = TCPSensorServer(port=9001, packet_callback=packet_callback)
+        from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
+
+        server = TCPAsyncSensorServer(host='127.0.0.1', port=9001)
         
         # Test parser directly
         test_cases = [
@@ -80,10 +74,8 @@ def test_tcp_packet_parsing():
         ]
         
         for tc in test_cases:
-            received_packets.clear()
-            server.handle_packet(tc['packet'], '127.0.0.1')
-            if received_packets:
-                packet = received_packets[0]
+            packet = server._parse_packet(tc['packet'], '127.0.0.1:9001', '127.0.0.1')
+            if packet:
                 passed = packet.get('type') == tc['expected_type'] and tc['check'](packet)
                 log_test(f"Parse {tc['name']}", passed, 
                         None if passed else f"Got {packet}")
@@ -198,11 +190,11 @@ def test_tcp_logger():
     print("\n=== Testing TCP Logger ===")
     
     try:
-        from tcp_logger import log_raw_packet, log_error_packet, get_tcp_log_path
+        from embereye_base.utils.tcp_logger import log_raw_packet, log_error_packet, get_tcp_log_path
         
         with tempfile.TemporaryDirectory() as tmpdir:
             # Override log path
-            import tcp_logger
+            import embereye_base.utils.tcp_logger as tcp_logger
             old_log_dir = tcp_logger.LOG_DIR
             tcp_logger.LOG_DIR = tmpdir
             
@@ -294,7 +286,7 @@ def test_thermal_frame_parsing():
     print("\n=== Testing Thermal Frame Parsing ===")
     
     try:
-        from embereye.core.thermal_frame_parser import ThermalFrameParser
+        from embereye_base.core.thermal_frame_parser import ThermalFrameParser
         import numpy as np
         
         # Generate test frame with known temperatures
@@ -360,7 +352,7 @@ def test_fusion_orchestrator_hot_cells():
     print("\n=== Testing Fusion Orchestrator Hot Cells ===")
     
     try:
-        from embereye.core.fusion import FusionOrchestrator
+        from embereye_base.core.fusion import FusionOrchestrator
         import numpy as np
 
         fusion = FusionOrchestrator({
@@ -418,17 +410,31 @@ def test_integration_tcp_server():
     print("\n=== Integration Test: TCP Server ===")
     
     try:
-        from embereye.core.tcp_sensor_server import TCPSensorServer
+        import asyncio
         import threading
+        from embereye_base.core.tcp_async_server import TCPAsyncSensorServer
         
         received = []
         
         def callback(packet):
             received.append(packet)
-        
-        server = TCPSensorServer(port=9002, packet_callback=callback)
-        server.start()
-        time.sleep(0.5)  # Let server start
+
+        server = TCPAsyncSensorServer(host='127.0.0.1', port=9002, packet_callback=callback)
+        loop_holder = {}
+        ready = threading.Event()
+
+        def _run_server_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop_holder['loop'] = loop
+            loop.run_until_complete(server.start())
+            ready.set()
+            loop.run_forever()
+
+        server_thread = threading.Thread(target=_run_server_loop, daemon=True)
+        server_thread.start()
+        ready.wait(timeout=3)
+        time.sleep(0.2)
         
         try:
             # Connect and send test packets
@@ -456,8 +462,13 @@ def test_integration_tcp_server():
                     None if has_sensor else f"Received: {received}")
                     
         finally:
-            server.stop()
-            time.sleep(0.3)
+            loop = loop_holder.get('loop')
+            if loop is not None:
+                stop_future = asyncio.run_coroutine_threadsafe(server.stop(), loop)
+                stop_future.result(timeout=5)
+                loop.call_soon_threadsafe(loop.stop)
+            server_thread.join(timeout=2)
+            time.sleep(0.1)
             
     except Exception as e:
         log_test("Integration TCP Server", False, str(e))

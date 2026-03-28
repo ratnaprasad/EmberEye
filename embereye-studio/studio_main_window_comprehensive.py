@@ -15,15 +15,15 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QPushButton, QLabel, QMessageBox, QProgressBar, QGroupBox,
     QFormLayout, QSpinBox, QComboBox, QTextEdit, QFileDialog,
     QListWidget, QGridLayout, QScrollArea, QDoubleSpinBox,
     QTreeWidget, QTreeWidgetItem, QDialog, QInputDialog
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QUrl, QThread
-from PyQt5.QtGui import QFont, QPixmap, QImage
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl, QThread
+from PyQt6.QtGui import QFont, QPixmap, QImage
 
 from forgelab import (
     TrainingConfig, TrainingProgress, TrainingStatus, YOLOTrainingPipeline
@@ -399,9 +399,9 @@ class TrainingTab(QWidget):
         reply = QMessageBox.question(
             self, "Delete", 
             "Delete selected training data?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             self._refresh_training_ready_count()
 
     def review_unclassified_items(self):
@@ -483,9 +483,9 @@ class TrainingTab(QWidget):
         reply = QMessageBox.question(
             self, "Delete Version", 
             f"Delete version {selected.text()}?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             self._refresh_model_versions()
 
     def _refresh_training_ready_count(self):
@@ -516,9 +516,9 @@ class TrainingTab(QWidget):
         reply = QMessageBox.question(
             self, "Delete All", 
             "Delete ALL training data? This cannot be undone!",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             self._refresh_training_ready_count()
 
     def _export_classes_package(self):
@@ -555,7 +555,7 @@ class TrainingTab(QWidget):
 
     def _create_sandbox_tab(self) -> QWidget:
         """Create sandbox testing UI"""
-        from PyQt5.QtWidgets import QScrollArea
+        from PyQt6.QtWidgets import QScrollArea
         
         sandbox_widget = QWidget()
         main_layout = QVBoxLayout(sandbox_widget)
@@ -563,7 +563,7 @@ class TrainingTab(QWidget):
         
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.NoFrame)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         
         scroll_content = QWidget()
         sandbox_layout = QVBoxLayout(scroll_content)
@@ -668,7 +668,7 @@ class TrainingTab(QWidget):
         input_group = QGroupBox("Input")
         input_layout = QVBoxLayout()
         self.sandbox_input_label = QLabel("No input")
-        self.sandbox_input_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_input_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sandbox_input_label.setStyleSheet("border: 1px dashed #ccc; background: #f9f9f9; min-height: 300px;")
         input_layout.addWidget(self.sandbox_input_label)
         input_group.setLayout(input_layout)
@@ -682,7 +682,7 @@ class TrainingTab(QWidget):
         results_layout.addWidget(self.sandbox_progress)
         
         self.sandbox_results_label = QLabel("Results appear here")
-        self.sandbox_results_label.setAlignment(Qt.AlignCenter)
+        self.sandbox_results_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sandbox_results_label.setStyleSheet("border: 1px solid #333; background: #111; min-height: 300px;")
         results_layout.addWidget(self.sandbox_results_label)
         
@@ -843,12 +843,12 @@ class SettingsTab(QWidget):
         about_layout = QVBoxLayout()
 
         about_text = QLabel(
-            "EmberEye Studio v1.0.0\n"
+            "EmberEye Studio v2.0.0\n"
             "Training and Model Development Hub\n\n"
             "ForgeLab Module - Phoenix Cycle Training\n"
             "© EmberEye Team 2026"
         )
-        about_text.setAlignment(Qt.AlignCenter)
+        about_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         about_layout.addWidget(about_text)
         about_group.setLayout(about_layout)
         layout.addWidget(about_group)
@@ -877,7 +877,7 @@ class StudioMainWindow(QMainWindow):
         # Header with orange banner
         banner = QLabel("🧠 LABS EDITION - Training & Model Development Hub")
         banner.setStyleSheet("background-color: #FF9800; color: white; padding: 8px; font-weight: bold; font-size: 12px;")
-        banner.setAlignment(Qt.AlignCenter)
+        banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(banner)
 
         header_layout = QHBoxLayout()
@@ -888,7 +888,7 @@ class StudioMainWindow(QMainWindow):
         title.setFont(title_font)
 
         user_label = QLabel(f"User: {self.username}")
-        user_label.setAlignment(Qt.AlignRight)
+        user_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         user_label.setStyleSheet("color: #666; font-size: 11px;")
 
         header_layout.addWidget(title)
@@ -992,10 +992,10 @@ class StudioMainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    from PyQt5.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication
     import sys
     
     app = QApplication(sys.argv)
     window = StudioMainWindow("admin")
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

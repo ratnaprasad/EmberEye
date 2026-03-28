@@ -1,12 +1,12 @@
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QLineEdit,  QVBoxLayout,  QComboBox, QDialog,
     QDialogButtonBox, QHBoxLayout, QPushButton, QProgressDialog, QMessageBox
 )
-from PyQt5.QtCore import Qt, QThread
-from steam_tester import StreamTester
+from PyQt6.QtCore import Qt, QThread
+from .steam_tester import StreamTester
 
 try:
-    from camera_discovery_dialog import CameraDiscoveryDialog
+    from .camera_discovery_dialog import CameraDiscoveryDialog
 except Exception:
     CameraDiscoveryDialog = None
 
@@ -95,14 +95,14 @@ class StreamEditDialog(QDialog):
         tester.test_complete.connect(handle_result)
         thread.started.connect(tester.test_stream)
         thread.start()
-        progress.exec_()
+        progress.exec()
 
     def discover_stream(self):
         if CameraDiscoveryDialog is None:
             QMessageBox.information(self, "Discover", "Discovery dialog not available.")
             return
         dlg = CameraDiscoveryDialog(self)
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             selected_url = dlg.get_selected_url()
             if selected_url:
                 self.url_input.setText(selected_url)

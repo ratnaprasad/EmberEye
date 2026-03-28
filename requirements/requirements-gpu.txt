@@ -1,0 +1,27 @@
+# EmberEye GPU-enabled requirements
+# Install this for systems with NVIDIA GPU
+
+# Install PyTorch with CUDA support FIRST (before ultralytics)
+--index-url https://download.pytorch.org/whl/cu124
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Then install other requirements
+PyQt6
+PyQt6-WebEngine
+bcrypt
+pyinstaller
+numpy
+opencv-python
+passlib
+matplotlib
+cryptography
+websockets
+onvif-zeep
+wsdiscovery
+Pillow
+packaging
+ultralytics
+adafruit-circuitpython-mlx90640
+pyserial

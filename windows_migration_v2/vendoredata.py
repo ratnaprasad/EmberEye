@@ -1,5 +1,5 @@
 import json
-from vendorepojo import Vendor
+from ..vendorepojo import Vendor
 class VendorDataHandler:
     """
     A class to create, store, and retrieve JSON data arrays.

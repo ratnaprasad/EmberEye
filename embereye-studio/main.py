@@ -65,8 +65,8 @@ if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
 
 
-from PyQt5.QtWidgets import QApplication, QMainWindow
-from PyQt5.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QMainWindow
+from PyQt6.QtCore import Qt
 
 # Import studio components (local to this directory)
 from studio_db_manager import StudioDatabaseManager
@@ -91,7 +91,7 @@ class StudioApplication:
             self.login_window.login_success.connect(self.on_login_success)
             self.login_window.show()
             
-            return self.app.exec_()
+            return self.app.exec()
         except Exception as e:
             print(f"Error running application: {e}")
             import traceback

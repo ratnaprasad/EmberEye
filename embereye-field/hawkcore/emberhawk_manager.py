@@ -4,6 +4,7 @@ Manages EmberHawk (formerly PFDS) thermal sensor devices.
 """
 
 import sqlite3
+import sys
 import threading
 import time
 import os
@@ -11,7 +12,38 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import ipaddress
 
-DB_PATH = Path("pfds_devices.db")
+
+def _default_db_path() -> Path:
+    """Return the writable path for pfds_devices.db.
+
+    Always stores the live database in the user's home directory so the app
+    works correctly whether the install/source drive is full or read-only.
+    On first run, migrates an existing install-dir copy so device config is
+    preserved.
+    """
+    home_dir = Path(os.path.expanduser('~')) / '.embereye'
+    home_dir.mkdir(parents=True, exist_ok=True)
+    db_path = home_dir / 'pfds_devices.db'
+    # One-time migration from installer dir (packaged) or project root (source)
+    if not db_path.exists():
+        candidates = []
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys.executable).parent / 'pfds_devices.db')
+        else:
+            candidates.append(Path(__file__).resolve().parents[2] / 'pfds_devices.db')
+        for src in candidates:
+            if src.exists():
+                try:
+                    import shutil
+                    shutil.copy2(src, db_path)
+                    print(f"[HAWKCORE] Migrated pfds_devices.db → {db_path}")
+                except Exception as _e:
+                    print(f"[HAWKCORE] Migration skipped: {_e}")
+                break
+    return db_path
+
+
+DB_PATH = _default_db_path()
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS pfds_devices (
@@ -458,7 +490,7 @@ class EmberHawkManager:
             new_device = None
 
         try:
-            from tcp_logger import log_device_audit
+            from embereye_base.utils.tcp_logger import log_device_audit
 
             actor_name = str(actor or "").strip() or f"system:{os.getenv('USER', 'unknown')}"
             payload = {
