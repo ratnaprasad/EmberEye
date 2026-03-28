@@ -4,9 +4,22 @@ Handles user authentication, account management, and project metadata
 """
 
 import sqlite3
+import sys
+import os
 import bcrypt
 from datetime import datetime
 from pathlib import Path
+
+
+def _default_studio_db_path() -> Path:
+    """Return a writable path for studio_users.db.
+
+    Always stores the database in the user's home directory so the app works
+    correctly whether the install/source drive is full or read-only.
+    """
+    home_dir = Path(os.path.expanduser('~')) / '.embereye'
+    home_dir.mkdir(parents=True, exist_ok=True)
+    return home_dir / 'studio_users.db'
 
 
 class StudioDatabaseManager:
@@ -14,7 +27,7 @@ class StudioDatabaseManager:
     
     def __init__(self, db_path=None):
         if db_path is None:
-            db_path = Path("studio_users.db")
+            db_path = _default_studio_db_path()
         else:
             db_path = Path(db_path)
         

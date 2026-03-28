@@ -1,7 +1,7 @@
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget, QProgressDialog, QMessageBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
 import socket
 import ipaddress
 
@@ -218,7 +218,7 @@ class CameraDiscoveryDialog(QDialog):
         self.user_edit.setPlaceholderText("username (optional)")
         self.pass_edit = QLineEdit()
         self.pass_edit.setPlaceholderText("password (optional)")
-        self.pass_edit.setEchoMode(QLineEdit.Password)
+        self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
         row2.addWidget(self.user_edit)
         row2.addWidget(self.pass_edit)
         layout.addLayout(row2)
@@ -250,7 +250,7 @@ class CameraDiscoveryDialog(QDialog):
         self.result_list.clear()
         self.scan_btn.setEnabled(False)
         progress = QProgressDialog("Scanning network...", "Cancel", 0, 0, self)
-        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.show()
 
         self._thread = QThread()
@@ -295,7 +295,7 @@ class CameraDiscoveryDialog(QDialog):
         self.scan_btn.setEnabled(False)
         self.onvif_btn.setEnabled(False)
         progress = QProgressDialog("Scanning ONVIF devices...", "Cancel", 0, 0, self)
-        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.show()
 
         self._thread = QThread()
@@ -319,8 +319,8 @@ class CameraDiscoveryDialog(QDialog):
                         pass
                 return
             # Decorate and list
-            from PyQt5.QtCore import Qt as _Qt
-            from PyQt5.QtWidgets import QListWidgetItem
+            from PyQt6.QtCore import Qt as _Qt
+            from PyQt6.QtWidgets import QListWidgetItem
             user = self.user_edit.text().strip()
             pwd = self.pass_edit.text().strip()
             for entry in candidates:
@@ -333,11 +333,11 @@ class CameraDiscoveryDialog(QDialog):
                     host = entry.get('host') or ''
                     label = f"{host} | {enc} {w or ''}x{h or ''} | {prof}\n{url}"
                     item = QListWidgetItem(label)
-                    item.setData(_Qt.UserRole, {'url': url, **entry})
+                    item.setData(_Qt.ItemDataRole.UserRole, {'url': url, **entry})
                     self.result_list.addItem(item)
                 else:
                     item = QListWidgetItem(entry)
-                    item.setData(_Qt.UserRole, {'url': entry})
+                    item.setData(_Qt.ItemDataRole.UserRole, {'url': entry})
                     self.result_list.addItem(item)
 
         def on_canceled():
@@ -358,8 +358,8 @@ class CameraDiscoveryDialog(QDialog):
         if not item:
             return
         # Prefer stored URL in item data
-        from PyQt5.QtCore import Qt as _Qt
-        data = item.data(_Qt.UserRole)
+        from PyQt6.QtCore import Qt as _Qt
+        data = item.data(_Qt.ItemDataRole.UserRole)
         if isinstance(data, dict) and 'url' in data:
             self._selected_url = data['url']
         else:

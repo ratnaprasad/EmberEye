@@ -1,8 +1,8 @@
 import glob
 import sys
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QPushButton, QHBoxLayout, QDialog,QProgressBar, QMessageBox
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QPushButton, QHBoxLayout, QDialog,QProgressBar, QMessageBox
 from camera_calibrator import CalibrationImageCollector, CameraCalibrator 
 class CalibrationWindow(QDialog):
     def __init__(self, parent=None):
@@ -32,7 +32,7 @@ class CalibrationWindow(QDialog):
         self.calibrator.calibration_failed.connect(self.handle_failure)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_C:
+        if event.key() == Qt.Key.Key_C:
             self.capture_frame()
 
     def capture_frame(self):
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     USE_ROS = False  # Set to True if using ROS
     app = QApplication(sys.argv)
     # app.show()
-    if app.exec_() == QDialog.Accepted:
+    if app.exec() == QDialog.DialogCode.Accepted:
         calibrator = app.calibrator
         calibrator.show()
         calibrator.save_calibration("camera_calibration.json")

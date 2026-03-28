@@ -4,7 +4,7 @@ import os
 import sys
 import importlib
 import importlib.util
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -19,8 +19,8 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QGraphicsDropShadowEffect,
 )
-from PyQt5.QtCore import (Qt, pyqtSignal)
-from PyQt5.QtGui import QPixmap
+from PyQt6.QtCore import (Qt, pyqtSignal)
+from PyQt6.QtGui import QPixmap
 from .resource_helper import get_resource_path
 from .sensor_server import SensorServer
 from threading import Thread
@@ -83,7 +83,7 @@ class EELoginWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.server = None
         self.db = DatabaseManager()
         self.theme_manager = ThemeManager()
@@ -107,7 +107,7 @@ class EELoginWindow(QWidget):
         shadow.setBlurRadius(34)
         shadow.setXOffset(0)
         shadow.setYOffset(8)
-        shadow.setColor(Qt.black)
+        shadow.setColor(Qt.GlobalColor.black)
         terminal_frame.setGraphicsEffect(shadow)
 
         logo_frame = QFrame()
@@ -118,20 +118,20 @@ class EELoginWindow(QWidget):
 
         logo_label = QLabel()
         logo_path = get_resource_path('logo.png')
-        pixmap = QPixmap(logo_path).scaled(76, 76, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pixmap = QPixmap(logo_path).scaled(76, 76, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         logo_label.setPixmap(pixmap)
-        logo_label.setAlignment(Qt.AlignCenter)
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo_label.setObjectName("logoLabel")
 
         app_name_label = QLabel("Ember Eye")
         app_name_label.setObjectName("appTitle")
-        app_name_label.setAlignment(Qt.AlignCenter)
+        app_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         subtitle = QLabel("Secure Terminal Access")
         subtitle.setObjectName("subtitle")
-        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        logo_layout.addWidget(logo_label, 0, Qt.AlignCenter)
+        logo_layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
         logo_layout.addWidget(app_name_label)
         logo_layout.addWidget(subtitle)
 
@@ -155,7 +155,7 @@ class EELoginWindow(QWidget):
         pass_row_layout.setSpacing(8)
         key_badge = QLabel("KEY")
         key_badge.setObjectName("inputBadge")
-        self.password = QLineEdit(placeholderText="Password", echoMode=QLineEdit.Password)
+        self.password = QLineEdit(placeholderText="Password", echoMode=QLineEdit.EchoMode.Password)
         self.password.setObjectName("terminalInput")
         self.password.setClearButtonEnabled(True)
         pass_row_layout.addWidget(key_badge)
@@ -176,7 +176,7 @@ class EELoginWindow(QWidget):
         self.status = QLabel()
         self.status.setObjectName("statusLabel")
         self.status.setWordWrap(True)
-        self.status.setAlignment(Qt.AlignCenter)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         links_row = QHBoxLayout()
         links_row.setContentsMargins(0, 0, 0, 0)
@@ -184,13 +184,13 @@ class EELoginWindow(QWidget):
 
         self.forgot_link = QLabel('<a href="forgot">Forgot password?</a>')
         self.forgot_link.setObjectName("linkLabel")
-        self.forgot_link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.forgot_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.forgot_link.setOpenExternalLinks(False)
         self.forgot_link.linkActivated.connect(self._handle_link_activated)
 
         self.create_link = QLabel('<a href="create">Request access</a>')
         self.create_link.setObjectName("linkLabel")
-        self.create_link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.create_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.create_link.setOpenExternalLinks(False)
         self.create_link.linkActivated.connect(self._handle_link_activated)
 
@@ -201,7 +201,7 @@ class EELoginWindow(QWidget):
 
         system_status = QLabel("System status: SECURE")
         system_status.setObjectName("systemStatus")
-        system_status.setAlignment(Qt.AlignCenter)
+        system_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         terminal_layout.addSpacing(6)
         terminal_layout.addWidget(logo_frame)
@@ -349,7 +349,7 @@ class EELoginWindow(QWidget):
         """)
 
     def _toggle_password_visibility(self, checked):
-        self.password.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+        self.password.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
 
     def _set_status(self, text, is_error=True):
         color = "#c62828" if is_error else "#2e7d32"
@@ -422,15 +422,15 @@ class EELoginWindow(QWidget):
             # Handle admin flow
             if username == 'admin':
                 # license_dialog = LicenseKeyDialog(self.db)
-                # if license_dialog.exec_() != QDialog.Accepted:
+                # if license_dialog.exec() != QDialog.DialogCode.Accepted:
                 #     return
 
                 # user_creation_dialog = UserCreationDialog(self.db)
-                # if user_creation_dialog.exec_() == QDialog.Accepted:
+                # if user_creation_dialog.exec() == QDialog.DialogCode.Accepted:
                 #     QMessageBox.information(self, 'Success', 
                 #                         'User created successfully! New user can now login.')
                 wizard = SetupWizard(self.db)
-                if wizard.exec_() == QWizard.Accepted:
+                if wizard.exec() == QWizard.Accepted:
                     wizard.currentPage().create_user()
                     QMessageBox.information(self, 'Success', 
                                         'User created successfully!')
@@ -467,7 +467,7 @@ class EELoginWindow(QWidget):
 
     def show_password_reset(self):
         reset_dialog = PasswordResetDialog(self.db)
-        reset_dialog.exec_()
+        reset_dialog.exec()
  
     def closeEvent(self, event):
         if self.server:

@@ -9,8 +9,10 @@ class StreamConfig:
     
     @staticmethod
     def load_config():
-        # Copy bundled config if it doesn't exist
-        copy_bundled_resource('stream_config.json', StreamConfig.CONFIG_FILE)
+        # Copy bundled config if it doesn't exist. Prefer repo-safe example file.
+        copied = copy_bundled_resource('stream_config.example.json', StreamConfig.CONFIG_FILE)
+        if not copied:
+            copy_bundled_resource('stream_config.json', StreamConfig.CONFIG_FILE)
         
         default_config = {
             "groups": ["Default"],

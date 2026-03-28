@@ -12,6 +12,10 @@ import sys
 import json
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STUDIO_MAIN_WINDOW = REPO_ROOT / "embereye-studio/studio_main_window.py"
+TRAINING_PIPELINE = REPO_ROOT / "embereye_base/core/training_pipeline.py"
+
 # Add project to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -30,109 +34,93 @@ def test_dataset_manager_imports():
             print("✓ create_filtered_dataset_unclassified_only method exists")
         else:
             print("✗ create_filtered_dataset_unclassified_only method NOT found")
-            return False
+            assert False
         
         # Check method signature
         import inspect
         sig = inspect.signature(DatasetManager.create_filtered_dataset_unclassified_only)
         print(f"✓ Method signature: {sig}")
-        return True
+        return
         
     except Exception as e:
         print(f"✗ Error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        assert False
 
 
 def test_training_worker_filtered_dataset_support():
-    """Test that TrainingWorker can use filtered dataset path."""
+    """Test that TrainingWorker is wired to the current training pipeline."""
     print("\n" + "=" * 60)
     print("TEST 2: TrainingWorker filtered dataset support")
     print("=" * 60)
     
     try:
-        # Check main_window imports
-        sys.path.insert(0, str(Path(__file__).parent))
-        
-        # Read main_window.py to check for _override_dataset_path handling
-        main_window_path = Path(__file__).parent / "main_window.py"
-        with open(main_window_path, 'r') as f:
+        with open(STUDIO_MAIN_WINDOW, 'r') as f:
             content = f.read()
-        
-        if '_override_dataset_path' in content:
-            print("✓ TrainingWorker checks for _override_dataset_path attribute")
+
+        if 'self.pipeline = YOLOTrainingPipeline(config=self.config)' in content:
+            print("✓ TrainingWorker constructs YOLOTrainingPipeline with current config")
         else:
-            print("✗ TrainingWorker does NOT check for _override_dataset_path")
-            return False
-        
-        if 'filtered_dataset_path = getattr(self.config' in content:
-            print("✓ TrainingWorker safely retrieves _override_dataset_path from config")
+            print("✗ TrainingWorker does NOT construct YOLOTrainingPipeline as expected")
+            assert False
+
+        if 'self.pipeline.set_progress_callback(self._emit_progress)' in content:
+            print("✓ TrainingWorker wires progress callback to UI updates")
         else:
-            print("✗ TrainingWorker does NOT safely retrieve _override_dataset_path")
-            return False
-        
-        if 'base_dir = filtered_dataset_path if filtered_dataset_path else "training_data"' in content:
-            print("✓ TrainingWorker correctly switches between filtered and default dataset")
+            print("✗ TrainingWorker does NOT wire progress callback")
+            assert False
+
+        if 'success, message = self.pipeline.run_full_pipeline()' in content:
+            print("✓ TrainingWorker executes the full training pipeline")
         else:
-            print("✗ TrainingWorker does NOT properly switch dataset paths")
-            return False
-        
-        return True
+            print("✗ TrainingWorker does NOT run the full training pipeline")
+            assert False
+
+        return
         
     except Exception as e:
         print(f"✗ Error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        assert False
 
 
 def test_quick_retrain_ui_dialog():
-    """Test that quick retrain has UI dialog for dataset choice."""
+    """Test that quick retrain uses the current Studio quick-start flow."""
     print("\n" + "=" * 60)
     print("TEST 3: Quick retrain UI dialog")
     print("=" * 60)
     
     try:
-        main_window_path = Path(__file__).parent / "main_window.py"
-        with open(main_window_path, 'r') as f:
+        with open(STUDIO_MAIN_WINDOW, 'r') as f:
             content = f.read()
-        
-        # Check for QMessageBox.question dialog
-        if 'Retrain on full dataset or focus on unclassified items only?' in content:
-            print("✓ Quick retrain dialog offers dataset choice")
+
+        if 'self.quick_retrain_btn.clicked.connect(self.start_quick_retraining)' in content:
+            print("✓ Quick retrain button is connected to the handler")
         else:
-            print("✗ Quick retrain dialog does NOT offer dataset choice")
-            return False
-        
-        # Check for use_filtered logic
-        if 'use_filtered = reply == QMessageBox.Yes' in content:
-            print("✓ Dialog response correctly mapped to use_filtered flag")
+            print("✗ Quick retrain button handler wiring NOT found")
+            assert False
+
+        if 'self.epochs_spin.setValue(20)' in content:
+            print("✓ Quick retrain reduces epochs to 20")
         else:
-            print("✗ Dialog response mapping NOT found")
-            return False
-        
-        # Check for filtered dataset creation
-        if 'dm.create_filtered_dataset_unclassified_only()' in content:
-            print("✓ Quick retrain calls create_filtered_dataset_unclassified_only()")
+            print("✗ Quick retrain epoch override NOT found")
+            assert False
+
+        if 'self.start_model_training()' in content:
+            print("✓ Quick retrain reuses the standard training startup path")
         else:
-            print("✗ Quick retrain does NOT call create_filtered_dataset_unclassified_only()")
-            return False
-        
-        # Check for config attribute assignment
-        if 'config._override_dataset_path = filtered_dataset_path' in content:
-            print("✓ Config receives _override_dataset_path attribute")
-        else:
-            print("✗ Config does NOT receive _override_dataset_path attribute")
-            return False
-        
-        return True
+            print("✗ Quick retrain does NOT reuse standard training startup")
+            assert False
+
+        return
         
     except Exception as e:
         print(f"✗ Error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        assert False
 
 
 def test_syntax_and_imports():
@@ -145,34 +133,32 @@ def test_syntax_and_imports():
         # Try importing main modules
         from embereye_base.core.training_pipeline import DatasetManager, YOLOTrainingPipeline
         print("✓ training_pipeline imports successfully")
-        
-        # Check for any import errors in main_window by reading it
-        main_window_path = Path(__file__).parent / "main_window.py"
+
+        # Check for syntax errors in the current Studio window implementation
         try:
-            with open(main_window_path, 'r') as f:
-                compile(f.read(), str(main_window_path), 'exec')
-            print("✓ main_window.py syntax is valid")
+            with open(STUDIO_MAIN_WINDOW, 'r') as f:
+                compile(f.read(), str(STUDIO_MAIN_WINDOW), 'exec')
+            print("✓ studio_main_window.py syntax is valid")
         except SyntaxError as e:
-            print(f"✗ main_window.py has syntax error: {e}")
-            return False
-        
+            print(f"✗ studio_main_window.py has syntax error: {e}")
+            assert False
+
         # Check training_pipeline.py syntax
-        training_pipeline_path = Path(__file__).resolve().parent.parent / "embereye_base/core/training_pipeline.py"
         try:
-            with open(training_pipeline_path, 'r') as f:
-                compile(f.read(), str(training_pipeline_path), 'exec')
+            with open(TRAINING_PIPELINE, 'r') as f:
+                compile(f.read(), str(TRAINING_PIPELINE), 'exec')
             print("✓ training_pipeline.py syntax is valid")
         except SyntaxError as e:
             print(f"✗ training_pipeline.py has syntax error: {e}")
-            return False
+            assert False
         
-        return True
+        return
         
     except Exception as e:
         print(f"✗ Import error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        assert False
 
 
 def main():

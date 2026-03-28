@@ -48,7 +48,7 @@ DOC_FILES = [
     "WINDOWS_PACKAGE_README.md", "WINDOWS_DEPLOYMENT_GUIDE.md"
 ]
 
-CONFIG_FILES = ["stream_config.json", "users.db"]
+CONFIG_FILES = ["stream_config.example.json", "users.db"]
 
 ALL = CORE_FILES + TEST_FILES + DOC_FILES + CONFIG_FILES
 

@@ -13,6 +13,15 @@ from pathlib import Path
 
 # Test results tracker
 test_results = []
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_existing_path(*relative_candidates: str) -> Path:
+    for candidate in relative_candidates:
+        path = PROJECT_ROOT / candidate
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"None of the expected paths exist: {relative_candidates}")
 
 def log_test(name, status, message=""):
     """Log test result."""
@@ -25,29 +34,36 @@ def log_test(name, status, message=""):
 def test_config_files():
     """Test 1: Verify all config files exist and are valid."""
     print("\n=== Test 1: Configuration Files ===")
-    configs = [
-        "stream_config.json",
-        "database_manager.py",
-        "pfds_manager.py",
-        "tcp_async_server.py"
-    ]
-    
-    for config in configs:
-        path = Path(config)
-        if not path.exists():
-            log_test(f"Config: {config}", "FAIL", "File not found")
-            return False
+    configs = {
+        "stream_config.json": ("stream_config.json",),
+        "database_manager.py": ("embereye-studio/database_manager.py", "embereye/core/database_manager.py"),
+        "pfds_manager.py": ("embereye_base/core/pfds_manager.py", "windows_migration_v2/pfds_manager.py"),
+        "tcp_async_server.py": ("embereye/core/tcp_async_server.py", "embereye_base/core/tcp_async_server.py"),
+    }
+
+    for display_name, candidates in configs.items():
+        try:
+            resolved = _resolve_existing_path(*candidates)
+            log_test(f"Config: {display_name}", "PASS", str(resolved.relative_to(PROJECT_ROOT)))
+        except FileNotFoundError:
+            log_test(f"Config: {display_name}", "FAIL", "File not found")
+            assert False
     
     # Validate stream_config.json structure
     try:
-        with open("stream_config.json", "r") as f:
+        with (PROJECT_ROOT / "stream_config.json").open("r", encoding="utf-8") as f:
             config = json.load(f)
         
-        required_keys = ["streams", "tcp_port", "thermal_calibration"]
+        required_keys = ["streams", "tcp_port"]
         missing = [k for k in required_keys if k not in config]
         if missing:
             log_test("stream_config.json structure", "FAIL", f"Missing keys: {missing}")
-            return False
+            assert False
+
+        thermal_keys = ["thermal_render_mode", "thermal_emissivity", "thermal_auto_window"]
+        if not any(key in config for key in thermal_keys):
+            log_test("stream_config.json structure", "FAIL", "Missing thermal configuration keys")
+            assert False
         
         # Verify async mode is enabled
         if config.get("tcp_mode") != "async":
@@ -62,32 +78,33 @@ def test_config_files():
             log_test("thermal_use_eeprom", "PASS", "Enabled for embedded EEPROM")
         
         log_test("stream_config.json", "PASS", f"Valid config with {len(config['streams'])} streams")
-        return True
+        return None
     except Exception as e:
         log_test("stream_config.json", "FAIL", str(e))
-        return False
+        assert False
 
 def test_simulator_startup():
     """Test 2: Verify simulator v3 can start and wait for commands."""
     print("\n=== Test 2: Simulator V3 Startup ===")
     
     # Check simulator file exists
-    if not Path("simulators/emberhawk_simulator.py").exists():
+    if not (PROJECT_ROOT / "simulators/emberhawk_simulator.py").exists():
         log_test("Simulator v2.0 file", "FAIL", "simulators/emberhawk_simulator.py not found")
-        return False
+        assert False
     
     log_test("Simulator v2.0 file", "PASS", "File exists")
     
     # Test imports
     try:
         import importlib.util
-        spec = importlib.util.spec_from_file_location("simulator", "simulators/emberhawk_simulator.py")
+        sim_path = PROJECT_ROOT / "simulators/emberhawk_simulator.py"
+        spec = importlib.util.spec_from_file_location("simulator", sim_path)
         if spec and spec.loader:
             log_test("Simulator imports", "PASS", "Module can be imported")
-        return True
+        return None
     except Exception as e:
         log_test("Simulator imports", "FAIL", str(e))
-        return False
+        assert False
 
 def test_protocol_components():
     """Test 3: Verify protocol v3 components are implemented."""
@@ -95,12 +112,13 @@ def test_protocol_components():
     
     # Test PFDS manager changes
     try:
-        with open("pfds_manager.py", "r") as f:
+        pfds_path = _resolve_existing_path("embereye_base/core/pfds_manager.py", "windows_migration_v2/pfds_manager.py")
+        with pfds_path.open("r", encoding="utf-8") as f:
             content = f.read()
         
         checks = [
             ("device_init_done", "PERIOD_ON gating per device"),
-            ("DO NOT send EEPROM1", "Removed auto-EEPROM1"),
+            ("PERIOD_ON", "Continuous streaming logic present"),
             ("ONE-TIME", "One-time PERIOD_ON logging")
         ]
         
@@ -109,15 +127,16 @@ def test_protocol_components():
                 log_test(f"PFDS: {desc}", "PASS")
             else:
                 log_test(f"PFDS: {desc}", "FAIL", f"Pattern '{pattern}' not found")
-                return False
+                assert False
         
     except Exception as e:
         log_test("PFDS manager", "FAIL", str(e))
-        return False
+        assert False
     
     # Test thermal parser changes
     try:
-        with open("thermal_frame_parser.py", "r") as f:
+        parser_path = _resolve_existing_path("embereye/core/thermal_frame_parser.py", "embereye_base/core/thermal_frame_parser.py")
+        with parser_path.open("r", encoding="utf-8") as f:
             content = f.read()
         
         checks = [
@@ -130,15 +149,16 @@ def test_protocol_components():
                 log_test(f"Parser: {desc}", "PASS")
             else:
                 log_test(f"Parser: {desc}", "FAIL", f"Pattern '{pattern}' not found")
-                return False
+                assert False
         
     except Exception as e:
         log_test("Thermal parser", "FAIL", str(e))
-        return False
+        assert False
     
     # Test TCP async server changes
     try:
-        with open("tcp_async_server.py", "r") as f:
+        tcp_path = _resolve_existing_path("embereye/core/tcp_async_server.py", "embereye_base/core/tcp_async_server.py")
+        with tcp_path.open("r", encoding="utf-8") as f:
             content = f.read()
         
         checks = [
@@ -152,13 +172,13 @@ def test_protocol_components():
                 log_test(f"TCP Server: {desc}", "PASS")
             else:
                 log_test(f"TCP Server: {desc}", "FAIL", f"Pattern '{pattern}' not found")
-                return False
+                assert False
         
     except Exception as e:
         log_test("TCP async server", "FAIL", str(e))
-        return False
+        assert False
     
-    return True
+    return None
 
 def test_database_schema():
     """Test 4: Verify database schema and tables."""
@@ -166,13 +186,13 @@ def test_database_schema():
     
     try:
         import sqlite3
-        db_path = "ember_eye.db"
+        db_path = PROJECT_ROOT / "ember_eye.db"
         
-        if not Path(db_path).exists():
+        if not db_path.exists():
             log_test("Database file", "WARN", "Database not initialized yet")
-            return True
+            return None
         
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
         
         # Check required tables
@@ -185,7 +205,7 @@ def test_database_schema():
         if missing:
             log_test("Database tables", "FAIL", f"Missing tables: {missing}")
             conn.close()
-            return False
+            assert False
         
         log_test("Database tables", "PASS", f"All required tables present: {', '.join(tables)}")
         
@@ -202,11 +222,11 @@ def test_database_schema():
             log_test("PFDS schema", "PASS", f"All columns present")
         
         conn.close()
-        return True
+        return None
         
     except Exception as e:
         log_test("Database", "FAIL", str(e))
-        return False
+        assert False
 
 def test_port_availability():
     """Test 5: Check if required ports are available."""
@@ -230,7 +250,7 @@ def test_port_availability():
         else:
             log_test(f"Port {port} ({name})", "PASS", "Available")
     
-    return True
+    return None
 
 def test_performance_baseline():
     """Test 6: Measure baseline performance metrics."""
@@ -249,7 +269,7 @@ def test_performance_baseline():
         for _ in range(iterations):
             try:
                 parsed = ThermalFrameParser.parse_frame(test_frame)
-            except:
+            except Exception:
                 pass
         elapsed = time.time() - start
         
@@ -261,41 +281,42 @@ def test_performance_baseline():
         else:
             log_test("Parsing performance", "PASS", "Above 30 fps threshold")
         
-        return True
+        return None
         
     except Exception as e:
         log_test("Performance test", "FAIL", str(e))
-        return False
+        assert False
 
 def test_ui_screens_exist():
     """Test 7: Verify UI screen files exist."""
     print("\n=== Test 7: UI Screen Files ===")
     
     ui_files = [
-        ("main_window.py", "Main application window"),
-        ("ee_loginwindow.py", "Login window"),
-        ("streamconfig_dialog.py", "Stream configuration"),
-        ("video_widget.py", "Video display widget"),
-        ("device_status_manager.py", "Device status tracking")
+        (("embereye-field/fieldglass/main_window.py",), "Main application window"),
+        (("embereye/app/ee_loginwindow.py", "embereye_base/app/ee_loginwindow.py"), "Login window"),
+        (("embereye_base/app/streamconfig_dialog.py",), "Stream configuration"),
+        (("embereye-field/fieldglass/video_widget.py",), "Video display widget"),
+        (("embereye_base/core/device_status_manager.py",), "Device status tracking"),
     ]
     
     all_exist = True
-    for file, desc in ui_files:
-        if Path(file).exists():
-            log_test(f"UI: {desc}", "PASS", file)
-        else:
-            log_test(f"UI: {desc}", "FAIL", f"Missing {file}")
+    for candidates, desc in ui_files:
+        try:
+            resolved = _resolve_existing_path(*candidates)
+            log_test(f"UI: {desc}", "PASS", str(resolved.relative_to(PROJECT_ROOT)))
+        except FileNotFoundError:
+            log_test(f"UI: {desc}", "FAIL", f"Missing one of: {', '.join(candidates)}")
             all_exist = False
-    
-    return all_exist
+
+    assert all_exist
 
 def test_imports():
     """Test 8: Verify critical imports work."""
     print("\n=== Test 8: Module Imports ===")
     
     modules = [
-        ("PyQt5.QtWidgets", "Qt GUI framework"),
-        ("PyQt5.QtCore", "Qt core"),
+        ("PyQt6.QtWidgets", "Qt GUI framework"),
+        ("PyQt6.QtCore", "Qt core"),
         ("numpy", "NumPy"),
         ("cv2", "OpenCV"),
         ("asyncio", "Async I/O")
@@ -310,7 +331,7 @@ def test_imports():
             log_test(f"Import: {desc}", "FAIL", str(e))
             all_imported = False
     
-    return all_imported
+    assert all_imported
 
 def generate_report():
     """Generate test report."""

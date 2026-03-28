@@ -11,15 +11,15 @@ import matplotlib.pyplot as plt
 import shutil
 from datetime import datetime
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QTabWidget, QGridLayout, 
     QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog,
     QStatusBar, QAction, QMenu, QToolButton, QComboBox, QDialog,
     QMessageBox, QStyle, QInputDialog, QListWidget, QListWidgetItem,
     QDialogButtonBox, QProgressDialog, QTreeWidget, QTreeWidgetItem
 )
-from PyQt5.QtGui import QPixmap, QIcon, QImage
-from PyQt5.QtCore import (
+from PyQt6.QtGui import QPixmap, QIcon, QImage
+from PyQt6.QtCore import (
     Qt, pyqtSignal, QTimer, QMutex, QMutexLocker, 
     QThread, QObject, QSize, QMetaObject
 )
@@ -386,7 +386,7 @@ class StreamConfigDialog(QDialog):
 
     def add_stream(self):
         dialog = StreamEditDialog(self.config["groups"], self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             stream_data = dialog.get_stream_data()
             if self.test_stream(stream_data["url"]):
                 self.config["streams"].append(stream_data)
@@ -401,7 +401,7 @@ class StreamConfigDialog(QDialog):
                           if s["name"] == stream_name and s["group"] == group_name), None)
             if stream:
                 dialog = StreamEditDialog(self.config["groups"], self, stream)
-                if dialog.exec_() == QDialog.Accepted:
+                if dialog.exec() == QDialog.Accepted:
                     new_data = dialog.get_stream_data()
                     if self.test_stream(new_data["url"]):
                         stream.update(new_data)
@@ -439,7 +439,7 @@ class StreamConfigDialog(QDialog):
         tester.test_complete.connect(handle_result)
         thread.started.connect(tester.test_stream)
         thread.start()
-        progress.exec_()
+        progress.exec()
         return result[0]
 
     def get_config(self):
@@ -787,7 +787,7 @@ class Dashboard(QMainWindow):
 
     def configure_streams(self):
         dialog = StreamConfigDialog(self.config, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             self.config = dialog.get_config()
             StreamConfig.save_config(self.config)
             self.group_combo.clear()
@@ -804,7 +804,7 @@ class Dashboard(QMainWindow):
         close_btn = QPushButton("Close", clicked=profile_dialog.close)
         layout.addWidget(close_btn)
         profile_dialog.setLayout(layout)
-        profile_dialog.exec_()
+        profile_dialog.exec()
 
     def prev_rtsp_page(self):
         self.current_rtsp_page = max(1, self.current_rtsp_page - 1)
@@ -853,6 +853,6 @@ if __name__ == "__main__":
     login.show()
     
     try:
-        sys.exit(app.exec_())
+        sys.exit(app.exec())
     except Exception as e:
         print(f"Application error: {str(e)}")

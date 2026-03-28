@@ -36,7 +36,7 @@ Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Ad
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "simulators\*"; DestDir: "{app}\simulators"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "stream_config.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "stream_config.example.json"; DestDir: "{app}"; DestName: "stream_config.json"; Flags: ignoreversion
 Source: "logo.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "users.db"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 

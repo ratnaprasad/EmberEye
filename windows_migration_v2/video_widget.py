@@ -1,7 +1,7 @@
 from .video_worker import VideoWorker
-from PyQt5.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QObject
-from PyQt5.QtGui import QColor
+from PyQt6.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QObject
+from PyQt6.QtGui import QColor
 
 class SensorHandler(QObject):
     data_received = pyqtSignal(dict)  # Signal to emit sensor data  
@@ -93,8 +93,8 @@ class VideoWidget(QWidget):
             if not base_pixmap or base_pixmap.isNull():
                 return
             
-            from PyQt5.QtGui import QPainter, QPen, QFont, QBrush
-            from PyQt5.QtCore import Qt, QRect
+            from PyQt6.QtGui import QPainter, QPen, QFont, QBrush
+            from PyQt6.QtCore import Qt, QRect
             import time
             
             # Create a copy to draw on
@@ -153,8 +153,8 @@ class VideoWidget(QWidget):
         """Apply thermal overlay (runs in main Qt thread via signal)."""
         try:
             import numpy as np
-            from PyQt5.QtGui import QImage, QPainter, QPixmap
-            from PyQt5.QtCore import Qt
+            from PyQt6.QtGui import QImage, QPainter, QPixmap
+            from PyQt6.QtCore import Qt
             import cv2
             
             # Convert matrix to numpy array
@@ -360,12 +360,12 @@ class VideoWidget(QWidget):
         self.video_label.setStyleSheet("color: red; background-color: black; padding: 5px;")
 
     def contextMenuEvent(self, event):
-        from PyQt5.QtWidgets import QMenu, QApplication
+        from PyQt6.QtWidgets import QMenu, QApplication
         menu = QMenu(self)
         if self.last_error_message:
             menu.addAction("Copy Error Text")
         menu.addAction("Open Error Log")
-        action = menu.exec_(event.globalPos())
+        action = menu.exec(event.globalPos())
         if not action:
             return
         if action.text() == "Copy Error Text" and self.last_error_message:
@@ -428,8 +428,8 @@ class VideoWidget(QWidget):
     def _draw_fusion_overlay(self, painter, width, height):
         """Draw fusion data overlay on the frame."""
         try:
-            from PyQt5.QtGui import QFont, QColor, QBrush, QPen
-            from PyQt5.QtCore import Qt, QRect
+            from PyQt6.QtGui import QFont, QColor, QBrush, QPen
+            from PyQt6.QtCore import Qt, QRect
             
             # Semi-transparent background for overlay panel
             panel_height = 180

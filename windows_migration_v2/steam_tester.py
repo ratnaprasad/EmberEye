@@ -1,5 +1,5 @@
 import cv2
-from PyQt5.QtCore import (
+from PyQt6.QtCore import (
     pyqtSignal, QObject
 )
 

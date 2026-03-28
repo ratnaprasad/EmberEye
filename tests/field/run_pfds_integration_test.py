@@ -9,8 +9,8 @@ import time
 import struct
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QTimer
 
 root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "embereye-field" / "fieldglass"))

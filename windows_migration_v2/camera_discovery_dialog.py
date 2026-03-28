@@ -1,7 +1,7 @@
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget, QProgressDialog, QMessageBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
 import socket
 import ipaddress
 
@@ -297,8 +297,8 @@ class CameraDiscoveryDialog(QDialog):
                         pass
                 return
             # Decorate and list
-            from PyQt5.QtCore import Qt as _Qt
-            from PyQt5.QtWidgets import QListWidgetItem
+            from PyQt6.QtCore import Qt as _Qt
+            from PyQt6.QtWidgets import QListWidgetItem
             user = self.user_edit.text().strip()
             pwd = self.pass_edit.text().strip()
             for entry in candidates:
@@ -336,7 +336,7 @@ class CameraDiscoveryDialog(QDialog):
         if not item:
             return
         # Prefer stored URL in item data
-        from PyQt5.QtCore import Qt as _Qt
+        from PyQt6.QtCore import Qt as _Qt
         data = item.data(_Qt.UserRole)
         if isinstance(data, dict) and 'url' in data:
             self._selected_url = data['url']

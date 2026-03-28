@@ -1,4 +1,0 @@
-{"location_id": "s3micro", "packet": {"type": "sensor", "loc_id": "s3micro", "client_ip": "127.0.0.1", "ADC1": 4095, "ADC2": 4095, "ADC3": 1, "DIO": 1, "serial_number": "SIM000003"}, "ts": 1773086158.0343838}
-{"location_id": "s3micro", "packet": {"type": "sensor", "loc_id": "s3micro", "client_ip": "127.0.0.1", "ADC1": 4095, "ADC2": 4095, "ADC3": 1, "DIO": 1, "serial_number": "SIM000003"}, "ts": 1773086158.837167}
-{"location_id": "s3micro", "packet": {"type": "sensor", "loc_id": "s3micro", "client_ip": "127.0.0.1", "ADC1": 4095, "ADC2": 4095, "ADC3": 1, "DIO": 1, "serial_number": "SIM000003"}, "ts": 1773086158.8560882}
-{"location_id": "s3micro", "packet": {"type": "sensor", "loc_id": "s3micro", "client_ip": "127.0.0.1", "ADC1": 4095, "ADC2": 4095, "ADC3": 1, "DIO": 1, "serial_number": "SIM000003"}, "ts": 1773086159.657241}

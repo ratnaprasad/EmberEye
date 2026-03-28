@@ -18,6 +18,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    # Ensure local packages (for example embereye_base) are importable when running as a script.
+    sys.path.insert(0, str(ROOT))
 
 
 def run(cmd: list[str], env: dict[str, str] | None = None) -> None:
@@ -65,13 +68,29 @@ def build_studio() -> Path:
 
 def copy_artifact(src: Path, out_dir: Path, label: str) -> str:
     target = out_dir / f"{label}-{src.name}"
-    if src.is_dir():
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(src, target)
-    else:
-        shutil.copy2(src, target)
-    return str(target.relative_to(ROOT))
+    try:
+        if src.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(src, target)
+        else:
+            shutil.copy2(src, target)
+        return str(target.relative_to(ROOT))
+    except shutil.Error as exc:
+        # copytree may raise shutil.Error with a list of per-file failures.
+        text = str(exc)
+        if "WinError 112" in text or "No space left on device" in text:
+            print(f"[WARN] Insufficient disk space while copying '{src}' to '{target}'.")
+            print(f"[WARN] Using original artifact path in manifest: {src}")
+            return str(src.relative_to(ROOT))
+        raise
+    except OSError as exc:
+        # On constrained disks, keep the build usable by pointing manifest to existing artifacts.
+        if getattr(exc, "winerror", None) == 112 or getattr(exc, "errno", None) == 28:
+            print(f"[WARN] Insufficient disk space while copying '{src}' to '{target}'.")
+            print(f"[WARN] Using original artifact path in manifest: {src}")
+            return str(src.relative_to(ROOT))
+        raise
 
 
 def write_manifest(out_dir: Path, field_artifact: Path, studio_artifact: Path) -> None:

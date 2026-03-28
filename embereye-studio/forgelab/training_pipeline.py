@@ -303,26 +303,20 @@ class DatasetManager:
             
             logger.info(f"✓ {len(valid_files)} valid annotations")
             
-            # CRITICAL FIX: Only use classes that actually have annotations
-            # Discover which class IDs are actually used in annotation .txt files
-            used_class_ids = self._discover_used_classes(valid_files)            
-            logger.info(f"Found {len(used_class_ids)} class IDs with actual annotations: {sorted(used_class_ids)}")
-            
             # Build final class names list (only used classes + any unclassified discovered)
             current_leaf_classes = self._get_current_leaf_classes()
+            used_class_names = self._discover_used_class_names(valid_files, current_leaf_classes)
+            logger.info(f"Found {len(used_class_names)} class names with actual annotations")
             # Pre-scan to discover orphaned classes and record categories
             self._discover_orphans(valid_files, current_leaf_classes)
             
             # Compose final names list with ONLY classes that have data
-            # Map used class IDs to actual class names from master_classes.json
+            # Keep taxonomy order stable, but include only classes that are present in this dataset.
             self.final_names = []
-            for idx in sorted(used_class_ids):
-                if idx < len(current_leaf_classes):
-                    class_name = current_leaf_classes[idx]
+            for class_name in current_leaf_classes:
+                if class_name in used_class_names:
                     self.final_names.append(class_name)
-                    logger.info(f"  Class ID {idx} → {class_name}")
-                else:
-                    logger.warning(f"  Class ID {idx} out of range (max: {len(current_leaf_classes)-1})")
+                    logger.info(f"  Class → {class_name}")
             
             # Add any unclassified classes discovered
             for extra in sorted(self._extra_unclassified):
@@ -577,17 +571,34 @@ class DatasetManager:
         logger.info(f"✓ Dataset config saved: {yaml_path}")
 
     def _get_current_leaf_classes(self) -> List[str]:
-        """Return current taxonomy leaf classes from master_class_config in annotation order."""
+        """Return current taxonomy leaf classes for the active analytics category."""
         try:
-            from embereye.core.class_config import load_master_classes
+            from embereye.core.class_config import (
+                load_master_classes,
+                get_leaf_classes,
+                get_leaf_classes_for_category,
+            )
+            from embereye_base.core.analytics import DEFAULT_ANALYTICS_CATEGORY
+
             classes_dict = load_master_classes()
-            leaf_classes = []
-            for category in classes_dict.get("IncidentEnvironment", []) or []:
-                for leaf in classes_dict.get(category, []) or []:
-                    leaf_classes.append(leaf)
+            active_category = self._get_active_analytics_category(DEFAULT_ANALYTICS_CATEGORY)
+            leaf_classes = get_leaf_classes_for_category(active_category, classes_dict)
+            if not leaf_classes:
+                leaf_classes = get_leaf_classes(classes_dict)
             return leaf_classes
         except Exception:
             return ['fire']
+
+    def _get_active_analytics_category(self, default_value: str = "fire") -> str:
+        """Read active analytics category from shared stream_config.json."""
+        try:
+            stream_cfg_path = Path(__file__).resolve().parent.parent.parent / "stream_config.json"
+            with stream_cfg_path.open("r", encoding="utf-8") as fh:
+                stream_cfg = json.load(fh) or {}
+            category = str(stream_cfg.get("active_analytics_category", default_value) or default_value).strip().lower()
+            return category or default_value
+        except Exception:
+            return default_value
 
     def _find_category_for_class(self, cls_name: str) -> str:
         """Find the category name for a given leaf class name; returns 'UNKNOWN' if not found."""
@@ -634,6 +645,66 @@ class DatasetManager:
                 continue
         
         return used_class_ids
+
+    def _discover_used_class_names(self, files: List[Path], current_leaf_classes: List[str]) -> set[str]:
+        """Discover class names actually used in annotation files.
+
+        This prefers per-media mapping files (metadata JSON / labels.txt), which
+        is required when analytics categories use isolated class spaces.
+        """
+        used_names: set[str] = set()
+
+        def _labels_txt_map(ann_file: Path) -> dict[int, str]:
+            labels_txt = ann_file.parent / 'labels.txt'
+            if not labels_txt.exists():
+                return {}
+            try:
+                rows = [line.strip() for line in labels_txt.read_text(encoding='utf-8').splitlines() if line.strip()]
+                return {idx: name for idx, name in enumerate(rows)}
+            except Exception:
+                return {}
+
+        for ann_file in files:
+            id_to_name: dict[int, str] = {}
+            meta_file = ann_file.with_suffix('.json')
+            if meta_file.exists():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding='utf-8'))
+                    class_mapping = meta.get('class_mapping', {}) or {}
+                    for class_name, class_id in class_mapping.items():
+                        try:
+                            id_to_name[int(class_id)] = str(class_name)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            if not id_to_name:
+                id_to_name = _labels_txt_map(ann_file)
+
+            try:
+                with ann_file.open('r', encoding='utf-8') as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split()
+                        if len(parts) < 5:
+                            continue
+                        try:
+                            class_id = int(parts[0])
+                        except Exception:
+                            continue
+
+                        class_name = id_to_name.get(class_id)
+                        if class_name is None and 0 <= class_id < len(current_leaf_classes):
+                            class_name = current_leaf_classes[class_id]
+                        if class_name:
+                            used_names.add(str(class_name))
+            except Exception:
+                continue
+
+        return used_names
 
     def _discover_orphans(self, files: List[Path], current_leaf_classes: List[str]):
         """Pre-scan annotation files to discover orphaned classes and record categories."""

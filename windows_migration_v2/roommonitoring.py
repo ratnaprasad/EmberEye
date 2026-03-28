@@ -3,9 +3,9 @@ import cv2
 import numpy as np
 import time
 import glob
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QPushButton, QHBoxLayout
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QPushButton, QHBoxLayout
 
 
 # ---------------------- Real-time FPS Counter ----------------------
@@ -281,7 +281,7 @@ class EmberEyeApp:
     def run(self):
         self.main_window.show()
         self.video_thread.start()
-        sys.exit(self.app.exec_())
+        sys.exit(self.app.exec())
 
 # ---------------------- Usage ----------------------
 if __name__ == "__main__":

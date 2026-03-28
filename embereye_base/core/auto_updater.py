@@ -76,20 +76,20 @@ def check_for_updates(silent=False):
 def prompt_update(latest_version, download_url):
     """Show update notification with download link."""
     try:
-        from PyQt5.QtWidgets import QMessageBox
-        from PyQt5.QtCore import Qt
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtCore import Qt
         
         msg = QMessageBox()
-        msg.setIcon(QMessageBox.Information)
+        msg.setIcon(QMessageBox.Icon.Information)
         msg.setWindowTitle("Update Available")
         msg.setText(f"EmberEye {latest_version} is available!")
         msg.setInformativeText(
             f"You are currently running version {CURRENT_VERSION}.\n\n"
             f"Download the latest version from:\n{download_url}"
         )
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.setDefaultButton(QMessageBox.Ok)
-        msg.exec_()
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.setDefaultButton(QMessageBox.StandardButton.Ok)
+        msg.exec()
     except ImportError:
         # Fallback to console
         print(f"\n{'='*60}")

@@ -8,8 +8,8 @@ torchvision>=0.15.0
 torchaudio>=2.0.0
 
 # Then install other requirements
-PyQt5
-PyQtWebEngine
+PyQt6
+PyQt6-WebEngine
 bcrypt
 pyinstaller
 numpy

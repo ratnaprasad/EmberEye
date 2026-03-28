@@ -7,10 +7,10 @@ import platform
 if platform.system() != 'Windows':
     import fcntl
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QMessageBox
 )
-from PyQt5.QtCore import (
+from PyQt6.QtCore import (
     Qt
 )
 from ..embereye_base.app.ee_loginwindow import EELoginWindow
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     login.show()
     
     try:
-        exit_code = app.exec_()
+        exit_code = app.exec()
     except Exception as e:
         print(f"Application error: {str(e)}")
         exit_code = 1
