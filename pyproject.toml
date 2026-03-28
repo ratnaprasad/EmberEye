@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "embereye-base"
+version = "2.0.0"
+description = "Shared core library for EmberEye Field and Studio"
+readme = "docs/README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "EmberEye Development Team" }
+]
+dependencies = [
+  "PyQt6>=6.6"
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["embereye_base*"]
