@@ -24,6 +24,17 @@ This document defines the required Git workflow for developers working on EmberE
    - `git branch --show-current`
    - `git status --short`
 
+## Recommended Local Git Settings (Developer Machine)
+
+Apply once per local clone:
+
+1. Auto-prune stale remote refs:
+   - `git config --local fetch.prune true`
+2. Prevent unintended merge commits on pull:
+   - `git config --local pull.ff only`
+3. Reuse recorded conflict resolutions when possible:
+   - `git config --local rerere.enabled true`
+
 ## During Work
 
 1. Commit only source changes related to the task.
@@ -60,8 +71,38 @@ Use concise commit messages:
    - `>>>>>>>`
 3. Verify with:
    - `rg "<<<<<<<|=======|>>>>>>>"`
+   - if `rg` is unavailable: `grep -R "<<<<<<<\|=======\|>>>>>>>" .`
 4. Stage resolved files.
 5. Continue merge or rebase.
+
+## Scenario Playbook: Detached HEAD Recovery + Mainline Sync
+
+**Scenario name:** `detached-head-local-work-recovery`
+
+Use this when all are true:
+
+1. You are on `HEAD (no branch)`.
+2. You have local tracked/untracked work you must keep.
+3. `origin/main` moved and you need SOP-compliant continuation.
+
+Steps:
+
+1. Preserve work safely:
+   - `git status -sb`
+   - `git stash push -u -m "wip-detached-recovery-<date>"`
+2. Create fresh task branch from latest main:
+   - `git fetch origin --prune`
+   - `git switch -c chore/<task-name> origin/main`
+3. Reapply preserved work:
+   - `git stash pop`
+4. Resolve overlaps/conflicts (if any), then verify no conflict markers remain.
+5. Re-run build/test checks required for the task.
+6. Keep runtime/local artifacts out of commits (`stream_config.json`, local DBs, logs, generated datasets).
+
+Notes:
+
+1. This scenario is the approved recovery path instead of forcing commits on detached HEAD.
+2. If stash pop produces conflicts, resolve in editor and continue with normal conflict resolution steps above.
 
 ## Developer Do Not Do
 
