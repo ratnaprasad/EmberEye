@@ -146,6 +146,7 @@ Ember Eye is a sophisticated command center application for real-time thermal vi
 ## 🏷 Release Notes
 
 - Product versioning policy: [VERSIONING_POLICY.md](d:/EE/EmberEye/docs/VERSIONING_POLICY.md)
+- Branch and version map: [BRANCH_VERSION_MAP.md](d:/EE/EmberEye/docs/BRANCH_VERSION_MAP.md)
 - Release notes index: [releases/README.md](d:/EE/EmberEye/docs/releases/README.md)
 - Current stable release: [releases/RELEASE_NOTES_2026-03-19.md](d:/EE/EmberEye/docs/releases/RELEASE_NOTES_2026-03-19.md)
 
