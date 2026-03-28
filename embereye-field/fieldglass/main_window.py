@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from embereye_base.core.stream_config import StreamConfig
+from embereye_base.core.marketplace import PluginManager, validate_eapkg
 from embereye_base.utils.tcp_server_logger import log_info as log_server_info, log_error as log_server_error
 from embereye_base.utils.resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
 from embereye_base.utils.debug_config import debug_print, is_debug_enabled, set_debug_enabled
@@ -47,6 +48,7 @@ except Exception:
     HAS_WEBENGINE = False
 from datetime import datetime, timezone
 from embereye_base.app.streamconfig_dialog import StreamConfigDialog
+from analytics_cards_view import AnalyticsCardsView
 from video_widget import VideoWidget
 from embereye_base.core.fusion import FusionOrchestrator, DetectionSource
 from embereye_base.core.configuration.fusion_config import fusion_config
@@ -1735,6 +1737,14 @@ class BEMainWindow(QMainWindow):
         self.current_group = "Default"
         self.current_rtsp_page = 1
         self.current_graph_page = 1
+        self.marketplace_plugin_manager = None
+        self.analytics_cards_view = None
+        self.marketplace_dir = Path(str(
+            self.config.get(
+                'marketplace_folder',
+                Path.home() / 'EmberEye' / 'Marketplace',
+            )
+        )).expanduser()
         self.grid_rebuild_pending = False  # Track if rebuild is scheduled
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         # Incidents config defaults
@@ -2399,6 +2409,7 @@ class BEMainWindow(QMainWindow):
                 self.init_grafana_tab()
             # Always initialize Incidents tab
             self.init_incidents_tab()
+            self.init_marketplace_tab()
             self.init_live_pfds_tab()
             # Training Manager removed - Studio-only feature
             # Field Edition focuses on monitoring and detection
@@ -10027,6 +10038,146 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.tabs.addTab(graph_tab, "Analytics")
         self.update_graph()
 
+    def init_marketplace_tab(self):
+        marketplace_tab = QWidget()
+        layout = QVBoxLayout(marketplace_tab)
+
+        self.analytics_cards_view = AnalyticsCardsView()
+        self.analytics_cards_view.refresh_requested.connect(self._refresh_marketplace_analytics)
+        self.analytics_cards_view.import_requested.connect(self._import_marketplace_analytics)
+        layout.addWidget(self.analytics_cards_view)
+
+        self.tabs.addTab(marketplace_tab, "ANALYTICS")
+
+        self.marketplace_plugin_manager = PluginManager(self.marketplace_dir)
+        self.marketplace_plugin_manager.analytic_added.connect(self._on_marketplace_descriptor_changed)
+        self.marketplace_plugin_manager.analytic_removed.connect(self._on_marketplace_descriptor_changed)
+        self.marketplace_plugin_manager.analytic_updated.connect(self._on_marketplace_descriptor_changed)
+        self.marketplace_plugin_manager.scan_completed.connect(self._on_marketplace_scan_completed)
+
+        self._refresh_marketplace_analytics()
+
+    def _refresh_marketplace_analytics(self):
+        if not self.marketplace_plugin_manager:
+            return
+        try:
+            self.marketplace_plugin_manager.refresh()
+        except Exception as exc:
+            logger.exception("Marketplace scan failed: %s", exc)
+            try:
+                self.statusBar().showMessage(f"Marketplace scan failed: {exc}", 5000)
+            except Exception:
+                pass
+
+    def _on_marketplace_descriptor_changed(self, _analytic_id):
+        # Descriptor changes are reflected when scan_completed is emitted.
+        return
+
+    def _on_marketplace_scan_completed(self):
+        if not self.marketplace_plugin_manager or not self.analytics_cards_view:
+            return
+        descriptors = self.marketplace_plugin_manager.descriptors()
+        self.analytics_cards_view.set_descriptors(descriptors)
+        try:
+            self.statusBar().showMessage(
+                f"Marketplace scan complete: {len(descriptors)} package(s)",
+                2500,
+            )
+        except Exception:
+            pass
+
+    def _import_marketplace_analytics(self):
+        source_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder to Import Analytics",
+            str(Path.home()),
+        )
+        if not source_dir:
+            return
+
+        source_path = Path(source_dir)
+        candidates = sorted(source_path.rglob("*.eapkg"))
+        if not candidates:
+            QMessageBox.information(
+                self,
+                "Import Analytics",
+                "No .eapkg files found in the selected folder.",
+            )
+            return
+
+        progress = QProgressDialog("Importing analytics packages...", "Cancel", 0, len(candidates), self)
+        progress.setWindowTitle("Import Analytics")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        imported = 0
+        failed = 0
+        failures: list[str] = []
+
+        self.marketplace_dir.mkdir(parents=True, exist_ok=True)
+
+        for index, package_path in enumerate(candidates, start=1):
+            if progress.wasCanceled():
+                break
+
+            progress.setValue(index - 1)
+            progress.setLabelText(f"Validating {package_path.name} ({index}/{len(candidates)})")
+            QApplication.processEvents()
+
+            validation = validate_eapkg(package_path)
+            if not validation.is_valid:
+                failed += 1
+                error_text = "; ".join(validation.errors) if validation.errors else "Unknown validation error"
+                failures.append(f"{package_path.name}: {error_text}")
+                continue
+
+            destination = self.marketplace_dir / package_path.name
+            destination = self._next_available_marketplace_path(destination)
+
+            try:
+                shutil.copy2(package_path, destination)
+                imported += 1
+            except Exception as exc:
+                failed += 1
+                failures.append(f"{package_path.name}: copy failed ({exc})")
+
+        progress.setValue(len(candidates))
+        progress.close()
+
+        self._refresh_marketplace_analytics()
+
+        summary_lines = [
+            f"Imported: {imported}",
+            f"Failed: {failed}",
+            f"Target folder: {self.marketplace_dir}",
+        ]
+        if progress.wasCanceled():
+            summary_lines.append("Status: canceled by user")
+
+        if failures:
+            preview = "\n".join(failures[:8])
+            if len(failures) > 8:
+                preview += f"\n... and {len(failures) - 8} more"
+            summary_lines.append("")
+            summary_lines.append("Failure details:")
+            summary_lines.append(preview)
+
+        QMessageBox.information(self, "Import Analytics Summary", "\n".join(summary_lines))
+
+    def _next_available_marketplace_path(self, base_path: Path) -> Path:
+        if not base_path.exists():
+            return base_path
+
+        stem = base_path.stem
+        suffix = base_path.suffix
+        counter = 1
+        while True:
+            candidate = base_path.with_name(f"{stem}_{counter}{suffix}")
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
     def showEvent(self, event):
         """Start WebSocket client when window is shown"""
         super().showEvent(event)
@@ -10493,6 +10644,16 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 self.cleanup_all_workers()
             except Exception as e:
                 print(f"Comprehensive cleanup error: {e}")
+
+        # Stop marketplace watcher so shutdown does not keep directory observers alive.
+        try:
+            if self.marketplace_plugin_manager is not None:
+                watcher = getattr(self.marketplace_plugin_manager, 'watcher', None)
+                if watcher is not None:
+                    for directory in watcher.directories():
+                        watcher.removePath(directory)
+        except Exception as e:
+            print(f"Marketplace watcher cleanup error: {e}")
         
         # Save baselines/events
         try:
