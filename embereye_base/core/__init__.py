@@ -1,5 +1,13 @@
 from .analytics import AnalyticMetadata, AnalyticPlugin, AnalyticResult, FrameData, SensorReading
-from .licensing import LicenseManager, LicenseSummary
+from .licensing import (
+	LicenseFileData,
+	LicenseManager,
+	LicenseState,
+	LicenseSummary,
+	get_embereye_home,
+	get_license_dir,
+	get_license_public_key_path,
+)
 from .marketplace import (
 	AnalyticDescriptor,
 	PackageValidationResult,
@@ -14,7 +22,12 @@ __all__ = [
 	"AnalyticPlugin",
 	"AnalyticResult",
 	"FrameData",
+	"get_embereye_home",
+	"get_license_dir",
+	"get_license_public_key_path",
+	"LicenseFileData",
 	"LicenseManager",
+	"LicenseState",
 	"LicenseSummary",
 	"PackageValidationResult",
 	"PluginManager",
