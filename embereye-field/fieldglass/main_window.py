@@ -1,6 +1,5 @@
 import os
 import time
-import shutil
 import logging
 import numpy as np
 import websockets
@@ -22,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from embereye_base.core.stream_config import StreamConfig
-from embereye_base.core.marketplace import PluginManager, validate_eapkg
+from embereye_base.core.marketplace import PluginManager
 from embereye_base.utils.tcp_server_logger import log_info as log_server_info, log_error as log_server_error
 from embereye_base.utils.resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
 from embereye_base.utils.debug_config import debug_print, is_debug_enabled, set_debug_enabled
@@ -49,6 +48,7 @@ except Exception:
 from datetime import datetime, timezone
 from embereye_base.app.streamconfig_dialog import StreamConfigDialog
 from analytics_cards_view import AnalyticsCardsView
+from import_analytics_dialog import ImportAnalyticsDialog
 from video_widget import VideoWidget
 from embereye_base.core.fusion import FusionOrchestrator, DetectionSource
 from embereye_base.core.configuration.fusion_config import fusion_config
@@ -10087,96 +10087,13 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             pass
 
     def _import_marketplace_analytics(self):
-        source_dir = QFileDialog.getExistingDirectory(
-            self,
-            "Select Folder to Import Analytics",
-            str(Path.home()),
-        )
-        if not source_dir:
+        dialog = ImportAnalyticsDialog(self.marketplace_dir, parent=self)
+        result = dialog.run()
+        if result is None or result.discovered == 0:
             return
-
-        source_path = Path(source_dir)
-        candidates = sorted(source_path.rglob("*.eapkg"))
-        if not candidates:
-            QMessageBox.information(
-                self,
-                "Import Analytics",
-                "No .eapkg files found in the selected folder.",
-            )
-            return
-
-        progress = QProgressDialog("Importing analytics packages...", "Cancel", 0, len(candidates), self)
-        progress.setWindowTitle("Import Analytics")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-
-        imported = 0
-        failed = 0
-        failures: list[str] = []
-
-        self.marketplace_dir.mkdir(parents=True, exist_ok=True)
-
-        for index, package_path in enumerate(candidates, start=1):
-            if progress.wasCanceled():
-                break
-
-            progress.setValue(index - 1)
-            progress.setLabelText(f"Validating {package_path.name} ({index}/{len(candidates)})")
-            QApplication.processEvents()
-
-            validation = validate_eapkg(package_path)
-            if not validation.is_valid:
-                failed += 1
-                error_text = "; ".join(validation.errors) if validation.errors else "Unknown validation error"
-                failures.append(f"{package_path.name}: {error_text}")
-                continue
-
-            destination = self.marketplace_dir / package_path.name
-            destination = self._next_available_marketplace_path(destination)
-
-            try:
-                shutil.copy2(package_path, destination)
-                imported += 1
-            except Exception as exc:
-                failed += 1
-                failures.append(f"{package_path.name}: copy failed ({exc})")
-
-        progress.setValue(len(candidates))
-        progress.close()
 
         self._refresh_marketplace_analytics()
-
-        summary_lines = [
-            f"Imported: {imported}",
-            f"Failed: {failed}",
-            f"Target folder: {self.marketplace_dir}",
-        ]
-        if progress.wasCanceled():
-            summary_lines.append("Status: canceled by user")
-
-        if failures:
-            preview = "\n".join(failures[:8])
-            if len(failures) > 8:
-                preview += f"\n... and {len(failures) - 8} more"
-            summary_lines.append("")
-            summary_lines.append("Failure details:")
-            summary_lines.append(preview)
-
-        QMessageBox.information(self, "Import Analytics Summary", "\n".join(summary_lines))
-
-    def _next_available_marketplace_path(self, base_path: Path) -> Path:
-        if not base_path.exists():
-            return base_path
-
-        stem = base_path.stem
-        suffix = base_path.suffix
-        counter = 1
-        while True:
-            candidate = base_path.with_name(f"{stem}_{counter}{suffix}")
-            if not candidate.exists():
-                return candidate
-            counter += 1
+        QMessageBox.information(self, "Import Analytics Summary", result.summary_text())
 
     def showEvent(self, event):
         """Start WebSocket client when window is shown"""
