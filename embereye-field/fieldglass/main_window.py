@@ -471,6 +471,12 @@ class BEMainWindow(QMainWindow):
             for category in ANALYTICS_CATEGORY_NAMES
         }
 
+    def _default_fusion_pinned_selection(self):
+        return {
+            category: []
+            for category in ANALYTICS_CATEGORY_NAMES
+        }
+
     def _normalize_fusion_card_selection(self, value):
         """Normalize manual fusion card selection map from config."""
         normalized = self._default_fusion_card_selection()
@@ -490,6 +496,24 @@ class BEMainWindow(QMainWindow):
                     normalized[category] = filtered
         return normalized
 
+    def _normalize_fusion_pinned_selection(self, value):
+        """Normalize pinned fusion card selection map from config."""
+        normalized = self._default_fusion_pinned_selection()
+        if not isinstance(value, dict):
+            return normalized
+
+        for category in ANALYTICS_CATEGORY_NAMES:
+            raw = value.get(category)
+            allowed = set(get_fusion_cards(category))
+            if isinstance(raw, list):
+                filtered = []
+                for card_key in raw:
+                    key = str(card_key).strip().lower()
+                    if key in allowed and key not in filtered:
+                        filtered.append(key)
+                normalized[category] = filtered
+        return normalized
+
     def _load_analytics_banner_preferences(self):
         self.enabled_analytics_categories = self._normalize_enabled_analytics_categories(
             self.config.get('enabled_analytics_categories', [])
@@ -499,6 +523,9 @@ class BEMainWindow(QMainWindow):
         self.fusion_banner_mode = 'manual' if mode == 'manual' else 'auto'
         self.fusion_banner_manual_cards = self._normalize_fusion_card_selection(
             self.config.get('fusion_banner_manual_cards', {})
+        )
+        self.fusion_banner_pinned_cards = self._normalize_fusion_pinned_selection(
+            self.config.get('fusion_banner_pinned_cards', {})
         )
 
     def _persist_analytics_banner_preferences(self):
@@ -521,6 +548,9 @@ class BEMainWindow(QMainWindow):
         self.config['fusion_banner_manual_cards'] = self._normalize_fusion_card_selection(
             getattr(self, 'fusion_banner_manual_cards', {})
         )
+        self.config['fusion_banner_pinned_cards'] = self._normalize_fusion_pinned_selection(
+            getattr(self, 'fusion_banner_pinned_cards', {})
+        )
         self.config['active_analytics_category'] = active
         StreamConfig.save_config(self.config)
 
@@ -534,6 +564,9 @@ class BEMainWindow(QMainWindow):
                     payload['fusion_banner_enabled'] = bool(self.fusion_banner_enabled)
                     payload['fusion_banner_mode'] = str(self.fusion_banner_mode)
                     payload['fusion_banner_manual_cards'] = dict(self.fusion_banner_manual_cards)
+                    payload['fusion_banner_pinned_cards'] = dict(
+                        getattr(self, 'fusion_banner_pinned_cards', self._default_fusion_pinned_selection())
+                    )
                     payload['analytics_category'] = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
                     payload['fusion_display_category'] = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
                     widget.set_fusion_data(payload)
@@ -692,6 +725,9 @@ class BEMainWindow(QMainWindow):
             'fusion_banner_mode': str(getattr(self, 'fusion_banner_mode', 'auto')),
             'fusion_banner_manual_cards': dict(
                 getattr(self, 'fusion_banner_manual_cards', self._default_fusion_card_selection())
+            ),
+            'fusion_banner_pinned_cards': dict(
+                getattr(self, 'fusion_banner_pinned_cards', self._default_fusion_pinned_selection())
             ),
             'sources': source_names,
             'hot_cells': hot_cells,
