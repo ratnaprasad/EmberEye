@@ -1777,6 +1777,12 @@ class BEMainWindow(QMainWindow):
         self.current_graph_page = 1
         self.marketplace_plugin_manager = None
         self.analytics_cards_view = None
+        self.marketplace_enabled_analytics = self._normalize_marketplace_enabled_analytics(
+            self.config.get('enabled_marketplace_analytics', {})
+        )
+        self.marketplace_analytic_settings = self._normalize_marketplace_analytic_settings(
+            self.config.get('marketplace_analytic_settings', {})
+        )
         self.license_manager = None
         self.licenses_table = None
         self.license_device_status_label = None
@@ -10087,6 +10093,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.analytics_cards_view = AnalyticsCardsView()
         self.analytics_cards_view.refresh_requested.connect(self._refresh_marketplace_analytics)
         self.analytics_cards_view.import_requested.connect(self._import_marketplace_analytics)
+        self.analytics_cards_view.analytic_enabled_changed.connect(self._set_marketplace_analytic_enabled)
+        self.analytics_cards_view.analytic_configure_requested.connect(self._configure_marketplace_analytic)
+        self.analytics_cards_view.analytic_remove_requested.connect(self._remove_marketplace_analytic)
         layout.addWidget(self.analytics_cards_view)
 
         self.tabs.addTab(marketplace_tab, "ANALYTICS")
@@ -10119,7 +10128,31 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         if not self.marketplace_plugin_manager or not self.analytics_cards_view:
             return
         descriptors = self.marketplace_plugin_manager.descriptors()
-        self.analytics_cards_view.set_descriptors(descriptors)
+
+        # Prevent stale enabled toggles from referencing removed or unlicensed analytics.
+        current_ids = {item.analytic_id for item in descriptors}
+        normalized_enabled = {}
+        for descriptor in descriptors:
+            if descriptor.license_status == 'licensed':
+                normalized_enabled[descriptor.analytic_id] = bool(
+                    self.marketplace_enabled_analytics.get(descriptor.analytic_id, False)
+                )
+            else:
+                normalized_enabled[descriptor.analytic_id] = False
+        self.marketplace_enabled_analytics = normalized_enabled
+        self.marketplace_analytic_settings = {
+            key: value
+            for key, value in self.marketplace_analytic_settings.items()
+            if key in current_ids
+        }
+        self.config['enabled_marketplace_analytics'] = dict(self.marketplace_enabled_analytics)
+        self.config['marketplace_analytic_settings'] = dict(self.marketplace_analytic_settings)
+        StreamConfig.save_config(self.config)
+
+        self.analytics_cards_view.set_descriptors(
+            descriptors,
+            enabled_map=self.marketplace_enabled_analytics,
+        )
         try:
             self.statusBar().showMessage(
                 f"Marketplace scan complete: {len(descriptors)} package(s)",
@@ -10136,6 +10169,142 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self._refresh_marketplace_analytics()
         QMessageBox.information(self, "Import Analytics Summary", result.summary_text())
+
+    def _normalize_marketplace_enabled_analytics(self, value):
+        if not isinstance(value, dict):
+            return {}
+        normalized = {}
+        for key, item in value.items():
+            analytic_id = str(key).strip().lower()
+            if analytic_id:
+                normalized[analytic_id] = bool(item)
+        return normalized
+
+    def _normalize_marketplace_analytic_settings(self, value):
+        if not isinstance(value, dict):
+            return {}
+        normalized = {}
+        for key, item in value.items():
+            analytic_id = str(key).strip().lower()
+            if analytic_id and isinstance(item, dict):
+                normalized[analytic_id] = dict(item)
+        return normalized
+
+    def _set_marketplace_analytic_enabled(self, analytic_id, enabled):
+        analytic_id = str(analytic_id or '').strip().lower()
+        if not analytic_id:
+            return
+
+        descriptor = None
+        if self.marketplace_plugin_manager is not None:
+            for item in self.marketplace_plugin_manager.descriptors():
+                if item.analytic_id == analytic_id:
+                    descriptor = item
+                    break
+
+        if descriptor is not None and str(descriptor.license_status).strip().lower() != 'licensed':
+            self.marketplace_enabled_analytics[analytic_id] = False
+            QMessageBox.warning(
+                self,
+                "License Required",
+                f"{descriptor.metadata.name} is not licensed and cannot be enabled.",
+            )
+        else:
+            self.marketplace_enabled_analytics[analytic_id] = bool(enabled)
+
+        self.config['enabled_marketplace_analytics'] = dict(self.marketplace_enabled_analytics)
+        StreamConfig.save_config(self.config)
+
+    def _configure_marketplace_analytic(self, analytic_id):
+        analytic_id = str(analytic_id or '').strip().lower()
+        if not analytic_id:
+            return
+
+        descriptor = None
+        if self.marketplace_plugin_manager is not None:
+            for item in self.marketplace_plugin_manager.descriptors():
+                if item.analytic_id == analytic_id:
+                    descriptor = item
+                    break
+
+        if descriptor is None:
+            QMessageBox.warning(self, "Configure Analytic", "Analytic is no longer available.")
+            return
+
+        if str(descriptor.license_status).strip().lower() != 'licensed':
+            QMessageBox.warning(self, "Configure Analytic", "Analytic must be licensed before configuration.")
+            return
+
+        current_payload = self.marketplace_analytic_settings.get(analytic_id, {})
+        initial_text = json.dumps(current_payload, indent=2, sort_keys=True)
+        user_text, ok = QInputDialog.getMultiLineText(
+            self,
+            "Configure Analytic",
+            f"JSON settings for {descriptor.metadata.name} ({analytic_id})",
+            initial_text,
+        )
+        if not ok:
+            return
+
+        raw = str(user_text or '').strip()
+        if not raw:
+            self.marketplace_analytic_settings.pop(analytic_id, None)
+            self.config['marketplace_analytic_settings'] = dict(self.marketplace_analytic_settings)
+            StreamConfig.save_config(self.config)
+            self.statusBar().showMessage(f"Cleared analytic settings: {descriptor.metadata.name}", 3000)
+            return
+
+        try:
+            parsed = json.loads(raw)
+        except Exception as exc:
+            QMessageBox.critical(self, "Configure Analytic", f"Invalid JSON settings:\n{exc}")
+            return
+
+        if not isinstance(parsed, dict):
+            QMessageBox.warning(self, "Configure Analytic", "Settings payload must be a JSON object.")
+            return
+
+        self.marketplace_analytic_settings[analytic_id] = parsed
+        self.config['marketplace_analytic_settings'] = dict(self.marketplace_analytic_settings)
+        StreamConfig.save_config(self.config)
+        self.statusBar().showMessage(f"Saved analytic settings: {descriptor.metadata.name}", 3000)
+
+    def _remove_marketplace_analytic(self, analytic_id):
+        analytic_id = str(analytic_id or '').strip().lower()
+        if not analytic_id or self.marketplace_plugin_manager is None:
+            return
+
+        descriptor = None
+        for item in self.marketplace_plugin_manager.descriptors():
+            if item.analytic_id == analytic_id:
+                descriptor = item
+                break
+
+        if descriptor is None:
+            QMessageBox.warning(self, "Remove Analytic", "Analytic is no longer available.")
+            return
+
+        confirmation = QMessageBox.question(
+            self,
+            "Remove Analytic",
+            f"Remove package {descriptor.package_path.name} from marketplace?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            descriptor.package_path.unlink(missing_ok=True)
+            self.marketplace_enabled_analytics.pop(analytic_id, None)
+            self.marketplace_analytic_settings.pop(analytic_id, None)
+            self.config['enabled_marketplace_analytics'] = dict(self.marketplace_enabled_analytics)
+            self.config['marketplace_analytic_settings'] = dict(self.marketplace_analytic_settings)
+            StreamConfig.save_config(self.config)
+            self._refresh_marketplace_analytics()
+            QMessageBox.information(self, "Remove Analytic", f"Removed {descriptor.package_path.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Remove Analytic", f"Failed to remove package:\n{exc}")
 
     def init_licenses_tab(self):
         licenses_tab = QWidget()

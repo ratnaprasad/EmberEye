@@ -56,10 +56,10 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 ### Count Summary
 
 - Total checklist items: 33
-- Done: 26
-- In Progress: 2
+- Done: 28
+- In Progress: 0
 - Not Started: 5
-- Weighted completion: 81.8%
+- Weighted completion: 84.8%
 
 ### Done
 
@@ -80,33 +80,32 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 - Studio export-as-eapkg minimal path with validator compatibility checks
 - Critical-card pin/non-evict behavior for constrained banner layouts
 - Mode-switch persistence and runtime-reload E2E coverage for banner preferences
+- Card widget parity: enable toggle, Configure action, Remove action, and license-gated behavior
+- Import dialog UX parity: richer progress reporting and completion state details
 
 ### In Progress
 
-- Card widget feature parity (Configure/Remove and full license-state wiring requires completion)
-- Import dialog UX parity with roadmap details (progress dialog and full operator flow polish)
+- None currently.
 
 ### Not Started
 
-- Critical-card pin/non-evict behavior for constrained layouts
-- Studio export-as-eapkg implementation and integration
-- Full end-to-end tests for banner mode switching across sessions/restarts
-- Import dialog progress UX parity (QProgressDialog-centric workflow)
+- Full end-to-end tests for banner mode switching across sessions/restarts (comprehensive UI-runtime pass)
+- Studio export metadata prompt/authoring UX refinements for operator flows
 - Tag embereye-suite/v2.0.0-dev.3
 - Final phase acceptance pass with roadmap checklist sign-off
 
 ## Combined Status (Phase 1 + Phase 2)
 
 - Combined total items: 55
-- Combined done: 42
-- Combined in progress: 5
-- Combined weighted completion: 80.9%
+- Combined done: 44
+- Combined in progress: 3
+- Combined weighted completion: 82.7%
 
 ## Next Milestone to Lift Both Phases Fast
 
 1. Close remaining Phase 1 release criteria:
    - coverage report proof + device-limit breach alert path
 2. Finish Phase 2 final runtime gaps:
-   - card widget feature parity + import dialog UX parity
+   - comprehensive mode-switch/session-restart validation + final acceptance pass
 3. Expand Studio export with richer operator metadata prompts and stricter schema docs alignment
 4. Run final checklist audit and cut `dev.2` / `dev.3` milestone tags

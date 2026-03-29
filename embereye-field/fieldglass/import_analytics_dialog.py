@@ -60,9 +60,19 @@ def import_analytics_packages(
     *,
     show_progress: bool = False,
     parent: QWidget | None = None,
+    progress_callback=None,
 ) -> ImportAnalyticsResult:
     source_dir = Path(source_dir)
     target_dir = Path(target_dir)
+
+    if not source_dir.exists() or not source_dir.is_dir():
+        return ImportAnalyticsResult(
+            source_dir=source_dir,
+            target_dir=target_dir,
+            discovered=0,
+            failed=1,
+            failures=[f"Source directory does not exist: {source_dir}"],
+        )
 
     candidates = sorted(source_dir.rglob("*.eapkg"))
     result = ImportAnalyticsResult(
@@ -77,6 +87,8 @@ def import_analytics_packages(
         progress.setWindowTitle("Import Analytics")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
         progress.show()
 
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +102,15 @@ def import_analytics_packages(
             progress.setValue(index - 1)
             progress.setLabelText(f"Validating {package_path.name} ({index}/{len(candidates)})")
             QApplication.processEvents()
+        if callable(progress_callback):
+            progress_callback(
+                "validate",
+                {
+                    "index": index,
+                    "total": len(candidates),
+                    "package": package_path.name,
+                },
+            )
 
         validation = validate_eapkg(package_path)
         if not validation.is_valid:
@@ -101,6 +122,18 @@ def import_analytics_packages(
         destination = next_available_target_path(target_dir / package_path.name)
 
         try:
+            if progress:
+                progress.setLabelText(f"Importing {package_path.name} ({index}/{len(candidates)})")
+                QApplication.processEvents()
+            if callable(progress_callback):
+                progress_callback(
+                    "copy",
+                    {
+                        "index": index,
+                        "total": len(candidates),
+                        "package": package_path.name,
+                    },
+                )
             shutil.copy2(package_path, destination)
             result.imported += 1
         except Exception as exc:
@@ -109,7 +142,21 @@ def import_analytics_packages(
 
     if progress:
         progress.setValue(len(candidates))
+        progress.setLabelText(
+            f"Completed: imported {result.imported}, failed {result.failed}, canceled={result.canceled}"
+        )
         progress.close()
+
+    if callable(progress_callback):
+        progress_callback(
+            "complete",
+            {
+                "total": len(candidates),
+                "imported": result.imported,
+                "failed": result.failed,
+                "canceled": result.canceled,
+            },
+        )
 
     return result
 

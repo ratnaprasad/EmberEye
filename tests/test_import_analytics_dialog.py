@@ -91,3 +91,42 @@ def test_import_analytics_packages_no_candidates(tmp_path):
     assert result.discovered == 0
     assert result.imported == 0
     assert result.failed == 0
+
+
+def test_import_analytics_packages_invalid_source_dir(tmp_path):
+    missing_source = tmp_path / "missing"
+    target = tmp_path / "target"
+
+    result = import_analytics_packages(missing_source, target, show_progress=False)
+
+    assert result.discovered == 0
+    assert result.imported == 0
+    assert result.failed == 1
+    assert any("does not exist" in item for item in result.failures)
+
+
+def test_import_analytics_packages_reports_progress_events(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+
+    _build_eapkg(source / "alpha.eapkg", analytic_id="alpha")
+    _build_eapkg(source / "beta.eapkg", analytic_id="beta")
+
+    events = []
+
+    def _on_progress(stage, payload):
+        events.append((stage, dict(payload)))
+
+    result = import_analytics_packages(
+        source,
+        target,
+        show_progress=False,
+        progress_callback=_on_progress,
+    )
+
+    assert result.imported == 2
+    stages = [stage for stage, _payload in events]
+    assert stages.count("validate") == 2
+    assert stages.count("copy") == 2
+    assert stages[-1] == "complete"

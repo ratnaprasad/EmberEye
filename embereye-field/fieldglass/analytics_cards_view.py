@@ -15,9 +15,13 @@ from PyQt6.QtWidgets import (
 
 
 class AnalyticCardWidget(QFrame):
-    """Minimal card used to display marketplace analytic descriptors."""
+    """Interactive card used to display and manage marketplace analytic descriptors."""
 
-    def __init__(self, descriptor, parent: QWidget | None = None):
+    enabled_changed = pyqtSignal(str, bool)
+    configure_requested = pyqtSignal(str)
+    remove_requested = pyqtSignal(str)
+
+    def __init__(self, descriptor, *, enabled: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
         self.descriptor = descriptor
 
@@ -53,9 +57,44 @@ class AnalyticCardWidget(QFrame):
 
         toggle = QCheckBox("Enabled")
         toggle.setEnabled(license_state == "licensed")
-        toggle.setChecked(False)
+        toggle.setChecked(bool(enabled and license_state == "licensed"))
         toggle.setStyleSheet("color: #d4e9f3; font-size: 11px;")
+        toggle.toggled.connect(lambda value: self.enabled_changed.emit(self.descriptor.analytic_id, bool(value)))
         layout.addWidget(toggle)
+
+        action_row = QHBoxLayout()
+        configure_btn = QPushButton("Configure")
+        configure_btn.setEnabled(license_state == "licensed")
+        configure_btn.clicked.connect(lambda: self.configure_requested.emit(self.descriptor.analytic_id))
+        configure_btn.setStyleSheet(
+            "QPushButton {"
+            "background-color: #24435a;"
+            "border: 1px solid #356584;"
+            "border-radius: 5px;"
+            "padding: 4px 8px;"
+            "color: #d4e9f3;"
+            "font-size: 10px;"
+            "font-weight: 600;"
+            "}"
+        )
+        action_row.addWidget(configure_btn)
+
+        remove_btn = QPushButton("Remove")
+        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.descriptor.analytic_id))
+        remove_btn.setStyleSheet(
+            "QPushButton {"
+            "background-color: #5a2c2c;"
+            "border: 1px solid #7a3b3b;"
+            "border-radius: 5px;"
+            "padding: 4px 8px;"
+            "color: #ffd8d1;"
+            "font-size: 10px;"
+            "font-weight: 600;"
+            "}"
+        )
+        action_row.addWidget(remove_btn)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
 
         if descriptor.error_message:
             error_label = QLabel(descriptor.error_message)
@@ -69,6 +108,9 @@ class AnalyticsCardsView(QWidget):
 
     refresh_requested = pyqtSignal()
     import_requested = pyqtSignal()
+    analytic_enabled_changed = pyqtSignal(str, bool)
+    analytic_configure_requested = pyqtSignal(str)
+    analytic_remove_requested = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -132,15 +174,23 @@ class AnalyticsCardsView(QWidget):
         self.scroll.setWidget(self.cards_host)
         root.addWidget(self.scroll)
 
-    def set_descriptors(self, descriptors: list) -> None:
+    def set_descriptors(self, descriptors: list, enabled_map: dict[str, bool] | None = None) -> None:
         self._clear_cards()
+        enabled_map = enabled_map or {}
 
         sorted_descriptors = sorted(
             descriptors,
             key=lambda item: (item.metadata.name or item.analytic_id).lower(),
         )
 
-        self.summary_label.setText(f"Marketplace analytics: {len(sorted_descriptors)}")
+        enabled_count = 0
+        for descriptor in sorted_descriptors:
+            if bool(enabled_map.get(descriptor.analytic_id, False)):
+                enabled_count += 1
+
+        self.summary_label.setText(
+            f"Marketplace analytics: {len(sorted_descriptors)} (enabled: {enabled_count})"
+        )
 
         if not sorted_descriptors:
             empty = QLabel("No .eapkg packages detected in the marketplace folder.")
@@ -153,7 +203,14 @@ class AnalyticsCardsView(QWidget):
         for index, descriptor in enumerate(sorted_descriptors):
             row = index // column_count
             col = index % column_count
-            self.cards_layout.addWidget(AnalyticCardWidget(descriptor), row, col)
+            card = AnalyticCardWidget(
+                descriptor,
+                enabled=bool(enabled_map.get(descriptor.analytic_id, False)),
+            )
+            card.enabled_changed.connect(self.analytic_enabled_changed.emit)
+            card.configure_requested.connect(self.analytic_configure_requested.emit)
+            card.remove_requested.connect(self.analytic_remove_requested.emit)
+            self.cards_layout.addWidget(card, row, col)
 
     def _clear_cards(self) -> None:
         while self.cards_layout.count():

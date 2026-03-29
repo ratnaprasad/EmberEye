@@ -79,7 +79,7 @@ def test_marketplace_import_refresh_and_cards_render(tmp_path):
     manager.refresh()
     app.processEvents()
 
-    assert view.summary_label.text() == "Marketplace analytics: 2"
+    assert view.summary_label.text() == "Marketplace analytics: 2 (enabled: 0)"
 
     cards = view.findChildren(AnalyticCardWidget)
     assert len(cards) == 2
