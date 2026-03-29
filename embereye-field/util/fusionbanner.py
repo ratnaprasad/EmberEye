@@ -84,7 +84,84 @@ def _is_card_licensed(fusion, card_key):
     return True
 
 
-def _apply_card_visibility_policy(fusion, category, computed_keys, allowed_keys):
+def _resolve_pinned_cards(fusion, category, selected_keys):
+    selected = []
+    selected_set = set()
+    for key in selected_keys:
+        card_key = str(key).strip().lower()
+        if card_key and card_key not in selected_set:
+            selected.append(card_key)
+            selected_set.add(card_key)
+
+    if not selected:
+        return []
+
+    pinned = []
+    seen = set()
+
+    pinned_map = fusion.get("fusion_banner_pinned_cards")
+    if isinstance(pinned_map, dict):
+        raw_pinned = pinned_map.get(str(category).strip().lower())
+        if isinstance(raw_pinned, (list, tuple, set)):
+            for item in raw_pinned:
+                card_key = str(item).strip().lower()
+                if card_key in selected_set and card_key not in seen:
+                    pinned.append(card_key)
+                    seen.add(card_key)
+
+    severity_map = fusion.get("card_severity")
+    if isinstance(severity_map, dict):
+        pin_threshold = int(fusion.get("critical_pin_severity", 3) or 3)
+        for card_key in selected:
+            try:
+                severity = int(severity_map.get(card_key, 0) or 0)
+            except Exception:
+                severity = 0
+            if severity >= pin_threshold and card_key not in seen:
+                pinned.append(card_key)
+                seen.add(card_key)
+
+    return pinned
+
+
+def _apply_non_evict_pins(selected_keys, pinned_keys, max_visible):
+    if max_visible is None:
+        return list(selected_keys)
+
+    limit = int(max_visible or 0)
+    if limit <= 0:
+        return []
+
+    selected = []
+    selected_set = set()
+    for key in selected_keys:
+        card_key = str(key).strip().lower()
+        if card_key and card_key not in selected_set:
+            selected.append(card_key)
+            selected_set.add(card_key)
+
+    pinned = []
+    pinned_set = set()
+    for key in pinned_keys:
+        card_key = str(key).strip().lower()
+        if card_key in selected_set and card_key not in pinned_set:
+            pinned.append(card_key)
+            pinned_set.add(card_key)
+
+    if len(pinned) >= limit:
+        return pinned[:limit]
+
+    visible = list(pinned)
+    for card_key in selected:
+        if card_key in pinned_set:
+            continue
+        visible.append(card_key)
+        if len(visible) >= limit:
+            break
+    return visible
+
+
+def _apply_card_visibility_policy(fusion, category, computed_keys, allowed_keys, max_visible=None):
     mode = str(fusion.get("fusion_banner_mode", "auto") or "auto").strip().lower()
     if mode == "manual":
         selected = _apply_manual_card_selection(fusion, category, computed_keys, allowed_keys)
@@ -95,11 +172,13 @@ def _apply_card_visibility_policy(fusion, category, computed_keys, allowed_keys)
 
     licensed_selected = [key for key in selected if _is_card_licensed(fusion, key)]
     if licensed_selected:
-        return licensed_selected
+        pinned = _resolve_pinned_cards(fusion, category, licensed_selected)
+        return _apply_non_evict_pins(licensed_selected, pinned, max_visible)
 
     # If manual selection is fully unlicensed, fall back to auto order and keep licensed cards only.
     fallback = [key for key in computed_keys if _is_card_licensed(fusion, key)]
-    return fallback
+    pinned = _resolve_pinned_cards(fusion, category, fallback)
+    return _apply_non_evict_pins(fallback, pinned, max_visible)
 
 
 def _apply_slot_merge_rules(fusion, selected_keys):
@@ -349,11 +428,15 @@ def _draw_ppe_overlay(widget, painter, width, height, fusion):
                 visible_keys = candidate
                 break
 
+        max_visible = len(visible_keys)
+        ordered_keys = [key for key, _icon, _title in cards]
+
         visible_keys = _apply_card_visibility_policy(
             fusion,
             "ppe",
-            visible_keys,
-            [key for key, _icon, _title in cards],
+            ordered_keys,
+            ordered_keys,
+            max_visible=max_visible,
         )
         if not visible_keys:
             return
@@ -749,11 +832,15 @@ def _draw_fire_overlay(widget, painter, width, height, fusion):
                 visible_keys = candidate
                 break
 
+        max_visible = len(visible_keys)
+        ordered_keys = [key for key, _icon, _title in cards]
+
         visible_keys = _apply_card_visibility_policy(
             fusion,
             "fire",
-            visible_keys,
-            [key for key, _icon, _title in cards],
+            ordered_keys,
+            ordered_keys,
+            max_visible=max_visible,
         )
         if not visible_keys:
             return

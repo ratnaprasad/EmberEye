@@ -56,10 +56,10 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 ### Count Summary
 
 - Total checklist items: 33
-- Done: 24
+- Done: 25
 - In Progress: 3
-- Not Started: 6
-- Weighted completion: 77.3%
+- Not Started: 5
+- Weighted completion: 80.3%
 
 ### Done
 
@@ -78,6 +78,7 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 - Overflow summary indicator (`+N active analytics`) in fire and PPE banner overlays
 - Field policy examples documented for multi-analytics scenarios
 - Studio export-as-eapkg minimal path with validator compatibility checks
+- Critical-card pin/non-evict behavior for constrained banner layouts
 
 ### In Progress
 
@@ -97,15 +98,15 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 ## Combined Status (Phase 1 + Phase 2)
 
 - Combined total items: 55
-- Combined done: 40
+- Combined done: 41
 - Combined in progress: 6
-- Combined weighted completion: 78.2%
+- Combined weighted completion: 80.0%
 
 ## Next Milestone to Lift Both Phases Fast
 
 1. Close remaining Phase 1 release criteria:
    - coverage report proof + device-limit breach alert path
 2. Finish Phase 2 final runtime gaps:
-   - critical-card pinning + full mode-switch persistence E2E tests
+   - full mode-switch persistence E2E tests
 3. Expand Studio export with richer operator metadata prompts and stricter schema docs alignment
 4. Run final checklist audit and cut `dev.2` / `dev.3` milestone tags

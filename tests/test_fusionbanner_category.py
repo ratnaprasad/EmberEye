@@ -65,6 +65,8 @@ _resolve_display_category = fusionbanner._resolve_display_category
 _is_banner_enabled_for_category = fusionbanner._is_banner_enabled_for_category
 _apply_card_visibility_policy = fusionbanner._apply_card_visibility_policy
 _apply_slot_merge_rules = fusionbanner._apply_slot_merge_rules
+_resolve_pinned_cards = fusionbanner._resolve_pinned_cards
+_apply_non_evict_pins = fusionbanner._apply_non_evict_pins
 
 
 def _make_widget(window_category=None):
@@ -260,6 +262,62 @@ class TestCardVisibilityPrecedence(unittest.TestCase):
         }
         merged = _apply_slot_merge_rules(fusion, selected)
         self.assertEqual(merged, ["temp_secondary", "global"])
+
+    def test_auto_mode_pins_critical_card_when_capacity_constrained(self):
+        fusion = {
+            "fusion_banner_mode": "auto",
+            "card_severity": {
+                "global": 1,
+                "thermal": 1,
+                "gas": 3,
+                "smoke": 1,
+            },
+        }
+        computed = ["global", "thermal", "gas", "smoke"]
+
+        visible = _apply_card_visibility_policy(
+            fusion,
+            "fire",
+            computed,
+            computed,
+            max_visible=2,
+        )
+
+        self.assertEqual(visible, ["gas", "global"])
+
+    def test_manual_pinned_cards_are_non_evict_when_capacity_is_one(self):
+        fusion = {
+            "fusion_banner_mode": "manual",
+            "fusion_banner_manual_cards": {"fire": ["global", "smoke"]},
+            "fusion_banner_pinned_cards": {"fire": ["smoke"]},
+        }
+        computed = ["global", "thermal", "gas", "smoke"]
+
+        visible = _apply_card_visibility_policy(
+            fusion,
+            "fire",
+            computed,
+            computed,
+            max_visible=1,
+        )
+
+        self.assertEqual(visible, ["smoke"])
+
+
+class TestPinnedCardHelpers(unittest.TestCase):
+    def test_resolve_pinned_cards_combines_explicit_and_critical(self):
+        fusion = {
+            "fusion_banner_pinned_cards": {"fire": ["gas"]},
+            "card_severity": {"smoke": 3, "global": 1},
+            "critical_pin_severity": 3,
+        }
+        pins = _resolve_pinned_cards(fusion, "fire", ["global", "gas", "smoke"])
+        self.assertEqual(pins, ["gas", "smoke"])
+
+    def test_apply_non_evict_pins_keeps_order_and_capacity(self):
+        selected = ["global", "thermal", "gas", "smoke"]
+        visible = _apply_non_evict_pins(selected, ["gas"], max_visible=2)
+        self.assertEqual(visible, ["gas", "global"])
 
 
 if __name__ == "__main__":
