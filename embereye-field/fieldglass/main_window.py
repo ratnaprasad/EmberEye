@@ -10110,6 +10110,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         controls_row = QHBoxLayout()
         add_button = QPushButton("Add License")
         add_button.clicked.connect(self._add_license_file)
+        remove_button = QPushButton("Remove Selected")
+        remove_button.clicked.connect(self._remove_selected_license_file)
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self._refresh_licenses_tab)
 
@@ -10124,6 +10126,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         )
 
         controls_row.addWidget(add_button)
+        controls_row.addWidget(remove_button)
         controls_row.addWidget(refresh_button)
         controls_row.addSpacing(10)
         controls_row.addWidget(self.license_device_status_label)
@@ -10204,7 +10207,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.licenses_table.setRowCount(len(summary_rows))
         for row, summary in enumerate(summary_rows):
             analytics_text = ", ".join(summary.analytics) if summary.analytics else "-"
-            self.licenses_table.setItem(row, 0, QTableWidgetItem(str(summary.customer or "-")))
+            customer_item = QTableWidgetItem(str(summary.customer or "-"))
+            if summary.source_path is not None:
+                customer_item.setData(Qt.ItemDataRole.UserRole, str(summary.source_path))
+            self.licenses_table.setItem(row, 0, customer_item)
             self.licenses_table.setItem(row, 1, QTableWidgetItem(str(int(summary.max_devices))))
             self.licenses_table.setItem(row, 2, QTableWidgetItem(analytics_text))
             self.licenses_table.setItem(row, 3, QTableWidgetItem(str(summary.expiry or "-")))
@@ -10228,6 +10234,39 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         if hasattr(self, 'license_dir_label') and self.license_dir_label is not None and self.license_manager is not None:
             self.license_dir_label.setText(f"Folder: {self.license_manager.get_license_dir()}")
+
+    def _remove_selected_license_file(self):
+        if not self.license_manager or not self.licenses_table:
+            return
+
+        current_row = self.licenses_table.currentRow()
+        if current_row < 0:
+            QMessageBox.information(self, "Remove License", "Select a license row to remove.")
+            return
+
+        item = self.licenses_table.item(current_row, 0)
+        source_path = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not source_path:
+            QMessageBox.warning(self, "Remove License", "Selected license file path is unavailable.")
+            return
+
+        target_name = Path(str(source_path)).name
+        confirmation = QMessageBox.question(
+            self,
+            "Remove License",
+            f"Remove license file '{target_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self.license_manager.remove_license_file(Path(str(source_path)))
+            self._refresh_licenses_tab()
+            QMessageBox.information(self, "License Removed", f"Removed license file: {target_name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Remove License Failed", f"Failed to remove license file:\n{exc}")
 
     def showEvent(self, event):
         """Start WebSocket client when window is shown"""

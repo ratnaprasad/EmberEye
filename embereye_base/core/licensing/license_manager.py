@@ -154,6 +154,27 @@ class LicenseManager:
     def get_invalid_license_files(self) -> list[str]:
         return list(self._state.invalid_files)
 
+    def remove_license_file(self, license_file: str | Path) -> Path:
+        candidate = Path(license_file).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.license_dir / candidate
+
+        try:
+            target = candidate.resolve(strict=False)
+            root = self.license_dir.resolve(strict=False)
+            target.relative_to(root)
+        except Exception as exc:
+            raise ValueError("license file must be inside the configured license directory") from exc
+
+        if not target.exists():
+            raise FileNotFoundError(f"license file not found: {target}")
+        if target.suffix.lower() != ".lic":
+            raise ValueError("only .lic files can be removed")
+
+        target.unlink()
+        self.refresh_from_directory()
+        return target
+
     def set_licensed_analytics(self, analytic_ids: list[str], allow_all: bool | None = None) -> None:
         self._licensed_analytics = set(analytic_ids)
         if allow_all is not None:

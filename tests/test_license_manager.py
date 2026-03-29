@@ -328,3 +328,47 @@ def test_license_manager_emits_licenses_changed_signal_on_refresh(qtbot, tmp_pat
     emitted_state = blocker.args[0]
     assert emitted_state.max_devices == 2
     assert emitted_state.analytics == ["fire"]
+
+
+def test_license_manager_remove_license_file_refreshes_state(qtbot, tmp_path):
+    license_dir = tmp_path / "licenses"
+    license_dir.mkdir()
+
+    removable = license_dir / "removable.lic"
+    removable.write_text(
+        json.dumps(
+            {
+                "customer": "Removable",
+                "max_devices": 2,
+                "analytics": ["fire"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = LicenseManager(allow_all=False, license_dir=license_dir, enable_watcher=False)
+    manager.refresh_from_directory()
+    assert manager.get_max_devices() == 2
+
+    with qtbot.waitSignal(manager.signals.licenses_changed, timeout=1000):
+        removed_path = manager.remove_license_file(removable)
+
+    assert removed_path.name == "removable.lic"
+    assert not removable.exists()
+    assert manager.get_max_devices() == 0
+    assert manager.get_license_summary()[0].status == "development"
+
+
+def test_license_manager_remove_license_file_rejects_outside_directory(tmp_path):
+    license_dir = tmp_path / "licenses"
+    license_dir.mkdir()
+    manager = LicenseManager(allow_all=False, license_dir=license_dir, enable_watcher=False)
+
+    outside_file = tmp_path / "outside.lic"
+    outside_file.write_text("{}", encoding="utf-8")
+
+    try:
+        manager.remove_license_file(outside_file)
+        assert False, "Expected ValueError for outside directory removal"
+    except ValueError:
+        pass
