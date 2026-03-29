@@ -56,10 +56,10 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 ### Count Summary
 
 - Total checklist items: 33
-- Done: 23
-- In Progress: 4
+- Done: 24
+- In Progress: 3
 - Not Started: 6
-- Weighted completion: 75.8%
+- Weighted completion: 77.3%
 
 ### Done
 
@@ -77,13 +77,13 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 - Multi-analytics slot conflict merge rules (severity/priority deterministic selection)
 - Overflow summary indicator (`+N active analytics`) in fire and PPE banner overlays
 - Field policy examples documented for multi-analytics scenarios
+- Studio export-as-eapkg minimal path with validator compatibility checks
 
 ### In Progress
 
 - Card widget feature parity (Configure/Remove and full license-state wiring requires completion)
 - Import dialog UX parity with roadmap details (progress dialog and full operator flow polish)
 - Mode-switch and runtime reload behavior needs broader end-to-end test coverage
-- Studio-facing packaging metadata guidance should be aligned with export implementation
 
 ### Not Started
 
@@ -97,9 +97,9 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 ## Combined Status (Phase 1 + Phase 2)
 
 - Combined total items: 55
-- Combined done: 39
-- Combined in progress: 7
-- Combined weighted completion: 77.3%
+- Combined done: 40
+- Combined in progress: 6
+- Combined weighted completion: 78.2%
 
 ## Next Milestone to Lift Both Phases Fast
 
@@ -107,5 +107,5 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
    - coverage report proof + device-limit breach alert path
 2. Finish Phase 2 final runtime gaps:
    - critical-card pinning + full mode-switch persistence E2E tests
-3. Implement Studio export-as-eapkg minimal path and compatibility checks
+3. Expand Studio export with richer operator metadata prompts and stricter schema docs alignment
 4. Run final checklist audit and cut `dev.2` / `dev.3` milestone tags

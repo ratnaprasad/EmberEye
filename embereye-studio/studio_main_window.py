@@ -37,6 +37,8 @@ from external_dataset_importer import (
     download_roboflow,
     import_external_dataset,
 )
+from analytics_package_exporter import default_spec_for_version, export_model_as_eapkg
+from embereye_base.core.marketplace import validate_eapkg
 try:
     from embereye_base.core.analytics import ANALYTICS_CATEGORY_NAMES, DEFAULT_ANALYTICS_CATEGORY
 except Exception:
@@ -1155,17 +1157,13 @@ class TrainingTab(QWidget):
             self.parent_window.set_device_status(device)
 
     def export_model_version(self):
-        """Export selected model version as ZIP package for Field app"""
+        """Export selected model version as a validator-compatible .eapkg package."""
         selected = self.model_versions_list.currentItem()
         if not selected:
             QMessageBox.warning(self, "Export Model", "Please select a model version to export.")
             return
         
         try:
-            import zipfile
-            import json
-            from datetime import datetime
-            
             # Get selected version
             version_name = selected.text().split(" ")[0]  # e.g., "v1"
             models_dir = Path(get_data_path("models")) / "yolo_versions"
@@ -1180,123 +1178,54 @@ class TrainingTab(QWidget):
             from PyQt6.QtWidgets import QFileDialog
             export_path, _ = QFileDialog.getSaveFileName(
                 self,
-                "Export Model Package",
-                f"{version_name}_model.zip",
-                "ZIP Files (*.zip);;All Files (*.*)"
+                "Export Analytics Package",
+                f"{version_name}_analytic.eapkg",
+                "EmberEye Analytics Package (*.eapkg);;All Files (*.*)"
             )
             
             if not export_path:
                 return  # User cancelled
             
             export_path = Path(export_path)
-            
-            # Create metadata with class versioning
-            from embereye.core.class_config import get_leaf_classes, get_classes_hash, load_master_classes
-            
-            classes_dict = load_master_classes()
-            leaf_classes = get_leaf_classes(classes_dict)
-            classes_hash = get_classes_hash(leaf_classes)
-            
-            metadata = {
+
+            spec = default_spec_for_version(version_name)
+            spec.execution_hints.update({
+                "source": "studio_export",
                 "model_version": version_name,
-                "export_date": datetime.now().isoformat(),
-                "model_type": "YOLOv8",
-                "model_name": "best.pt",
-                "app": "EmberEye Studio",
-                "compatible_apps": ["EmberEye Field"],
-                "class_count": len(leaf_classes),
-                "class_hash": classes_hash,
-                "class_names": leaf_classes,
-                "instructions": [
-                    "1. Extract the ZIP file",
-                    "2. Copy 'best.pt' to EmberEye Field's models directory",
-                    "3. Restart EmberEye Field",
-                    "4. Select the model from the model list"
-                ]
-            }
-            
-            # Create ZIP package
-            with zipfile.ZipFile(str(export_path), 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Add model file
-                zipf.write(str(best_pt), arcname="best.pt")
-                
-                # Add master classes
-                master_classes_path = Path(__file__).parent / "master_classes.json"
-                if master_classes_path.exists():
-                    zipf.write(str(master_classes_path), arcname="master_classes.json")
-                
-                # Add metadata
-                zipf.writestr("metadata.json", json.dumps(metadata, indent=2))
-                
-                # Add README
-                readme = f"""# EmberEye Model Export
+            })
 
-Model Version: {version_name}
-Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            master_classes_path = Path(__file__).parent / "master_classes.json"
+            package_path = export_model_as_eapkg(
+                model_path=best_pt,
+                output_path=export_path,
+                spec=spec,
+                master_classes_path=master_classes_path,
+            )
 
-## Installation Instructions
-
-### For EmberEye Field App:
-
-1. Extract this ZIP file
-2. Locate EmberEye Field application directory:
-   - Default: `D:\\EE\\EmberEye\\embereye-field\\`
-3. Copy `best.pt` to the models directory
-4. Copy `master_classes.json` to the main application directory (replace existing if different)
-5. Restart EmberEye Field application
-6. The model will appear in the model selection dropdown
-
-## Files Included
-
-- `best.pt`: Trained YOLOv8 model weights (ready to use)
-- `master_classes.json`: Class definitions (fire, smoke, structural, human, vehicle, safety, environment)
-- `metadata.json`: Model information and compatibility details
-- `README.md`: This installation guide
-
-## Compatibility
-
-✓ EmberEye Field (Desktop)
-✓ EmberEye Studio
-✓ YOLOv8 Framework
-
-## Important Notes
-
-- **Class Definitions**: This export includes `master_classes.json` which contains the class hierarchy this model was trained with. For proper detection labeling, ensure these classes are used with this model.
-- **Backup**: Consider backing up your existing `master_classes.json` before updating, in case you need to revert.
-
-## Contact
-
-For issues or questions, refer to the main EmberEye documentation.
-"""
-                zipf.writestr("README.md", readme)
-            
-            # Verify ZIP contents
-            with zipfile.ZipFile(str(export_path), 'r') as zipf:
-                file_list = zipf.namelist()
-                required_files = {'best.pt', 'master_classes.json', 'metadata.json', 'README.md'}
-                missing = required_files - set(file_list)
-                
-                if missing:
-                    QMessageBox.critical(
-                        self, "Export Error",
-                        f"ZIP package incomplete. Missing: {', '.join(missing)}"
-                    )
-                    export_path.unlink()  # Delete incomplete file
-                    return
+            validation = validate_eapkg(package_path)
+            if not validation.is_valid:
+                if package_path.exists():
+                    package_path.unlink()
+                QMessageBox.critical(
+                    self,
+                    "Export Error",
+                    "Generated package failed validation:\n\n" + "\n".join(validation.errors),
+                )
+                return
             
             # Success message with option to open folder
             reply = QMessageBox.information(
                 self,
                 "Model Exported Successfully",
-                f"Model {version_name} has been exported to:\n\n{export_path}\n\n"
-                f"File size: {export_path.stat().st_size / (1024*1024):.2f} MB\n\n"
+                f"Model {version_name} has been exported to:\n\n{package_path}\n\n"
+                f"File size: {package_path.stat().st_size / (1024*1024):.2f} MB\n\n"
                 f"Would you like to open the destination folder?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             
             if reply == QMessageBox.StandardButton.Yes:
                 import subprocess
-                subprocess.Popen(f'explorer /select,"{export_path}"')
+                subprocess.Popen(f'explorer /select,"{package_path}"')
             
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export model: {e}")
