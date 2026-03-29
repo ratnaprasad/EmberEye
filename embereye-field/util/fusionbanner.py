@@ -91,6 +91,8 @@ def _apply_card_visibility_policy(fusion, category, computed_keys, allowed_keys)
     else:
         selected = list(computed_keys)
 
+    selected = _apply_slot_merge_rules(fusion, selected)
+
     licensed_selected = [key for key in selected if _is_card_licensed(fusion, key)]
     if licensed_selected:
         return licensed_selected
@@ -98,6 +100,40 @@ def _apply_card_visibility_policy(fusion, category, computed_keys, allowed_keys)
     # If manual selection is fully unlicensed, fall back to auto order and keep licensed cards only.
     fallback = [key for key in computed_keys if _is_card_licensed(fusion, key)]
     return fallback
+
+
+def _apply_slot_merge_rules(fusion, selected_keys):
+    slot_conflicts = fusion.get("slot_conflicts")
+    if not isinstance(slot_conflicts, dict):
+        return list(selected_keys)
+
+    priority_map = fusion.get("card_priority") if isinstance(fusion.get("card_priority"), dict) else {}
+    severity_map = fusion.get("card_severity") if isinstance(fusion.get("card_severity"), dict) else {}
+
+    selected = list(selected_keys)
+    keep = set(selected)
+
+    def _rank(card_key):
+        return (
+            int(severity_map.get(card_key, 0) or 0),
+            int(priority_map.get(card_key, 0) or 0),
+            card_key,
+        )
+
+    for candidates in slot_conflicts.values():
+        if not isinstance(candidates, (list, tuple)):
+            continue
+        active = [
+            str(item).strip().lower()
+            for item in candidates
+            if str(item).strip().lower() in keep
+        ]
+        if len(active) <= 1:
+            continue
+        winner = max(active, key=_rank)
+        keep.difference_update({key for key in active if key != winner})
+
+    return [key for key in selected if key in keep]
 
 
 def draw_fusion_overlay(widget, painter, width, height):
@@ -429,6 +465,16 @@ def _draw_ppe_overlay(widget, painter, width, height, fusion):
                 painter.setPen(QPen(QColor(0xFF, 0xD2, 0x00, 180), 1))
                 painter.drawRoundedRect(top_slot, int(6 * scale), int(6 * scale))
                 draw_shadow_text(top_slot, Qt.AlignmentFlag.AlignCenter, "SECURE", _col_value, QFont("Roboto Mono", max(10, int(11 * scale)), QFont.Weight.Bold))
+
+        hidden_count = max(0, len(cards) - len(visible_cards))
+        if hidden_count > 0:
+            draw_shadow_text(
+                QRect(strip.right() - int(180 * scale), strip.top() + int(2 * scale), int(170 * scale), int(14 * scale)),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"+{hidden_count} active analytics",
+                QColor(220, 230, 240),
+                QFont("Roboto Mono", max(8, int(9 * scale)), QFont.Weight.Bold),
+            )
 
         widget._position_action_controls()
 
@@ -891,12 +937,13 @@ def _draw_fire_overlay(widget, painter, width, height, fusion):
         widget._position_action_controls()
 
         if len(visible_cards) < len(cards):
+            hidden_count = len(cards) - len(visible_cards)
             draw_shadow_text(
-                QRect(strip.right() - int(20 * scale), strip.top() + int(2 * scale), int(16 * scale), int(12 * scale)),
-                Qt.AlignmentFlag.AlignCenter,
-                "...",
+                QRect(strip.right() - int(180 * scale), strip.top() + int(2 * scale), int(170 * scale), int(14 * scale)),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"+{hidden_count} active analytics",
                 QColor(220, 230, 240),
-                QFont("Arial", max(8, int(10 * scale)), QFont.Weight.Bold),
+                QFont("Roboto Mono", max(8, int(9 * scale)), QFont.Weight.Bold),
             )
 
     except Exception as e:

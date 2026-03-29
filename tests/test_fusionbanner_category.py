@@ -64,6 +64,7 @@ _normalize_category = fusionbanner._normalize_category
 _resolve_display_category = fusionbanner._resolve_display_category
 _is_banner_enabled_for_category = fusionbanner._is_banner_enabled_for_category
 _apply_card_visibility_policy = fusionbanner._apply_card_visibility_policy
+_apply_slot_merge_rules = fusionbanner._apply_slot_merge_rules
 
 
 def _make_widget(window_category=None):
@@ -223,6 +224,42 @@ class TestCardVisibilityPrecedence(unittest.TestCase):
         computed = ["global", "thermal", "gas"]
         visible = _apply_card_visibility_policy(fusion, "fire", computed, computed)
         self.assertEqual(visible, ["global", "thermal"])
+
+    def test_slot_merge_rules_choose_higher_severity_then_priority(self):
+        selected = ["temp_primary", "temp_secondary", "gas"]
+        fusion = {
+            "slot_conflicts": {
+                "temperature": ["temp_primary", "temp_secondary"],
+            },
+            "card_severity": {
+                "temp_primary": 1,
+                "temp_secondary": 3,
+            },
+            "card_priority": {
+                "temp_primary": 10,
+                "temp_secondary": 2,
+            },
+        }
+        merged = _apply_slot_merge_rules(fusion, selected)
+        self.assertEqual(merged, ["temp_secondary", "gas"])
+
+    def test_slot_merge_rules_uses_priority_when_severity_equal(self):
+        selected = ["temp_primary", "temp_secondary", "global"]
+        fusion = {
+            "slot_conflicts": {
+                "temperature": ["temp_primary", "temp_secondary"],
+            },
+            "card_severity": {
+                "temp_primary": 2,
+                "temp_secondary": 2,
+            },
+            "card_priority": {
+                "temp_primary": 3,
+                "temp_secondary": 9,
+            },
+        }
+        merged = _apply_slot_merge_rules(fusion, selected)
+        self.assertEqual(merged, ["temp_secondary", "global"])
 
 
 if __name__ == "__main__":
