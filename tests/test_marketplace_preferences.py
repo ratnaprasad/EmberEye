@@ -16,6 +16,7 @@ def _make_window_like(config=None):
         "_normalize_marketplace_enabled_analytics",
         "_normalize_marketplace_analytic_settings",
         "_set_marketplace_analytic_enabled",
+        "_sync_marketplace_license_manager",
     ):
         setattr(win, method_name, MethodType(getattr(BEMainWindow, method_name), win))
 
@@ -92,3 +93,20 @@ def test_set_marketplace_analytic_enabled_blocks_unlicensed(monkeypatch):
     assert warnings
     assert "not licensed" in warnings[-1]
     assert saved_configs[-1]["enabled_marketplace_analytics"]["gas_guard"] is False
+
+
+def test_sync_marketplace_license_manager_refreshes_plugin_manager(monkeypatch):
+    win = _make_window_like({})
+    refresh_calls = []
+    license_manager = SimpleNamespace(name="license-manager")
+    plugin_manager = SimpleNamespace(license_manager=None)
+
+    win._refresh_marketplace_analytics = lambda: refresh_calls.append(True)
+
+    win.license_manager = license_manager
+    win.marketplace_plugin_manager = plugin_manager
+
+    win._sync_marketplace_license_manager()
+
+    assert plugin_manager.license_manager is license_manager
+    assert refresh_calls == [True]

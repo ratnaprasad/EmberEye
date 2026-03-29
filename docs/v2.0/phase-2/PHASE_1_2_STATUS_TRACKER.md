@@ -56,10 +56,10 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 ### Count Summary
 
 - Total checklist items: 33
-- Done: 28
+- Done: 29
 - In Progress: 0
-- Not Started: 5
-- Weighted completion: 84.8%
+- Not Started: 4
+- Weighted completion: 87.9%
 
 ### Done
 
@@ -82,6 +82,7 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 - Mode-switch persistence and runtime-reload E2E coverage for banner preferences
 - Card widget parity: enable toggle, Configure action, Remove action, and license-gated behavior
 - Import dialog UX parity: richer progress reporting and completion state details
+- Shared license-state wiring between marketplace cards and live LicenseManager refresh events
 
 ### In Progress
 
@@ -89,7 +90,6 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 
 ### Not Started
 
-- Full end-to-end tests for banner mode switching across sessions/restarts (comprehensive UI-runtime pass)
 - Studio export metadata prompt/authoring UX refinements for operator flows
 - Tag embereye-suite/v2.0.0-dev.3
 - Final phase acceptance pass with roadmap checklist sign-off
@@ -97,15 +97,15 @@ Roadmap source: docs/v2.0/ROADMAP_EmberEye_Suite_2.0.md (Phase 2 section)
 ## Combined Status (Phase 1 + Phase 2)
 
 - Combined total items: 55
-- Combined done: 44
+- Combined done: 45
 - Combined in progress: 3
-- Combined weighted completion: 82.7%
+- Combined weighted completion: 84.5%
 
 ## Next Milestone to Lift Both Phases Fast
 
 1. Close remaining Phase 1 release criteria:
    - coverage report proof + device-limit breach alert path
 2. Finish Phase 2 final runtime gaps:
-   - comprehensive mode-switch/session-restart validation + final acceptance pass
+   - final acceptance pass and milestone/tag cutover tasks
 3. Expand Studio export with richer operator metadata prompts and stricter schema docs alignment
 4. Run final checklist audit and cut `dev.2` / `dev.3` milestone tags

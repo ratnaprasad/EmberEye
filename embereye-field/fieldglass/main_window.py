@@ -10100,7 +10100,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self.tabs.addTab(marketplace_tab, "ANALYTICS")
 
-        self.marketplace_plugin_manager = PluginManager(self.marketplace_dir)
+        self.marketplace_plugin_manager = PluginManager(
+            self.marketplace_dir,
+            license_manager=self.license_manager,
+        )
         self.marketplace_plugin_manager.analytic_added.connect(self._on_marketplace_descriptor_changed)
         self.marketplace_plugin_manager.analytic_removed.connect(self._on_marketplace_descriptor_changed)
         self.marketplace_plugin_manager.analytic_updated.connect(self._on_marketplace_descriptor_changed)
@@ -10359,7 +10362,14 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self.license_manager = LicenseManager(allow_all=False, enable_watcher=True)
         self.license_manager.connect_licenses_changed(self._on_licenses_changed)
+        self._sync_marketplace_license_manager()
         self._refresh_licenses_tab()
+
+    def _sync_marketplace_license_manager(self):
+        if not self.marketplace_plugin_manager or not self.license_manager:
+            return
+        self.marketplace_plugin_manager.license_manager = self.license_manager
+        self._refresh_marketplace_analytics()
 
     def _add_license_file(self):
         if not self.license_manager:
@@ -10403,6 +10413,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def _on_licenses_changed(self, state):
         self._render_license_state(state)
+        self._refresh_marketplace_analytics()
 
     def _render_license_state(self, state):
         if not self.licenses_table:
