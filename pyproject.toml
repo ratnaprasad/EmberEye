@@ -12,8 +12,13 @@ authors = [
   { name = "EmberEye Development Team" }
 ]
 dependencies = [
-  "PyQt6>=6.6"
+  "PyQt6>=6.6",
+  "cryptography>=41"
 ]
+
+[project.scripts]
+embereye-license-sign = "embereye_base.core.licensing.cli:main"
+
 
 [tool.setuptools]
 include-package-data = true
