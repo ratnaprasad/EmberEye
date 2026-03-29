@@ -304,3 +304,27 @@ def test_license_manager_accepts_non_expired_license_when_enforced(tmp_path):
     assert state.invalid_files == []
     assert state.expiry_issues == []
     assert state.loaded_files[0].status == "unsigned-development"
+
+
+def test_license_manager_emits_licenses_changed_signal_on_refresh(qtbot, tmp_path):
+    license_dir = tmp_path / "licenses"
+    license_dir.mkdir()
+
+    (license_dir / "a.lic").write_text(
+        json.dumps(
+            {
+                "customer": "Signal Customer",
+                "max_devices": 2,
+                "analytics": ["fire"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = LicenseManager(allow_all=False, license_dir=license_dir, enable_watcher=False)
+    with qtbot.waitSignal(manager.signals.licenses_changed, timeout=1000) as blocker:
+        manager.refresh_from_directory()
+
+    emitted_state = blocker.args[0]
+    assert emitted_state.max_devices == 2
+    assert emitted_state.analytics == ["fire"]

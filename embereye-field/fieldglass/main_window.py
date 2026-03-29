@@ -15,6 +15,7 @@ from typing import List
 from pathlib import Path
 from threading import Thread, Event
 import subprocess
+import shutil
 
 # Prefer fieldglass modules first, then parent directory for root-level utilities
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,6 +23,7 @@ sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from embereye_base.core.stream_config import StreamConfig
 from embereye_base.core.marketplace import PluginManager
+from embereye_base.core.licensing import LicenseManager
 from embereye_base.utils.tcp_server_logger import log_info as log_server_info, log_error as log_server_error
 from embereye_base.utils.resource_helper import get_resource_path, get_data_path, ensure_runtime_folders
 from embereye_base.utils.debug_config import debug_print, is_debug_enabled, set_debug_enabled
@@ -1739,6 +1741,9 @@ class BEMainWindow(QMainWindow):
         self.current_graph_page = 1
         self.marketplace_plugin_manager = None
         self.analytics_cards_view = None
+        self.license_manager = None
+        self.licenses_table = None
+        self.license_device_status_label = None
         self.marketplace_dir = Path(str(
             self.config.get(
                 'marketplace_folder',
@@ -2410,6 +2415,7 @@ class BEMainWindow(QMainWindow):
             # Always initialize Incidents tab
             self.init_incidents_tab()
             self.init_marketplace_tab()
+            self.init_licenses_tab()
             self.init_live_pfds_tab()
             # Training Manager removed - Studio-only feature
             # Field Edition focuses on monitoring and detection
@@ -10094,6 +10100,134 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self._refresh_marketplace_analytics()
         QMessageBox.information(self, "Import Analytics Summary", result.summary_text())
+
+    def init_licenses_tab(self):
+        licenses_tab = QWidget()
+        layout = QVBoxLayout(licenses_tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        controls_row = QHBoxLayout()
+        add_button = QPushButton("Add License")
+        add_button.clicked.connect(self._add_license_file)
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self._refresh_licenses_tab)
+
+        self.license_device_status_label = QLabel("Devices: 0 / 0")
+        self.license_device_status_label.setStyleSheet(
+            "QLabel { color: #9bc4d3; font-weight: 600; font-size: 12px; }"
+        )
+
+        self.license_dir_label = QLabel("")
+        self.license_dir_label.setStyleSheet(
+            "QLabel { color: #87a0ad; font-size: 11px; }"
+        )
+
+        controls_row.addWidget(add_button)
+        controls_row.addWidget(refresh_button)
+        controls_row.addSpacing(10)
+        controls_row.addWidget(self.license_device_status_label)
+        controls_row.addStretch(1)
+        controls_row.addWidget(self.license_dir_label)
+        layout.addLayout(controls_row)
+
+        self.licenses_table = QTableWidget(0, 5)
+        self.licenses_table.setHorizontalHeaderLabels(
+            ["Customer", "Max Devices", "Licensed Analytics", "Expiry", "Status"]
+        )
+        self.licenses_table.verticalHeader().setVisible(False)
+        self.licenses_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.licenses_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.licenses_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.licenses_table.horizontalHeader().setStretchLastSection(True)
+        self.licenses_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.licenses_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.licenses_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.licenses_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.licenses_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.licenses_table)
+
+        self.tabs.addTab(licenses_tab, "LICENSES")
+
+        self.license_manager = LicenseManager(allow_all=False, enable_watcher=True)
+        self.license_manager.connect_licenses_changed(self._on_licenses_changed)
+        self._refresh_licenses_tab()
+
+    def _add_license_file(self):
+        if not self.license_manager:
+            return
+
+        source_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select License File",
+            str(Path.home()),
+            "License Files (*.lic)",
+        )
+        if not source_path:
+            return
+
+        source = Path(source_path)
+        target_dir = self.license_manager.get_license_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        target = target_dir / source.name
+        if target.exists():
+            stem = source.stem
+            suffix = source.suffix
+            counter = 1
+            while target.exists():
+                target = target_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        try:
+            shutil.copy2(source, target)
+            self._refresh_licenses_tab()
+            QMessageBox.information(self, "License Added", f"Added license file: {target.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "License Add Failed", f"Failed to add license file:\n{exc}")
+
+    def _refresh_licenses_tab(self):
+        if not self.license_manager or not self.licenses_table:
+            return
+
+        state = self.license_manager.refresh_from_directory()
+        self._render_license_state(state)
+
+    def _on_licenses_changed(self, state):
+        self._render_license_state(state)
+
+    def _render_license_state(self, state):
+        if not self.licenses_table:
+            return
+
+        summary_rows = state.loaded_files
+        self.licenses_table.setRowCount(len(summary_rows))
+        for row, summary in enumerate(summary_rows):
+            analytics_text = ", ".join(summary.analytics) if summary.analytics else "-"
+            self.licenses_table.setItem(row, 0, QTableWidgetItem(str(summary.customer or "-")))
+            self.licenses_table.setItem(row, 1, QTableWidgetItem(str(int(summary.max_devices))))
+            self.licenses_table.setItem(row, 2, QTableWidgetItem(analytics_text))
+            self.licenses_table.setItem(row, 3, QTableWidgetItem(str(summary.expiry or "-")))
+            self.licenses_table.setItem(row, 4, QTableWidgetItem(str(summary.status or "-")))
+
+        current_devices = int(self.license_manager.get_current_device_count()) if self.license_manager else 0
+        max_devices = int(self.license_manager.get_max_devices()) if self.license_manager else 0
+        if self.license_device_status_label is not None:
+            self.license_device_status_label.setText(f"Devices: {current_devices} / {max_devices}")
+            if max_devices <= 0:
+                tone = "#f08b7e"
+            elif current_devices <= max_devices:
+                tone = "#78d486"
+            elif current_devices <= int(max_devices * 1.1):
+                tone = "#f5d676"
+            else:
+                tone = "#f08b7e"
+            self.license_device_status_label.setStyleSheet(
+                f"QLabel {{ color: {tone}; font-weight: 700; font-size: 12px; }}"
+            )
+
+        if hasattr(self, 'license_dir_label') and self.license_dir_label is not None and self.license_manager is not None:
+            self.license_dir_label.setText(f"Folder: {self.license_manager.get_license_dir()}")
 
     def showEvent(self, event):
         """Start WebSocket client when window is shown"""

@@ -4,10 +4,16 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from PyQt6.QtCore import QObject, QFileSystemWatcher, pyqtSignal
+
 from .hardware_id import get_hardware_id
 from .models import LicenseFileData, LicensePayload, LicenseState, LicenseSummary
 from .paths import get_license_dir, get_license_public_key_path
 from .signature_verifier import verify_license_payload_signature
+
+
+class LicenseSignals(QObject):
+    licenses_changed = pyqtSignal(object)
 
 
 class LicenseManager:
@@ -22,6 +28,7 @@ class LicenseManager:
         enforce_signature: bool = False,
         enforce_expiry: bool = False,
         public_key_path: str | Path | None = None,
+        enable_watcher: bool = False,
     ):
         self._allow_all = allow_all
         self._enforce_hardware_id = enforce_hardware_id
@@ -32,6 +39,9 @@ class LicenseManager:
         self._current_device_count = 0
         self.hardware_id = get_hardware_id()
         self.license_dir = Path(license_dir).expanduser() if license_dir else get_license_dir()
+        self.signals = LicenseSignals()
+        self._watcher_enabled = bool(enable_watcher)
+        self._watcher: QFileSystemWatcher | None = None
         self.public_key_path = (
             Path(public_key_path).expanduser() if public_key_path else get_license_public_key_path(create_parent=True)
         )
@@ -42,6 +52,8 @@ class LicenseManager:
             expiry_enforced=self._enforce_expiry,
             analytics=sorted(self._licensed_analytics),
         )
+        if self._watcher_enabled:
+            self._init_watcher()
 
     def refresh_from_directory(self) -> LicenseState:
         summaries: list[LicenseSummary] = []
@@ -89,7 +101,26 @@ class LicenseManager:
             expiry_issues=expiry_issues,
             invalid_files=invalid_files,
         )
+        self._emit_licenses_changed()
         return self._state
+
+    def connect_licenses_changed(self, callback) -> None:
+        self.signals.licenses_changed.connect(callback)
+
+    def disconnect_licenses_changed(self, callback) -> None:
+        try:
+            self.signals.licenses_changed.disconnect(callback)
+        except Exception:
+            pass
+
+    def stop_watcher(self) -> None:
+        if self._watcher is None:
+            return
+        try:
+            self._watcher.directoryChanged.disconnect(self._on_license_directory_changed)
+        except Exception:
+            pass
+        self._watcher = None
 
     def get_license_dir(self) -> Path:
         return self.license_dir
@@ -253,3 +284,22 @@ class LicenseManager:
         result["analytics"] = set(license_data.analytics)
         result["max_devices"] = license_data.max_devices
         return result
+
+    def _init_watcher(self) -> None:
+        self.license_dir.mkdir(parents=True, exist_ok=True)
+        watcher = QFileSystemWatcher()
+        watcher.addPath(str(self.license_dir))
+        watcher.directoryChanged.connect(self._on_license_directory_changed)
+        self._watcher = watcher
+
+    def _on_license_directory_changed(self, _path: str) -> None:
+        try:
+            self.refresh_from_directory()
+        except Exception:
+            return
+
+    def _emit_licenses_changed(self) -> None:
+        try:
+            self.signals.licenses_changed.emit(self._state)
+        except Exception:
+            pass
