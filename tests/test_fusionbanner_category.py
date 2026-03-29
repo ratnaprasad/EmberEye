@@ -29,6 +29,10 @@ fusionbanner = _ilu.module_from_spec(_spec)
 
 # Stub out PyQt6 so the module can be imported in a headless test environment
 import types
+_previous_pyqt_modules = {
+    key: sys.modules.get(key)
+    for key in ("PyQt6", "PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets")
+}
 _qt_stub = types.ModuleType("PyQt6")
 for _sub in ("QtCore", "QtGui", "QtWidgets"):
     _mod = types.ModuleType(f"PyQt6.{_sub}")
@@ -49,9 +53,17 @@ sys.modules["PyQt6"] = _qt_stub
 
 _spec.loader.exec_module(fusionbanner)
 
+# Restore interpreter module state so other tests can use the real PyQt6 modules.
+for _key, _module in _previous_pyqt_modules.items():
+    if _module is None:
+        sys.modules.pop(_key, None)
+    else:
+        sys.modules[_key] = _module
+
 _normalize_category = fusionbanner._normalize_category
 _resolve_display_category = fusionbanner._resolve_display_category
 _is_banner_enabled_for_category = fusionbanner._is_banner_enabled_for_category
+_apply_card_visibility_policy = fusionbanner._apply_card_visibility_policy
 
 
 def _make_widget(window_category=None):
@@ -171,6 +183,46 @@ class TestIsBannerEnabledForCategory(unittest.TestCase):
     def test_empty_enabled_list_allows_all(self):
         fusion = {"enabled_analytics_categories": []}
         self.assertTrue(_is_banner_enabled_for_category(fusion, "fire"))
+
+
+class TestCardVisibilityPrecedence(unittest.TestCase):
+    def test_auto_mode_keeps_computed_order(self):
+        fusion = {
+            "fusion_banner_mode": "auto",
+            "fusion_banner_manual_cards": {"fire": ["gas"]},
+        }
+        computed = ["global", "thermal", "gas"]
+        visible = _apply_card_visibility_policy(fusion, "fire", computed, computed)
+        self.assertEqual(visible, computed)
+
+    def test_manual_mode_prefers_selected_cards(self):
+        fusion = {
+            "fusion_banner_mode": "manual",
+            "fusion_banner_manual_cards": {"fire": ["gas", "flame"]},
+        }
+        computed = ["global", "thermal", "gas", "flame"]
+        visible = _apply_card_visibility_policy(fusion, "fire", computed, computed)
+        self.assertEqual(visible, ["gas", "flame"])
+
+    def test_license_overrides_manual_selection(self):
+        fusion = {
+            "fusion_banner_mode": "manual",
+            "fusion_banner_manual_cards": {"fire": ["gas", "flame"]},
+            "card_license_status": {"gas": "unlicensed", "flame": "licensed"},
+        }
+        computed = ["global", "thermal", "gas", "flame"]
+        visible = _apply_card_visibility_policy(fusion, "fire", computed, computed)
+        self.assertEqual(visible, ["flame"])
+
+    def test_manual_unlicensed_cards_fallback_to_auto_licensed(self):
+        fusion = {
+            "fusion_banner_mode": "manual",
+            "fusion_banner_manual_cards": {"fire": ["gas"]},
+            "card_license_status": {"global": "licensed", "thermal": "licensed", "gas": "unlicensed"},
+        }
+        computed = ["global", "thermal", "gas"]
+        visible = _apply_card_visibility_policy(fusion, "fire", computed, computed)
+        self.assertEqual(visible, ["global", "thermal"])
 
 
 if __name__ == "__main__":

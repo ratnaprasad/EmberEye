@@ -63,6 +63,43 @@ def _apply_manual_card_selection(fusion, category, computed_keys, allowed_keys):
     return selected or list(computed_keys)
 
 
+def _is_card_licensed(fusion, card_key):
+    card_key = str(card_key or "").strip().lower()
+    if not card_key:
+        return False
+
+    status_map = fusion.get("card_license_status")
+    if isinstance(status_map, dict) and card_key in status_map:
+        value = status_map.get(card_key)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"unlicensed", "false", "0", "no"}
+        return bool(value)
+
+    unlicensed_cards = fusion.get("unlicensed_cards")
+    if isinstance(unlicensed_cards, (list, tuple, set)):
+        blocked = {str(item).strip().lower() for item in unlicensed_cards}
+        if card_key in blocked:
+            return False
+
+    return True
+
+
+def _apply_card_visibility_policy(fusion, category, computed_keys, allowed_keys):
+    mode = str(fusion.get("fusion_banner_mode", "auto") or "auto").strip().lower()
+    if mode == "manual":
+        selected = _apply_manual_card_selection(fusion, category, computed_keys, allowed_keys)
+    else:
+        selected = list(computed_keys)
+
+    licensed_selected = [key for key in selected if _is_card_licensed(fusion, key)]
+    if licensed_selected:
+        return licensed_selected
+
+    # If manual selection is fully unlicensed, fall back to auto order and keep licensed cards only.
+    fallback = [key for key in computed_keys if _is_card_licensed(fusion, key)]
+    return fallback
+
+
 def draw_fusion_overlay(widget, painter, width, height):
     """Render the fusion banner using the VideoWidget instance as context."""
     try:
@@ -276,7 +313,7 @@ def _draw_ppe_overlay(widget, painter, width, height, fusion):
                 visible_keys = candidate
                 break
 
-        visible_keys = _apply_manual_card_selection(
+        visible_keys = _apply_card_visibility_policy(
             fusion,
             "ppe",
             visible_keys,
@@ -666,7 +703,7 @@ def _draw_fire_overlay(widget, painter, width, height, fusion):
                 visible_keys = candidate
                 break
 
-        visible_keys = _apply_manual_card_selection(
+        visible_keys = _apply_card_visibility_policy(
             fusion,
             "fire",
             visible_keys,
