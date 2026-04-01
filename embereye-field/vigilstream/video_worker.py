@@ -147,10 +147,13 @@ class VideoWorker(QObject):
             else:
                 yolo_score = min(possible_thr, confidence)
             
-            # ONLY emit anomaly if YOLO confirmed detection (>= 0.50)
-            # This prevents heuristic false positives from appearing in Anomalies tab
+            # Emit detection_event FIRST so widget._latest_detections is
+            # updated before handle_vision_score reads PPE stats from it.
             if detections:
                 self.detection_event.emit(status, yolo_score, detections or [], self._last_frame_size)
+
+            # Forward vision score to fusion/alarm pipeline for every inference result.
+            self.vision_score_ready.emit(yolo_score)
 
             log_vision_event(
                 "YOLO",

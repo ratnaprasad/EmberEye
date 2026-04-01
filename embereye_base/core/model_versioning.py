@@ -6,6 +6,7 @@ Manages model lifecycle: training, versioning, incremental updates.
 import os
 import json
 import shutil
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -70,7 +71,14 @@ class ModelVersionManager:
     └── current_best.pt -> v2/weights/best.pt (symlink)
     """
     
-    def __init__(self, models_dir: str = "./models/yolo_versions"):
+    def __init__(self, models_dir: Optional[str] = None):
+        if models_dir is None:
+            try:
+                from embereye_base.utils.resource_helper import get_data_path
+
+                models_dir = get_data_path(os.path.join("models", "yolo_versions"))
+            except Exception:
+                models_dir = "./models/yolo_versions"
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.current_best_link = self.models_dir / "current_best.pt"
@@ -79,18 +87,43 @@ class ModelVersionManager:
     def get_next_version(self) -> str:
         """Get next version number."""
         versions = self.list_versions()
-        if not versions:
+        numeric_versions = []
+        for version in versions:
+            match = re.fullmatch(r"v(\d+)", str(version))
+            if match:
+                numeric_versions.append(int(match.group(1)))
+
+        if not numeric_versions:
             return "v1"
-        latest_num = max(int(v.replace('v', '')) for v in versions)
+        latest_num = max(numeric_versions)
         return f"v{latest_num + 1}"
     
     def list_versions(self) -> List[str]:
-        """List all model versions."""
+        """List all model versions with recognized metadata/weights layout."""
         versions = []
         for item in self.models_dir.iterdir():
-            if item.is_dir() and item.name.startswith('v') and item.name[1:].isdigit():
+            if not item.is_dir():
+                continue
+            weights_dir = item / "weights"
+            has_known_weights = (
+                (weights_dir / "EmberEye.pt").exists()
+                or (weights_dir / "best.pt").exists()
+            )
+            has_metadata = (item / "metadata.json").exists()
+            if has_known_weights or has_metadata:
                 versions.append(item.name)
         return sorted(versions)
+
+    def _resolve_version_weights_path(self, version: str) -> Optional[Path]:
+        """Return preferred deployable weights path for a version folder."""
+        weights_dir = self.models_dir / version / "weights"
+        preferred = weights_dir / "EmberEye.pt"
+        if preferred.exists():
+            return preferred
+        fallback = weights_dir / "best.pt"
+        if fallback.exists():
+            return fallback
+        return None
     
     def create_version(self, metadata: ModelMetadata, source_weights_dir: Path) -> Tuple[bool, str]:
         """
@@ -170,13 +203,37 @@ class ModelVersionManager:
         """Get path to current best model."""
         if self.current_best_link.exists():
             return self.current_best_link.resolve()
+
+        # Backfill legacy installs where current_best.pt wasn't created.
+        candidates = []
+        for version in self.list_versions():
+            version_path = self._resolve_version_weights_path(version)
+            if not version_path:
+                continue
+            try:
+                mtime = version_path.stat().st_mtime
+            except Exception:
+                mtime = 0.0
+            candidates.append((mtime, version, version_path))
+
+        if candidates:
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            _, version, version_path = candidates[0]
+            try:
+                self._update_current_best_link(version)
+                if self.current_best_link.exists():
+                    return self.current_best_link.resolve()
+            except Exception:
+                # If linking/copying fails, still return concrete version path.
+                return version_path.resolve()
+
         return None
     
     def promote_to_best(self, version: str) -> Tuple[bool, str]:
         """Promote a version to be the current best model (uses EmberEye.pt)."""
-        version_best = self.models_dir / version / "weights" / "EmberEye.pt"
-        if not version_best.exists():
-            return False, f"Version {version} EmberEye.pt not found"
+        version_best = self._resolve_version_weights_path(version)
+        if not version_best or not version_best.exists():
+            return False, f"Version {version} weights not found (expected EmberEye.pt or best.pt)"
         
         try:
             self._update_current_best_link(version)
@@ -187,8 +244,9 @@ class ModelVersionManager:
     
     def _update_current_best_link(self, version: str):
         """Update symlink to current best model (now points to EmberEye.pt)."""
-        # Point to EmberEye.pt (production naming) instead of best.pt
-        target = self.models_dir / version / "weights" / "EmberEye.pt"
+        target = self._resolve_version_weights_path(version)
+        if target is None or not target.exists():
+            raise FileNotFoundError(f"No deployable weights found for version {version}")
         
         if self.current_best_link.exists() or self.current_best_link.is_symlink():
             self.current_best_link.unlink()

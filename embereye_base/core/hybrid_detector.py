@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 import threading
 import time
+import tempfile
+import traceback
 from typing import Optional, Tuple, Dict, List
 from pathlib import Path
 import sys
@@ -102,6 +104,27 @@ class HybridDetector:
                 print(f"[HybridDetector-{self.stream_id}] ModelVersionManager best: {current_best}")
                 self._load_yolo_model(str(current_best))
                 return
+
+            # Legacy recovery: load newest known weights if current_best is absent.
+            candidates = []
+            for version_name in manager.list_versions():
+                version_dir = manager.models_dir / version_name / "weights"
+                for filename in ("EmberEye.pt", "best.pt"):
+                    candidate = version_dir / filename
+                    if not candidate.exists():
+                        continue
+                    try:
+                        mtime = candidate.stat().st_mtime
+                    except Exception:
+                        mtime = 0.0
+                    candidates.append((mtime, candidate))
+
+            if candidates:
+                candidates.sort(key=lambda item: item[0], reverse=True)
+                fallback_model = candidates[0][1]
+                print(f"[HybridDetector-{self.stream_id}] ModelVersionManager fallback: {fallback_model}")
+                self._load_yolo_model(str(fallback_model))
+                return
         except Exception as e:
             print(f"[HybridDetector-{self.stream_id}] Could not use ModelVersionManager: {e}")
         
@@ -185,7 +208,7 @@ class HybridDetector:
             def _attempt_load(cpu_only: bool):
                 import torch
                 if cpu_only:
-                    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+                    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
                     os.environ["USE_CUDA"] = "0"
                     # Monkey-patch torch.cuda.is_available so neither our
                     # code nor ultralytics ever attempts a CUDA DLL load.
@@ -194,11 +217,35 @@ class HybridDetector:
                 from ultralytics import YOLO
                 device = "cpu" if cpu_only or not torch.cuda.is_available() else "0"
                 print(f"[HybridDetector-{self.stream_id}] Loading YOLO from: {normalized_path} (exists={exists}, device={device})")
-                # Force map_location='cpu' so torch.load never touches CUDA
                 loaded_model = YOLO(normalized_path, task="detect")
                 if device == "cpu":
                     loaded_model.to("cpu")
                 return loaded_model, device
+
+            def _attempt_cpu_checkpoint_rewrite_and_load():
+                """Fallback for CUDA-tagged checkpoints in CPU-only runtime."""
+                import torch
+                from ultralytics import YOLO
+
+                os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+                os.environ["USE_CUDA"] = "0"
+                torch.cuda.is_available = lambda: False
+
+                with tempfile.NamedTemporaryFile(prefix="embereye_cpu_model_", suffix=".pt", delete=False) as tf:
+                    cpu_model_path = tf.name
+
+                try:
+                    ckpt = torch.load(normalized_path, map_location="cpu")
+                    torch.save(ckpt, cpu_model_path)
+                    print(f"[HybridDetector-{self.stream_id}] Retrying with CPU-normalized checkpoint: {cpu_model_path}")
+                    loaded_model = YOLO(cpu_model_path, task="detect")
+                    loaded_model.to("cpu")
+                    return loaded_model, "cpu"
+                finally:
+                    try:
+                        os.remove(cpu_model_path)
+                    except Exception:
+                        pass
 
             try:
                 loaded_model, device = _attempt_load(force_cpu)
@@ -212,6 +259,18 @@ class HybridDetector:
                     loaded_model, device = _attempt_load(True)
                 else:
                     raise
+            except Exception as first_err:
+                # CPU-only fallback for CUDA-tagged checkpoints saved from GPU training.
+                err_text = str(first_err).lower()
+                cuda_deser_issue = (
+                    "deserialize object on a cuda device" in err_text
+                    or "attempting to deserialize object" in err_text
+                    or "cuda" in err_text and "available" in err_text
+                )
+                if force_cpu and cuda_deser_issue:
+                    loaded_model, device = _attempt_cpu_checkpoint_rewrite_and_load()
+                else:
+                    raise
 
             self.model = loaded_model
             self.inference_device = device
@@ -221,15 +280,35 @@ class HybridDetector:
             print(f"[HybridDetector-{self.stream_id}] [OK] Model loaded. Classes: {len(self.model.names)}")
         except OSError as e:
             self.last_load_error = repr(e)
+            err_msg = f"[HybridDetector-{self.stream_id}] [OSError] {e!r}\nTraceback:\n{traceback.format_exc()}"
             if 'DLL' in str(e) or 'initialization routine' in str(e):
-                print(f"[HybridDetector-{self.stream_id}] [WARN] DLL init error, fallback to heuristic-only: {e!r}")
+                print(f"[HybridDetector-{self.stream_id}] [WARN] DLL init error, fallback to heuristic-only:\n{err_msg}")
             else:
-                print(f"[HybridDetector-{self.stream_id}] [ERROR] Failed to load model from {model_path}: {e!r}")
+                print(f"[HybridDetector-{self.stream_id}] [ERROR] Failed to load model from {model_path}:\n{err_msg}")
+            # Write full error to persistent log if available
+            try:
+                from embereye_base.utils.resource_helper import append_debug_log
+                append_debug_log(
+                    "field_model_status_detailed.log",
+                    f"[{time.time()}] OSError during model load:\n{err_msg}\n\n",
+                )
+            except Exception:
+                pass
             self.model_loaded = False
             self.model = None
         except Exception as e:
             self.last_load_error = repr(e)
-            print(f"[HybridDetector-{self.stream_id}] [ERROR] Failed to load model from {model_path}: {e!r}")
+            err_msg = f"[HybridDetector-{self.stream_id}] [Exception] {type(e).__name__}: {e!r}\nTraceback:\n{traceback.format_exc()}"
+            print(f"[HybridDetector-{self.stream_id}] [ERROR] Failed to load model from {model_path}:\n{err_msg}")
+            # Write full error to persistent log if available
+            try:
+                from embereye_base.utils.resource_helper import append_debug_log
+                append_debug_log(
+                    "field_model_status_detailed.log",
+                    f"[{time.time()}] Exception during model load:\n{err_msg}\n\n",
+                )
+            except Exception:
+                pass
             self.model_loaded = False
             self.model = None
     

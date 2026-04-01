@@ -4,6 +4,10 @@
 
 This document defines how the build and deployment team should generate trusted artifacts such as Field builds, Studio builds, and `.embersuite 2.x` packages.
 
+## Naming Standard
+
+1. Follow [git/NAMING_STANDARD.md](git/NAMING_STANDARD.md) for build artifact naming.
+
 ## Branch Source Rule
 
 1. Build only from an approved branch.
@@ -74,9 +78,14 @@ Use names that allow traceability:
 2. version or branch
 3. commit hash or build timestamp
 
-Example:
+Pattern:
 
-1. `EmberSuite-2x-20260329-<shortsha>.zip`
+1. `<product>-<stream>-<yyyymmdd>-<shortsha>.<ext>`
+
+Examples:
+
+1. `EmberSuite-2x-20260329-a1b2c3d.zip`
+2. `EmberEyeStudio-main-20260329-4de01ae.exe`
 
 ## Release Closeout
 

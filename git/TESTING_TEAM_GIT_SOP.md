@@ -4,6 +4,10 @@
 
 This machine is a testing and validation system. The testing team should preserve test evidence and local runtime state, but should not work directly on merged development branches.
 
+## Naming Standard
+
+1. Follow [git/NAMING_STANDARD.md](git/NAMING_STANDARD.md) for branch and handoff naming.
+
 ## Primary Rule
 
 1. Perform day-to-day testing on the dedicated local branch:
@@ -33,7 +37,7 @@ This machine is a testing and validation system. The testing team should preserv
 ## When A Bug Is Found And A Fix Is Needed
 
 1. Create a fresh fix branch from current approved code:
-   - `git switch -c fix/<short-name> origin/main`
+   - `git switch -c fix/<scope>-<short-topic> origin/main`
 2. Reproduce the bug.
 3. Make only the required fix.
 4. Stage only relevant files.
