@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import ctypes
 
+_DLL_DIR_HANDLES = []
+
 # --------------------------------------------------------------------------
 # Early CUDA probe for frozen (PyInstaller) builds on Windows.
 # If the NVIDIA driver DLL isn't loadable, set CPU-only flags BEFORE
@@ -12,15 +14,197 @@ import ctypes
 # --------------------------------------------------------------------------
 if getattr(sys, "frozen", False) and sys.platform == "win32":
     os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
-    try:
-        import ctypes
-        ctypes.WinDLL("nvcuda.dll")
-    except (OSError, Exception):
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        os.environ["EMBEREYE_FORCE_CPU"] = "1"
+    # Field executable is now explicitly CPU-only.
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    os.environ["EMBEREYE_FORCE_CPU"] = "1"
+    os.environ["EMBEREYE_QUARANTINE_CUDA_DLLS"] = "1"
 
-# Setup DLL paths for PyTorch before any Qt/YOLO imports
-# This mirrors Studio startup to avoid DLL init failures on Windows.
+
+def _append_bootstrap_log(message: str) -> None:
+    timestamped = message.rstrip() + "\n"
+    candidate_paths = []
+    try:
+        if getattr(sys, "frozen", False):
+            home_dir = os.path.expanduser("~")
+            candidate_paths.append(os.path.join(home_dir, ".embereye", "field_bootstrap.log"))
+            candidate_paths.append(os.path.join(os.path.dirname(sys.executable), "field_bootstrap.log"))
+        else:
+            candidate_paths.append(os.path.abspath("field_bootstrap.log"))
+    except Exception:
+        return
+
+    seen = set()
+    for log_path in candidate_paths:
+        try:
+            norm_path = os.path.normcase(os.path.abspath(log_path))
+            if norm_path in seen:
+                continue
+            seen.add(norm_path)
+            parent_dir = os.path.dirname(log_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as bootstrap_log:
+                bootstrap_log.write(timestamped)
+        except Exception:
+            continue
+
+
+def _restore_quarantined_torch_dlls() -> None:
+    if not (getattr(sys, "frozen", False) and sys.platform == "win32"):
+        return
+
+    candidate_dirs = []
+    try:
+        candidate_dirs.append(Path(sys.executable).parent / "_internal" / "torch" / "lib")
+        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        candidate_dirs.append(meipass / "torch" / "lib")
+        candidate_dirs.append(meipass / "_internal" / "torch" / "lib")
+    except Exception:
+        pass
+
+    seen_dirs = set()
+    restored = 0
+    for lib_dir in candidate_dirs:
+        try:
+            lib_dir = lib_dir.resolve()
+        except Exception:
+            lib_dir = Path(lib_dir)
+
+        dir_key = os.path.normcase(str(lib_dir))
+        if dir_key in seen_dirs or not lib_dir.exists():
+            continue
+        seen_dirs.add(dir_key)
+
+        for disabled_path in lib_dir.glob("*.dll.disabled"):
+            original_path = disabled_path.with_suffix("")
+            try:
+                if original_path.exists():
+                    disabled_path.unlink(missing_ok=True)
+                    continue
+                disabled_path.rename(original_path)
+                restored += 1
+            except Exception as exc:
+                _append_bootstrap_log(f"[BOOTSTRAP] Failed to restore {disabled_path.name}: {exc!r}")
+
+    if restored:
+        _append_bootstrap_log(f"[BOOTSTRAP] Restored {restored} quarantined torch DLLs")
+
+
+def _disable_bundled_cuda_runtime() -> None:
+    # Disable CUDA DLLs if we're in frozen mode AND either:
+    # 1. Forced to CPU mode (EMBEREYE_FORCE_CPU == "1")
+    # 2. Explicitly requested via EMBEREYE_QUARANTINE_CUDA_DLLS
+    if not (getattr(sys, "frozen", False) and sys.platform == "win32"):
+        return
+
+    force_cpu = os.environ.get("EMBEREYE_FORCE_CPU") == "1"
+    explicit_quarantine = os.environ.get("EMBEREYE_QUARANTINE_CUDA_DLLS", "").strip().lower() in ("1", "true", "yes")
+    
+    if not (force_cpu or explicit_quarantine):
+        return
+
+    _append_bootstrap_log("[BOOTSTRAP] Starting CUDA DLL quarantine...")
+
+    dll_markers = (
+        "c10_cuda",
+        "caffe2_nvrtc",
+        "cublas",
+        "cudart",
+        "cudnn",
+        "cufft",
+        "cupti",
+        "curand",
+        "cusolver",
+        "cusparse",
+        "nvjitlink",
+        "nvperf",
+        "nvrtc",
+        "nvtoolsext",
+        "torch_cuda",
+    )
+
+    candidate_dirs = []
+    try:
+        candidate_dirs.append(Path(sys.executable).parent / "_internal" / "torch" / "lib")
+        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        candidate_dirs.append(meipass / "torch" / "lib")
+        candidate_dirs.append(meipass / "_internal" / "torch" / "lib")
+    except Exception:
+        pass
+
+    seen_dirs = set()
+    for lib_dir in candidate_dirs:
+        try:
+            lib_dir = lib_dir.resolve()
+        except Exception:
+            lib_dir = Path(lib_dir)
+        dir_key = os.path.normcase(str(lib_dir))
+        if dir_key in seen_dirs or not lib_dir.exists():
+            continue
+        seen_dirs.add(dir_key)
+
+        for dll_path in lib_dir.glob("*.dll"):
+            lower_name = dll_path.name.lower()
+            if not any(marker in lower_name for marker in dll_markers):
+                continue
+            disabled_path = dll_path.with_suffix(dll_path.suffix + ".disabled")
+            try:
+                if disabled_path.exists():
+                    dll_path.unlink(missing_ok=True)
+                    _append_bootstrap_log(f"[BOOTSTRAP] Removed already-disabled CUDA DLL duplicate: {dll_path}")
+                else:
+                    dll_path.rename(disabled_path)
+                    _append_bootstrap_log(f"[BOOTSTRAP] Disabled CUDA DLL: {dll_path.name}")
+            except Exception as exc:
+                _append_bootstrap_log(f"[BOOTSTRAP] Failed to disable {dll_path.name}: {exc!r}")
+
+
+_restore_quarantined_torch_dlls()
+_disable_bundled_cuda_runtime()
+
+
+def _check_windows_runtime_dependencies() -> None:
+    if not (getattr(sys, "frozen", False) and sys.platform == "win32"):
+        return
+
+    # If these fail, c10.dll will fail even in CPU-only torch builds.
+    runtime_dlls = ("ucrtbase.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+    for dll_name in runtime_dlls:
+        try:
+            ctypes.CDLL(dll_name)
+            _append_bootstrap_log(f"[BOOTSTRAP] Runtime OK: {dll_name}")
+        except OSError as exc:
+            _append_bootstrap_log(f"[BOOTSTRAP] Runtime missing/broken {dll_name}: {exc}")
+
+def _preload_torch_runtime_dependencies(torch_lib_path: Path, base_path: Path) -> None:
+    if not (getattr(sys, "frozen", False) and sys.platform == "win32"):
+        return
+
+    # ONLY preload CRT DLLs (vcruntime, msvcp).
+    # torch's own _load_dll_libraries() handles everything else properly.
+    # Trying to manually preload c10.dll or other libs circumvents torch's
+    # LoadLibraryExW logic which has proper error context.
+    
+    crt_only = [
+        base_path / "vcruntime140.dll",
+        base_path / "msvcp140.dll",
+        base_path / "vcruntime140_1.dll",
+    ]
+    
+    for dll_path in crt_only:
+        if not dll_path.exists():
+            continue
+        try:
+            ctypes.CDLL(str(dll_path))
+            _append_bootstrap_log(f"[BOOTSTRAP] Preloaded CRT {dll_path.name}")
+        except Exception as exc:
+            _append_bootstrap_log(f"[BOOTSTRAP] Failed preload CRT {dll_path.name}: {exc!r}")
+
+# Setup DLL paths for PyTorch before any Qt/YOLO imports.
+# CRITICAL: Follow torch's own _load_dll_libraries() exactly:
+# 1. Register ALL dll directories with os.add_dll_directory()
+# 2. Preload only CRT (vcruntime/msvcp) to ensure they're initialized
+# 3. LET TORCH'S OWN LOADER handle c10.dll via LoadLibraryExW with proper error handling
 try:
     repo_root = Path(__file__).parent.parent.resolve()
     candidates = []
@@ -34,11 +218,6 @@ try:
     candidates.append(Path(sys.executable).parent.parent)
 
     for base_path in candidates:
-        base_candidates = [
-            base_path,
-            base_path / "_internal",
-            base_path / "Lib" / "site-packages",
-        ]
         torch_lib_candidates = [
             base_path / "Lib" / "site-packages" / "torch" / "lib",
             base_path / "torch" / "lib",
@@ -49,7 +228,27 @@ try:
         if torch_lib_path is None:
             continue
 
-        dll_dirs = [p for p in (base_candidates + [torch_lib_path]) if p.exists()]
+        # Register relevant directories and KEEP handles alive; otherwise
+        # Windows may drop the search path before torch import runs.
+        dll_dirs = [
+            torch_lib_path,
+            base_path,
+            base_path / "Lib" / "site-packages",
+            Path(sys.exec_prefix) / "Library" / "bin",
+            Path(sys.exec_prefix) / "bin",
+        ]
+
+        # De-duplicate while preserving order.
+        seen = set()
+        deduped = []
+        for p in dll_dirs:
+            key = os.path.normcase(str(p))
+            if key in seen or not p.exists():
+                continue
+            seen.add(key)
+            deduped.append(p)
+        dll_dirs = deduped
+        
         path_value = os.environ.get("PATH", "")
         for dll_dir in dll_dirs:
             dll_dir_str = str(dll_dir)
@@ -57,36 +256,41 @@ try:
                 path_value = dll_dir_str + os.pathsep + path_value
             if hasattr(os, "add_dll_directory"):
                 try:
-                    os.add_dll_directory(dll_dir_str)
-                except Exception:
-                    pass
+                    handle = os.add_dll_directory(dll_dir_str)
+                    _DLL_DIR_HANDLES.append(handle)
+                    _append_bootstrap_log(f"[BOOTSTRAP] Registered DLL dir: {dll_dir_str}")
+                except Exception as e:
+                    _append_bootstrap_log(f"[BOOTSTRAP] Failed register DLL dir {dll_dir_str}: {e}")
 
         os.environ["PATH"] = path_value
+        
+        # Only preload CRT DLLs (which torch does too)
+        _preload_torch_runtime_dependencies(torch_lib_path, base_path)
         break
 except Exception as e:
+    _append_bootstrap_log(f"[BOOTSTRAP] DLL path setup error: {e}")
     print(f"Warning: Could not setup torch DLL paths: {e}")
 
 # Preload torch before Qt to avoid DLL conflicts and set device fallback info
 device_label = "CPU"
 try:
+    _check_windows_runtime_dependencies()
+    _append_bootstrap_log("[BOOTSTRAP] Attempting import torch...")
     import torch  # noqa: F401
-    force_cpu = os.environ.get("EMBEREYE_FORCE_CPU", "").strip().lower() in ("1", "true", "yes")
-    if force_cpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-        device_label = "CPU (forced)"
-    elif torch.cuda.is_available():
-        device_label = "GPU"
-    else:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-        os.environ["EMBEREYE_FORCE_CPU"] = "1"
-        device_label = "CPU"
+    _append_bootstrap_log("[BOOTSTRAP] torch imported OK")
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    os.environ["EMBEREYE_FORCE_CPU"] = "1"
+    device_label = "CPU (forced)"
+    _append_bootstrap_log(f"[BOOTSTRAP] device_label={device_label}")
 except OSError as e:
     # Catch DLL init failures (error 1114) during torch import / CUDA probe
+    _append_bootstrap_log(f"[BOOTSTRAP] torch import OSError: {type(e).__name__}: {e}")
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["EMBEREYE_FORCE_CPU"] = "1"
     device_label = "CPU"
     print(f"Warning: torch preload OSError (forcing CPU): {e}")
 except Exception as e:
+    _append_bootstrap_log(f"[BOOTSTRAP] torch import Exception: {type(e).__name__}: {e}")
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     os.environ["EMBEREYE_FORCE_CPU"] = "1"
     device_label = "CPU"

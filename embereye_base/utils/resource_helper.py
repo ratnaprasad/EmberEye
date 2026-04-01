@@ -57,6 +57,52 @@ def get_writable_path(filename):
     
     return result
 
+
+def get_debug_log_paths(filename):
+    """Return visible candidate paths for runtime debug logs."""
+    paths = []
+
+    primary_path = get_writable_path(filename)
+    if primary_path:
+        paths.append(primary_path)
+
+    try:
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            if exe_dir:
+                paths.append(os.path.join(exe_dir, filename))
+        else:
+            paths.append(os.path.abspath(filename))
+    except Exception:
+        pass
+
+    unique_paths = []
+    seen = set()
+    for path in paths:
+        norm_path = os.path.normcase(os.path.abspath(path))
+        if norm_path in seen:
+            continue
+        seen.add(norm_path)
+        unique_paths.append(path)
+
+    return unique_paths
+
+
+def append_debug_log(filename, text):
+    """Append diagnostic text to all visible debug log locations."""
+    written_paths = []
+    for log_path in get_debug_log_paths(filename):
+        try:
+            parent_dir = os.path.dirname(log_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            with open(log_path, 'a', encoding='utf-8') as log_file:
+                log_file.write(text)
+            written_paths.append(log_path)
+        except Exception:
+            continue
+    return written_paths
+
 def copy_bundled_resource(filename, dest_path):
     """
     Copy a bundled resource to a writable location if it doesn't exist.

@@ -16,6 +16,10 @@ from typing import List
 from pathlib import Path
 from threading import Thread, Event
 import subprocess
+try:
+    import winsound
+except (ImportError, OSError):
+    winsound = None
 
 # Prefer fieldglass modules first, then parent directory for root-level utilities
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -71,6 +75,9 @@ from embersync import IncidentExporter, IncidentExportMetadata, DetectionFrame
 from embereye_base.core.vision_detector import VisionDetector, SEVERITY_RANK
 
 logger = logging.getLogger(__name__)
+
+ALARM_EVALUATION_MODES = ("fusion", "vision")
+DEFAULT_ALARM_EVALUATION_MODE = "vision"
 
 
 class WebSocketClient(QObject):
@@ -441,6 +448,12 @@ class BEMainWindow(QMainWindow):
             return category
         return DEFAULT_ANALYTICS_CATEGORY
 
+    def _normalize_alarm_evaluation_mode(self, value):
+        mode = str(value or '').strip().lower()
+        if mode in ALARM_EVALUATION_MODES:
+            return mode
+        return DEFAULT_ALARM_EVALUATION_MODE
+
     def _normalize_enabled_analytics_categories(self, value):
         """Normalize configured analytics categories to a non-empty valid list."""
         categories = []
@@ -518,6 +531,9 @@ class BEMainWindow(QMainWindow):
             getattr(self, 'fusion_banner_manual_cards', {})
         )
         self.config['active_analytics_category'] = active
+        self.config['alarm_evaluation_mode'] = self._normalize_alarm_evaluation_mode(
+            getattr(self, 'alarm_evaluation_mode', DEFAULT_ALARM_EVALUATION_MODE)
+        )
         StreamConfig.save_config(self.config)
 
     def _apply_banner_preferences_to_widgets(self):
@@ -723,11 +739,15 @@ class BEMainWindow(QMainWindow):
         now_ts = time.time()
         last_sensor_ts = float(self._sensor_last_packet_ts_by_loc_id.get(loc_key, 0.0)) if loc_key else 0.0
         has_recent_sensor = bool(last_sensor_ts > 0.0 and (now_ts - last_sensor_ts) <= float(self._sensor_overlay_stale_timeout_s))
+        alarm_mode = self._normalize_alarm_evaluation_mode(
+            getattr(self, 'alarm_evaluation_mode', DEFAULT_ALARM_EVALUATION_MODE)
+        )
+        allow_vision_without_sensor = bool(alarm_mode == 'vision')
 
         # Find widget for loc_id
         for widget in self.get_video_widgets():
             if getattr(widget, 'loc_id', None) == loc_id:
-                if not has_recent_sensor:
+                if not has_recent_sensor and not allow_vision_without_sensor:
                     # No fresh PFDS sensor input for this tile.
                     # Keep alarm latched until explicit ACK/Silence.
                     try:
@@ -749,20 +769,35 @@ class BEMainWindow(QMainWindow):
                         cache = getattr(self, '_ppe_stats_by_loc_id', {}) or {}
                         ppe_kwargs.update(cache.get(loc_key, {}))
 
-                        # Prefer freshest stats from the active rule engine when available.
-                        details = getattr(getattr(self, '_rule_engine', None), 'last_details', None)
-                        if isinstance(details, dict):
-                            stats = details.get('ppe_stats', {})
-                            if isinstance(stats, dict):
-                                ppe_kwargs.update({
-                                    'helmet_count': int(stats.get('helmet_count', ppe_kwargs.get('helmet_count', 0)) or 0),
-                                    'no_helmet_count': int(stats.get('no_helmet_count', ppe_kwargs.get('no_helmet_count', 0)) or 0),
-                                    'vest_count': int(stats.get('vest_count', ppe_kwargs.get('vest_count', 0)) or 0),
-                                    'no_vest_count': int(stats.get('no_vest_count', ppe_kwargs.get('no_vest_count', 0)) or 0),
-                                    'total_persons': int(stats.get('total_persons', ppe_kwargs.get('total_persons', 0)) or 0),
-                                })
-                                cache[loc_key] = dict(ppe_kwargs)
-                                self._ppe_stats_by_loc_id = cache
+                        # Compute PPE stats from the widget's latest detections
+                        # (the main-window _rule_engine does not run inference;
+                        #  the actual YOLO runs in the background detection_worker).
+                        raw_dets = getattr(widget, '_latest_detections', None) or []
+                        if raw_dets:
+                            h_c = no_h = v_c = no_v = tp = 0
+                            for d in raw_dets:
+                                cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                                if cn == 'person':
+                                    tp += 1
+                                elif cn == 'helmet':
+                                    h_c += 1
+                                elif cn in ('no_helmet', 'head'):
+                                    no_h += 1
+                                elif cn == 'vest':
+                                    v_c += 1
+                                elif cn == 'no_vest':
+                                    no_v += 1
+                            if tp == 0:
+                                tp = max(h_c + no_h, v_c + no_v)
+                            ppe_kwargs.update({
+                                'helmet_count': h_c,
+                                'no_helmet_count': no_h,
+                                'vest_count': v_c,
+                                'no_vest_count': no_v,
+                                'total_persons': tp,
+                            })
+                            cache[loc_key] = dict(ppe_kwargs)
+                            self._ppe_stats_by_loc_id = cache
                 except Exception:
                     ppe_kwargs = {}
 
@@ -777,9 +812,15 @@ class BEMainWindow(QMainWindow):
                     self._fusion_ts_by_loc_id[key] = time.time()
                 except Exception:
                     pass
+                if hasattr(widget, 'set_fusion_data'):
+                    try:
+                        widget.set_fusion_data(dict(fusion_result or {}))
+                    except Exception:
+                        pass
                 if hasattr(widget, 'update_fire_alarm'):
                     try:
-                        self._handle_alarm_transition(loc_id, bool(fusion_result.get('alarm')), source='vision_only')
+                        source_name = 'vision_only' if has_recent_sensor else 'vision_only_no_sensor'
+                        self._handle_alarm_transition(loc_id, bool(fusion_result.get('alarm')), source=source_name)
                         effective_alarm = bool(self._alarm_state_by_loc_id.get(str(loc_id), bool(fusion_result.get('alarm'))))
                         widget.update_fire_alarm(effective_alarm)
                         if hasattr(widget, 'set_alarm_acknowledged'):
@@ -1465,6 +1506,44 @@ class BEMainWindow(QMainWindow):
             except Exception as e:
                 print(f"ACK state UI update failed for loc_id={key}: {e}")
 
+    # ── Alarm Audio ──────────────────────────────────────────────────
+    def _play_alarm_audio(self):
+        """Play the configured alarm WAV in a loop (async, non-blocking)."""
+        if self._alarm_audio_is_playing:
+            return
+        try:
+            path = str(getattr(self, '_alarm_audio_file', '') or '')
+            if winsound and path and os.path.isfile(path):
+                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_LOOP | winsound.SND_ASYNC)
+            elif winsound:
+                winsound.PlaySound('SystemExclamation', winsound.SND_ALIAS | winsound.SND_LOOP | winsound.SND_ASYNC)
+            self._alarm_audio_is_playing = True
+        except Exception as e:
+            print(f"[ALARM_AUDIO] play error: {e}")
+
+    def _stop_alarm_audio(self):
+        """Stop any looping alarm audio."""
+        if not self._alarm_audio_is_playing:
+            return
+        try:
+            if winsound:
+                winsound.PlaySound(None, 0)
+            self._alarm_audio_is_playing = False
+        except Exception as e:
+            print(f"[ALARM_AUDIO] stop error: {e}")
+
+    def _update_alarm_audio_state(self):
+        """Start or stop alarm audio based on whether any location has an active alarm."""
+        if not bool(getattr(self, '_alarm_audio_enabled', False)):
+            if self._alarm_audio_is_playing:
+                self._stop_alarm_audio()
+            return
+        any_active = any(bool(v) for v in self._alarm_state_by_loc_id.values())
+        if any_active and not self._alarm_audio_is_playing:
+            self._play_alarm_audio()
+        elif not any_active and self._alarm_audio_is_playing:
+            self._stop_alarm_audio()
+
     def _handle_alarm_transition(self, loc_id, alarm_active, source='fusion'):
         """Track alarm transitions and send ALARM_ON once per active cycle.
 
@@ -1517,6 +1596,7 @@ class BEMainWindow(QMainWindow):
         sent = self._send_emberhawk_command_for_loc(key, 'ALARM_ON', reason=source)
         if sent:
             self._alarm_on_sent_by_loc_id[key] = True
+        self._update_alarm_audio_state()
 
     def handle_alarm_ack_from_widget(self, loc_id):
         """Handle per-tile triggered action by sending ACK_ON to the mapped device."""
@@ -1539,6 +1619,7 @@ class BEMainWindow(QMainWindow):
         self._alarm_on_retry_ts_by_loc_id[key] = 0.0
         self._set_loc_alarm_ack_state(key, True)
         self._finalize_incident_session(key, feedback='pending', acked=True, end_reason='operator_ack')
+        self._update_alarm_audio_state()
         widget = self.video_widgets.get(key)
         if widget and hasattr(widget, 'update_fire_alarm'):
             try:
@@ -1729,6 +1810,9 @@ class BEMainWindow(QMainWindow):
         self.config = StreamConfig.load_config()
         self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
         self._load_analytics_banner_preferences()
+        self.alarm_evaluation_mode = self._normalize_alarm_evaluation_mode(
+            self.config.get('alarm_evaluation_mode', DEFAULT_ALARM_EVALUATION_MODE)
+        )
         self.video_widgets = {}  # loc_id -> VideoWidget
         self.tcp_server = tcp_server  # Reuse existing or create new
         self.tcp_sensor_server = tcp_sensor_server or tcp_server
@@ -1784,6 +1868,12 @@ class BEMainWindow(QMainWindow):
         self._alarm_ack_by_loc_id = {}
         self._alarm_on_sent_by_loc_id = {}
         self._alarm_on_retry_ts_by_loc_id = {}
+        # Alarm audio state
+        self._alarm_audio_is_playing = False
+        self._alarm_audio_enabled = bool(self.config.get('alarm_audio_enabled', True))
+        _field_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._alarm_audio_file = str(self.config.get('alarm_audio_file',
+            os.path.join(_field_root, 'assets', 'alarm.wav')))
         self._active_incident_sessions = {}
         self._incident_rows_by_token = {}
         self._incident_video_save_interval_s = 0.8
@@ -4824,6 +4914,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.global_grid_action.setCheckable(True)
         self.global_grid_action.toggled.connect(self.toggle_all_numeric_grids)
         settings_menu.addAction("Sensor Configuration", self.show_sensor_config)
+        settings_menu.addAction("Alarm Audio Settings", self.show_alarm_audio_settings)
         settings_menu.addSeparator()
 
         self._add_settings_menu_section(settings_menu, "INVENTORY & MAPPINGS")
@@ -5437,7 +5528,20 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         active=False,
                         mono=True,
                     )
-                    self.model_status_label.setToolTip(model_error)
+                    tooltip_text = model_error
+                    try:
+                        from embereye_base.utils.resource_helper import append_debug_log, get_debug_log_paths
+                        from datetime import datetime as _dt
+                        log_paths = get_debug_log_paths("field_model_status.log")
+                        append_debug_log(
+                            "field_model_status.log",
+                            f"{_dt.now().isoformat()} MODEL_ERROR {model_error}\n",
+                        )
+                        if log_paths:
+                            tooltip_text = f"{model_error}\nLog: {log_paths[0]}"
+                    except Exception:
+                        pass
+                    self.model_status_label.setToolTip(tooltip_text)
                 else:
                     self._apply_tactical_status_module_style(
                         self.model_status_frame,
@@ -5449,7 +5553,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     )
                     self.model_status_label.setToolTip("")
             self._refresh_status_tray_icons()
-        except Exception:
+        except Exception as e:
             self._apply_tactical_status_module_style(
                 self.model_status_frame,
                 self.model_status_label,
@@ -5458,6 +5562,20 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 active=False,
                 mono=True,
             )
+            try:
+                self.model_status_label.setToolTip(f"Model status refresh failed: {e}")
+            except Exception:
+                pass
+            print(f"[MODEL_STATUS] refresh failed: {e}")
+            try:
+                from embereye_base.utils.resource_helper import append_debug_log
+                from datetime import datetime as _dt
+                append_debug_log(
+                    "field_model_status.log",
+                    f"{_dt.now().isoformat()} MODEL_STATUS_REFRESH_EXCEPTION {e}\n",
+                )
+            except Exception:
+                pass
             self._refresh_status_tray_icons()
 
     def _quick_restart_tcp_server(self):
@@ -5800,6 +5918,64 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     return
             QMessageBox.information(self, "Settings Applied", f"Sensor configuration updated for {target_text} (no restart required).")
 
+    def show_alarm_audio_settings(self):
+        """Configure alarm audio: enable/disable, select WAV file, test playback."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Alarm Audio Settings")
+        dialog.setMinimumSize(480, 220)
+        layout = QFormLayout(dialog)
+
+        enable_cb = QCheckBox("Enable Alarm Audio")
+        enable_cb.setChecked(bool(getattr(self, '_alarm_audio_enabled', True)))
+        layout.addRow(enable_cb)
+
+        file_row = QHBoxLayout()
+        file_input = QLineEdit(str(getattr(self, '_alarm_audio_file', '')))
+        file_input.setPlaceholderText("Path to alarm.wav")
+        file_row.addWidget(file_input)
+        browse_btn = QPushButton("Browse...")
+        def _browse():
+            path, _ = QFileDialog.getOpenFileName(dialog, "Select Alarm WAV", "", "WAV Files (*.wav);;All Files (*)")
+            if path:
+                file_input.setText(path)
+        browse_btn.clicked.connect(_browse)
+        file_row.addWidget(browse_btn)
+        default_btn = QPushButton("Default")
+        def _set_default():
+            _fr = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            file_input.setText(os.path.join(_fr, 'assets', 'alarm.wav'))
+        default_btn.clicked.connect(_set_default)
+        file_row.addWidget(default_btn)
+        layout.addRow("Alarm File:", file_row)
+
+        test_btn = QPushButton("Test")
+        def _test():
+            p = file_input.text().strip()
+            try:
+                if winsound and p and os.path.isfile(p):
+                    winsound.PlaySound(p, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                elif winsound:
+                    winsound.PlaySound('SystemExclamation', winsound.SND_ALIAS | winsound.SND_ASYNC)
+            except Exception as e:
+                QMessageBox.warning(dialog, "Test Failed", str(e))
+        test_btn.clicked.connect(_test)
+        layout.addRow(test_btn)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        def _save():
+            self._alarm_audio_enabled = enable_cb.isChecked()
+            self._alarm_audio_file = file_input.text().strip()
+            self.config['alarm_audio_enabled'] = self._alarm_audio_enabled
+            self.config['alarm_audio_file'] = self._alarm_audio_file
+            StreamConfig.save_config(self.config)
+            self._update_alarm_audio_state()
+            dialog.accept()
+        btn_box.accepted.connect(_save)
+        btn_box.rejected.connect(dialog.reject)
+        layout.addRow(btn_box)
+
+        dialog.exec()
+
     def show_analytics_banner_settings(self):
         """Configure analytics selection and fusion banner card behavior."""
         dialog = QDialog(self)
@@ -5843,6 +6019,21 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             primary_combo.setCurrentIndex(primary_idx)
         primary_row.addWidget(primary_combo, 1)
         category_layout.addLayout(primary_row)
+
+        alarm_mode_row = QHBoxLayout()
+        alarm_mode_row.addWidget(QLabel("Alarm evaluation mode"))
+        alarm_mode_combo = QComboBox()
+        alarm_mode_combo.addItem("Fusion (requires recent PFDS sensor)", "fusion")
+        alarm_mode_combo.addItem("Vision (camera-first, no PFDS required)", "vision")
+        alarm_mode_idx = alarm_mode_combo.findData(
+            self._normalize_alarm_evaluation_mode(
+                getattr(self, 'alarm_evaluation_mode', DEFAULT_ALARM_EVALUATION_MODE)
+            )
+        )
+        if alarm_mode_idx >= 0:
+            alarm_mode_combo.setCurrentIndex(alarm_mode_idx)
+        alarm_mode_row.addWidget(alarm_mode_combo, 1)
+        category_layout.addLayout(alarm_mode_row)
         root_layout.addWidget(category_group)
 
         banner_group = QGroupBox("Fusion Banner")
@@ -5946,6 +6137,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             if new_primary not in selected:
                 new_primary = selected[0]
             self.active_analytics_category = new_primary
+            self.alarm_evaluation_mode = self._normalize_alarm_evaluation_mode(alarm_mode_combo.currentData())
 
             self._persist_analytics_banner_preferences()
             self._reload_rule_engine_for_active_category()
@@ -10403,6 +10595,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """
         if bool(getattr(self, '_cleanup_done', False)):
             return
+        try:
+            self._stop_alarm_audio()
+        except Exception:
+            pass
         print("Starting comprehensive resource cleanup...")
         
         # Stop video widgets

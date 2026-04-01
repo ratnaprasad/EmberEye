@@ -4,15 +4,19 @@
 
 This document defines the required Git workflow for developers working on EmberEye source code.
 
+## Naming Standard
+
+1. Follow [git/NAMING_STANDARD.md](git/NAMING_STANDARD.md) for branch, commit, PR, and artifact naming.
+
 ## Branch Rules
 
 1. Do not develop directly on `main`.
 2. Do not reuse old merged branches.
 3. Create a fresh branch for every task.
 4. Use branch names like:
-   - `fix/<short-name>`
-   - `feature/<short-name>`
-   - `chore/<short-name>`
+   - `fix/<scope>-<short-topic>`
+   - `feature/<scope>-<short-topic>`
+   - `chore/<scope>-<short-topic>`
 
 ## Start of Work
 
@@ -37,7 +41,7 @@ This document defines the required Git workflow for developers working on EmberE
 Use concise commit messages:
 
 1. `fix: resolve studio dataset import conflict`
-2. `feature: add model validation results dialog`
+2. `feat: add model validation results dialog`
 3. `chore: document build handoff procedure`
 
 ## Push and PR

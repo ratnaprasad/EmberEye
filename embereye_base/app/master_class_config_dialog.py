@@ -75,8 +75,8 @@ class MasterClassConfigDialog(QDialog):
             # Rules list for this severity
             table = QTableWidget(0, 2)
             table.setHorizontalHeaderLabels(["Rule", "Actions"])
-            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
             
             # Populate rules for this severity
             rules_list = self.threat_matrix.get(severity, [])
@@ -110,7 +110,7 @@ class MasterClassConfigDialog(QDialog):
         
         self.scenarios_table = QTableWidget(0, 5)
         self.scenarios_table.setHorizontalHeaderLabels(["Scenario", "Detected", "Classification", "Rule", "Notes"])
-        self.scenarios_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.scenarios_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         rules_layout.addWidget(self.scenarios_table)
         
         scenarios_btn_layout = QHBoxLayout()
