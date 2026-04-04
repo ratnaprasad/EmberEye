@@ -45,23 +45,9 @@ class DatabaseManager:
     def create_default_admin(self):
         cursor = self.conn.cursor()
         
-        # Create default admin user
-        if not self.get_user('admin'):
-            password_hash = bcrypt.hashpw(b"password", bcrypt.gensalt()).decode('utf-8')
-            cursor.execute('''
-                INSERT INTO users (username, password_hash)
-                VALUES (?, ?)
-            ''', ('admin', password_hash))
-            self.conn.commit()
-        
-        # Create ratna user
-        if not self.get_user('ratna'):
-            password_hash = bcrypt.hashpw(b"ratna", bcrypt.gensalt()).decode('utf-8')
-            cursor.execute('''
-                INSERT INTO users (username, password_hash, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-            ''', ('ratna', password_hash, 'Ratna', 'User'))
-            self.conn.commit()
+        # Retire legacy bootstrap users.
+        cursor.execute("DELETE FROM users WHERE username IN (?, ?)", ('admin', 'ratna'))
+        self.conn.commit()
         
         # Create s3micro user
         if not self.get_user('s3micro'):

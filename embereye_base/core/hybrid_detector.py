@@ -46,6 +46,18 @@ class HybridDetector:
         if self.yolo_conf_threshold > 0.9:
             self.yolo_conf_threshold = 0.9
 
+        # Adaptive infer resolution: scale down YOLO compute when many streams are active.
+        def _env_int(name: str, default: int) -> int:
+            try:
+                return int(float(os.environ.get(name, str(default))))
+            except Exception:
+                return int(default)
+
+        self._infer_imgsz_default = max(160, _env_int("EMBEREYE_INFER_IMGSZ", 640))
+        self._infer_imgsz_gt10 = max(160, _env_int("EMBEREYE_INFER_IMGSZ_GT10", 480))
+        self._infer_imgsz_gt20 = max(160, _env_int("EMBEREYE_INFER_IMGSZ_GT20", 352))
+        self._infer_imgsz_gt30 = max(160, _env_int("EMBEREYE_INFER_IMGSZ_GT30", 320))
+
         print(f"[HybridDetector-{self.stream_id}] Init with model_path={model_path!r}")
 
         try:
@@ -409,102 +421,124 @@ class HybridDetector:
         
         Called by detection worker thread.
         """
-        start_time = time.time()
-        
-        if not self.model_loaded or self.model is None:
-            # Model not available, return LOW confidence
-            return DetectionResult(
-                frame_id=metadata.frame_id,
-                stream_id=metadata.stream_id,
-                status="LOW",
-                confidence=0.0,
-                primary_class="NO_MODEL",
-                yolo_latency_ms=0.0,
-                timestamp_ms=metadata.timestamp_ms
-            )
-        
+        batch_results = self.process_queued_batch([metadata])
+        return batch_results[0] if batch_results else self._low_result(metadata, 0.0, primary_class="NO_RESULT")
+
+    def _resolve_infer_imgsz(self) -> int:
+        """Select YOLO inference image-size from active stream count."""
         try:
-            # Run YOLO inference
-            frame = metadata.frame_data
+            active_streams = int(self.detection_queue.get_stats().get('active_streams', 0))
+        except Exception:
+            active_streams = 0
+        if active_streams > 30:
+            return self._infer_imgsz_gt30
+        if active_streams > 20:
+            return self._infer_imgsz_gt20
+        if active_streams > 10:
+            return self._infer_imgsz_gt10
+        return self._infer_imgsz_default
+
+    def _resolve_class_name(self, class_id: int) -> str:
+        model_names = getattr(self.model, 'names', None)
+        class_name = None
+        if isinstance(model_names, dict):
+            class_name = model_names.get(class_id)
+        elif isinstance(model_names, list) and 0 <= class_id < len(model_names):
+            class_name = model_names[class_id]
+        if class_name is None:
+            if 0 <= class_id < len(self.central_class_names):
+                class_name = self.central_class_names[class_id]
+            else:
+                class_name = f"class_{class_id}"
+        return str(class_name)
+
+    def _low_result(self, metadata: FrameMetadata, latency_ms: float, primary_class: str = "") -> DetectionResult:
+        return DetectionResult(
+            frame_id=metadata.frame_id,
+            stream_id=metadata.stream_id,
+            status="LOW",
+            confidence=0.0,
+            detections=[],
+            primary_class=primary_class,
+            yolo_latency_ms=float(latency_ms),
+            timestamp_ms=metadata.timestamp_ms,
+        )
+
+    def _result_from_yolo(self, metadata: FrameMetadata, yolo_result, latency_ms: float) -> DetectionResult:
+        detections = []
+        max_confidence = 0.0
+        primary_class = ""
+
+        if yolo_result is not None and getattr(yolo_result, 'boxes', None) is not None:
+            for box in yolo_result.boxes:
+                class_id = int(box.cls[0])
+                confidence = float(box.conf[0])
+                class_name = self._resolve_class_name(class_id)
+                detections.append({
+                    'class': class_name,
+                    'confidence': confidence,
+                    'bbox': box.xyxy[0].cpu().numpy().tolist() if hasattr(box.xyxy, 'cpu') else box.xyxy[0].tolist(),
+                })
+                if confidence > max_confidence:
+                    max_confidence = confidence
+                    primary_class = class_name
+
+        return DetectionResult(
+            frame_id=metadata.frame_id,
+            stream_id=metadata.stream_id,
+            status=self.map_to_confidence_level(max_confidence),
+            confidence=max_confidence,
+            detections=detections,
+            primary_class=primary_class,
+            yolo_latency_ms=float(latency_ms),
+            timestamp_ms=metadata.timestamp_ms,
+        )
+
+    def process_queued_batch(self, metadata_batch: List[FrameMetadata]) -> List[DetectionResult]:
+        """Process multiple queued frames in one YOLO call for higher multi-camera throughput."""
+        if not metadata_batch:
+            return []
+
+        start_time = time.time()
+
+        if not self.model_loaded or self.model is None:
+            return [self._low_result(m, 0.0, primary_class="NO_MODEL") for m in metadata_batch]
+
+        valid_meta = []
+        valid_frames = []
+        for metadata in metadata_batch:
+            frame = getattr(metadata, 'frame_data', None)
             if frame is None:
-                return DetectionResult(
-                    frame_id=metadata.frame_id,
-                    stream_id=metadata.stream_id,
-                    status="LOW",
-                    confidence=0.0,
-                    yolo_latency_ms=time.time() - start_time
-                )
-            
-            # Inference
-            results = self.model(
-                frame,
+                continue
+            valid_meta.append(metadata)
+            valid_frames.append(frame)
+
+        if not valid_meta:
+            elapsed_ms = (time.time() - start_time) * 1000.0
+            return [self._low_result(m, elapsed_ms, primary_class="NO_FRAME") for m in metadata_batch]
+
+        try:
+            infer_imgsz = self._resolve_infer_imgsz()
+            yolo_results = self.model(
+                valid_frames,
                 verbose=False,
                 conf=self.yolo_conf_threshold,
                 device=self.inference_device,
+                imgsz=infer_imgsz,
             )
-            
-            detections = []
-            max_confidence = 0.0
-            primary_class = ""
-            
-            # Extract detections
-            if results and len(results) > 0:
-                for result in results:
-                    if result.boxes is not None:
-                        for box in result.boxes:
-                            class_id = int(box.cls[0])
-                            confidence = float(box.conf[0])
-                            # Use uploaded model class names first.
-                            # Fall back to central mapping only if model names are unavailable.
-                            model_names = getattr(self.model, 'names', None)
-                            class_name = None
-                            if isinstance(model_names, dict):
-                                class_name = model_names.get(class_id)
-                            elif isinstance(model_names, list) and 0 <= class_id < len(model_names):
-                                class_name = model_names[class_id]
+            total_latency_ms = (time.time() - start_time) * 1000.0
+            per_frame_latency_ms = total_latency_ms / max(1, len(valid_meta))
 
-                            if class_name is None:
-                                if 0 <= class_id < len(self.central_class_names):
-                                    class_name = self.central_class_names[class_id]
-                                else:
-                                    class_name = f"class_{class_id}"
-                            else:
-                                class_name = str(class_name)
-                            
-                            detections.append({
-                                'class': class_name,
-                                'confidence': confidence,
-                                'bbox': box.xyxy[0].cpu().numpy().tolist() if hasattr(box.xyxy, 'cpu') else box.xyxy[0].tolist()
-                            })
-                            
-                            # Track highest confidence
-                            if confidence > max_confidence:
-                                max_confidence = confidence
-                                primary_class = class_name
-            
-            # Determine confidence level
-            status = self.map_to_confidence_level(max_confidence)
-            latency_ms = (time.time() - start_time) * 1000
-            
-            result = DetectionResult(
-                frame_id=metadata.frame_id,
-                stream_id=metadata.stream_id,
-                status=status,
-                confidence=max_confidence,
-                detections=detections,
-                primary_class=primary_class,
-                yolo_latency_ms=latency_ms,
-                timestamp_ms=metadata.timestamp_ms
-            )
-            
-            return result
-            
+            results_by_frame_id = {}
+            for metadata, yolo_result in zip(valid_meta, yolo_results):
+                results_by_frame_id[metadata.frame_id] = self._result_from_yolo(metadata, yolo_result, per_frame_latency_ms)
+
+            output = []
+            for metadata in metadata_batch:
+                output.append(results_by_frame_id.get(metadata.frame_id, self._low_result(metadata, per_frame_latency_ms, primary_class="NO_RESULT")))
+            return output
+
         except Exception as e:
-            print(f"[HybridDetector-{self.stream_id}] YOLO inference error: {e}")
-            return DetectionResult(
-                frame_id=metadata.frame_id,
-                stream_id=metadata.stream_id,
-                status="LOW",
-                confidence=0.0,
-                yolo_latency_ms=time.time() - start_time
-            )
+            print(f"[HybridDetector-{self.stream_id}] YOLO batch inference error: {e}")
+            elapsed_ms = (time.time() - start_time) * 1000.0
+            return [self._low_result(m, elapsed_ms, primary_class="ERROR") for m in metadata_batch]

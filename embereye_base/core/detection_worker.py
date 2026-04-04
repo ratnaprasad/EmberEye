@@ -43,6 +43,15 @@ class DetectionWorker(threading.Thread):
         if result_callback:
             self.result_callbacks.append(result_callback)
         self.max_latency_ms = max_latency_ms
+
+        try:
+            self.batch_size = max(1, int(float(os.environ.get("EMBEREYE_YOLO_BATCH_SIZE", "4"))))
+        except Exception:
+            self.batch_size = 4
+        try:
+            self.batch_wait_ms = max(0.0, float(os.environ.get("EMBEREYE_YOLO_BATCH_WAIT_MS", "8")))
+        except Exception:
+            self.batch_wait_ms = 8.0
         
         self._stop_event = threading.Event()
         self._paused_event = threading.Event()
@@ -53,6 +62,8 @@ class DetectionWorker(threading.Thread):
             'avg_inference_ms': 0.0,
             'total_inference_ms': 0.0,
             'detections_confirmed': 0,
+            'batches_processed': 0,
+            'avg_batch_size': 1.0,
         }
     
     def run(self) -> None:
@@ -82,25 +93,49 @@ class DetectionWorker(threading.Thread):
                 self.stats['frames_dropped'] += 1
                 continue
             
-            # Process frame with YOLO
+            # Gather a micro-batch to improve throughput at high stream counts.
+            batch = [metadata]
+            if self.batch_size > 1:
+                batch_deadline = time.time() + (self.batch_wait_ms / 1000.0)
+                while len(batch) < self.batch_size and time.time() < batch_deadline:
+                    nxt = self.detection_queue.get_frame(timeout_s=0.0)
+                    if nxt is None:
+                        time.sleep(0.001)
+                        continue
+                    if nxt.age_ms() > self.max_latency_ms:
+                        with self.detection_queue.stats_lock:
+                            self.detection_queue.stats['total_dropped'] += 1
+                        self.stats['frames_dropped'] += 1
+                        continue
+                    batch.append(nxt)
+
+            # Process batch with YOLO
             try:
-                result = self.detector.process_queued_frame(metadata)
-                
-                # Cache result
-                self.detection_queue.cache_result(result)
-                
-                # Call all registered callbacks
-                for callback in list(self.result_callbacks):
-                    try:
-                        callback(result)
-                    except Exception as e:
-                        print(f"[DetectionWorker] Callback error: {e}")
-                
-                # Update stats
-                self.stats['frames_processed'] += 1
-                if result.status in ("CONFIRMED", "POSSIBLE") and result.detections:
-                    self.stats['detections_confirmed'] += 1
-                self.stats['total_inference_ms'] += result.yolo_latency_ms
+                results = self.detector.process_queued_batch(batch)
+                if not results:
+                    results = []
+
+                for result in results:
+                    self.detection_queue.cache_result(result)
+
+                    # Call all registered callbacks
+                    for callback in list(self.result_callbacks):
+                        try:
+                            callback(result)
+                        except Exception as e:
+                            print(f"[DetectionWorker] Callback error: {e}")
+
+                    # Update per-frame stats
+                    self.stats['frames_processed'] += 1
+                    if result.status in ("CONFIRMED", "POSSIBLE") and result.detections:
+                        self.stats['detections_confirmed'] += 1
+                    self.stats['total_inference_ms'] += float(result.yolo_latency_ms)
+
+                self.stats['batches_processed'] += 1
+                if self.stats['batches_processed'] > 0:
+                    self.stats['avg_batch_size'] = (
+                        float(self.stats['frames_processed']) / float(self.stats['batches_processed'])
+                    )
                 if self.stats['frames_processed'] > 0:
                     self.stats['avg_inference_ms'] = (
                         self.stats['total_inference_ms'] / self.stats['frames_processed']
@@ -109,7 +144,8 @@ class DetectionWorker(threading.Thread):
                 # Log occasionally
                 if self.stats['frames_processed'] % 50 == 0:
                     print(f"[DetectionWorker] Processed {self.stats['frames_processed']} frames, "
-                          f"Avg latency: {self.stats['avg_inference_ms']:.0f}ms")
+                          f"Avg latency: {self.stats['avg_inference_ms']:.0f}ms, "
+                          f"Avg batch: {self.stats['avg_batch_size']:.2f}")
             
             except Exception as e:
                 print(f"[DetectionWorker] Processing error: {e}")

@@ -2,12 +2,15 @@
     "tcp_port": 5080,
     "operator_id": "s3micro",
     "active_analytics_category": "ppe",
+    "analytics_model_paths": {
+        "ppe": "models/yolo_versions/current_best.pt"
+    },
     "smoke_threshold_pct": 25.0,
     "flame_threshold_pct": 39.0,
     "temp_threshold": 30.0,
     "gas_ppm_threshold": 395.0,
-    "vision_threshold": 0.4,
-    "vision_confidence_weight": 0.5,
+    "vision_threshold": 0.7,
+    "vision_confidence_weight": 0.7,
     "flame_active_value": 1,
     "min_sources": 2,
     "critical_temp_threshold": 60.0,
@@ -23,8 +26,11 @@
     "confirmed_conf_threshold": 0.8,
     "rule_min_fusion_conf": 0.3,
     "rule_min_yolo_conf": 0.6,
-    "detection_box_mode": "all",
-    "detection_box_classes": [],
+    "detection_box_mode": "specific",
+    "detection_box_classes": [
+        "head",
+        "no_helmet"
+    ],
     "detection_selected_preset": "Custom",
     "thermal_render_mode": "fixed_scale_inferno",
     "thermal_emissivity": 0.95,
@@ -36,21 +42,65 @@
     "thermal_target_room": "",
     "detection_default_profile": {},
     "groups": [
-        "Default",
-        "FGCampus-Hill"
+        "Default"
     ],
     "streams": [
         {
-            "loc_id": "FrontDesk",
-            "name": "Cam001",
-            "url": "0",
-            "group": "FGCampus-Hill"
-        },
-        {
-            "loc_id": "SecurityRoom",
-            "name": "Cam002",
-            "url": "0",
-            "group": "FGCampus-Hill"
+            "loc_id": "SDV-DEV",
+            "name": "CAM01",
+            "url": "rtsp://admin:Admin.12345@192.168.58.14:554/video/live?channel=1&subtype=0",
+            "group": "Default"
         }
-    ]
+    ],
+    "enabled_analytics_categories": [
+        "ppe"
+    ],
+    "fusion_banner_enabled": true,
+    "fusion_banner_mode": "manual",
+    "fusion_banner_manual_cards": {
+        "fire": [
+            "global",
+            "thermal",
+            "gas",
+            "smoke",
+            "flame",
+            "action"
+        ],
+        "ppe": [
+            "helmet",
+            "action"
+        ]
+    },
+    "alarm_evaluation_mode": "vision",
+    "conditional_alarm_rules": [
+        {
+            "enabled": true,
+            "name": "PPE Rule",
+            "trigger_classes": [
+                "no_helmet"
+            ],
+            "require_person": true,
+            "require_classes": []
+        }
+    ],
+    "freeze_on_alarm": false,
+    "incident_tab_enabled": true,
+    "incident_allowed_sensors": [
+        "vision"
+    ],
+    "incident_default_sensor": "vision",
+    "incident_default_severity": "All Severity",
+    "incident_default_feedback": "All Status",
+    "incident_default_search": "",
+    "incident_cards_page_size": 12,
+    "incident_cards_columns": 3,
+    "tab_incidents_enabled": true,
+    "tab_incidents_min_role": "user",
+    "tab_live_pfds_enabled": true,
+    "tab_live_pfds_min_role": "user",
+    "perf_tuning_mode": "auto",
+    "perf_tuning_camera_count": 2,
+    "perf_tuning_manual_batch_size": 1,
+    "perf_tuning_manual_batch_wait_ms": 0,
+    "perf_tuning_manual_infer_imgsz": 640
 }

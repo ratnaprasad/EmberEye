@@ -3,6 +3,20 @@ import sys
 import os
 from pathlib import Path
 import ctypes
+import io
+
+# --------------------------------------------------------------------------
+# Force UTF-8 stdout/stderr for frozen builds to prevent UnicodeEncodeError
+# when printing emoji or non-ASCII characters to the Windows console.
+# --------------------------------------------------------------------------
+if getattr(sys, "frozen", False) and sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        if hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 _DLL_DIR_HANDLES = []
 
@@ -362,8 +376,10 @@ from PyQt6.QtCore import (
 )
 try:
     from embereye_base.app.ee_loginwindow import EELoginWindow
-except ImportError:
+except Exception as _login_import_err:
     EELoginWindow = None
+    print(f"[ERROR] EELoginWindow import failed: {_login_import_err}")
+    import traceback; traceback.print_exc()
 
 from shared.emberkit.error_logger import get_error_logger
 # License module may be absent in checkpoint; guard imports

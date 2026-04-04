@@ -120,23 +120,9 @@ class StudioDatabaseManager:
         """Create default admin user"""
         cursor = self.conn.cursor()
 
-        # Create default admin user
-        if not self.get_user('admin'):
-            password_hash = bcrypt.hashpw(b"password", bcrypt.gensalt()).decode('utf-8')
-            cursor.execute('''
-                INSERT INTO users (username, password_hash, first_name, last_name, role)
-                VALUES (?, ?, ?, ?, ?)
-            ''', ('admin', password_hash, 'Admin', 'User', 'admin'))
-            self.conn.commit()
-
-        # Create ratna user (data scientist)
-        if not self.get_user('ratna'):
-            password_hash = bcrypt.hashpw(b"ratna", bcrypt.gensalt()).decode('utf-8')
-            cursor.execute('''
-                INSERT INTO users (username, password_hash, first_name, last_name, role)
-                VALUES (?, ?, ?, ?, ?)
-            ''', ('ratna', password_hash, 'Ratna', 'Scientist', 'data_scientist'))
-            self.conn.commit()
+        # Retire legacy bootstrap users.
+        cursor.execute("DELETE FROM users WHERE username IN (?, ?)", ('admin', 'ratna'))
+        self.conn.commit()
 
         # Create s3micro user (reviewer)
         if not self.get_user('s3micro'):

@@ -1,0 +1,21 @@
+{
+  "version": "deployment_20260404_185643",
+  "timestamp": "2026-04-04T18:56:43.393570",
+  "training_images": 0,
+  "new_images": 0,
+  "total_epochs": 0,
+  "best_accuracy": 0.0,
+  "loss": 0.0,
+  "training_time_hours": 0.0,
+  "base_model": "imported",
+  "config_snapshot": {
+    "imgsz": 640,
+    "device": "auto",
+    "imported_file": "v20260327_175311_model.zip",
+    "resolved_model": "best.pt",
+    "format": "pytorch"
+  },
+  "previous_version": null,
+  "notes": "Imported from v20260327_175311_model.zip",
+  "training_strategy": "imported"
+}

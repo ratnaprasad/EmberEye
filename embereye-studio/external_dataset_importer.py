@@ -28,6 +28,7 @@ from PIL import Image
 from embereye.core.class_config import (
     ANALYTICS_CATEGORY_KEYS,
     flatten_classes,
+    get_leaf_classes_for_category,
     load_master_classes,
     save_master_classes,
 )
@@ -422,7 +423,9 @@ def import_external_dataset(
         classes_dict = load_master_classes()
         target_category = _domain_target_category(active_domain, classes_dict)
 
-        current_leaf = flatten_classes(classes_dict)
+        current_leaf = get_leaf_classes_for_category(active_domain, classes_dict)
+        if not current_leaf:
+            current_leaf = flatten_classes(classes_dict)
         case_map = {c.lower(): c for c in current_leaf}
         class_mapping: Dict[str, str] = {}
         created_classes: List[str] = []
@@ -438,7 +441,7 @@ def import_external_dataset(
             action = "create"
             value = ext_name
             if resolver is not None:
-                action, value = resolver(ext_name, flatten_classes(classes_dict), target_category)
+                action, value = resolver(ext_name, list(current_leaf), target_category)
 
             if action == "skip":
                 skipped_classes.append(ext_name)
@@ -459,7 +462,9 @@ def import_external_dataset(
                 raise RuntimeError("Failed to save taxonomy updates to master_classes.json")
 
         # Use latest class order for class ids
-        final_classes = flatten_classes(load_master_classes())
+        final_classes = get_leaf_classes_for_category(active_domain, load_master_classes())
+        if not final_classes:
+            final_classes = flatten_classes(load_master_classes())
         class_to_id = {name: idx for idx, name in enumerate(final_classes)}
 
         dataset_id = _timestamp_id(source_path.stem)
@@ -470,6 +475,10 @@ def import_external_dataset(
         (ds_root / "images").mkdir(parents=True, exist_ok=True)
         (ds_root / "annotations").mkdir(parents=True, exist_ok=True)
         qc_root.mkdir(parents=True, exist_ok=True)
+
+        labels_payload = "\n".join(final_classes) + "\n"
+        (ds_root / "annotations" / "labels.txt").write_text(labels_payload, encoding="utf-8")
+        (qc_root / "labels.txt").write_text(labels_payload, encoding="utf-8")
 
         used_names = set()
         ann_count = 0

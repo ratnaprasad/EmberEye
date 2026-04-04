@@ -24,6 +24,7 @@ from shared.emberkit import get_metrics
 # Hybrid detection system imports
 import threading
 import time
+import math
 from embereye_base.core.detection_queue import get_detection_queue, FrameMetadata
 from embereye_base.core.detection_worker import get_detection_worker, stop_detection_worker
 
@@ -67,9 +68,22 @@ class VideoWorker(QObject):
         self._detections_lock = threading.Lock()
         self._latest_detections = []
         self._latest_detection_ts = 0.0
-        self._detection_overlay_ttl_ms = 1500
+        overlay_ttl_env = os.environ.get("EMBEREYE_DETECTION_OVERLAY_TTL_MS", "700")
+        try:
+            self._detection_overlay_ttl_ms = max(100, int(float(overlay_ttl_env)))
+        except Exception:
+            self._detection_overlay_ttl_ms = 700
         self._detection_counter = 0
         self._last_frame_size = None
+        # Limit anomaly snapshot signal rate to avoid saturating the UI thread
+        # during sustained alarm conditions with high detection frequency.
+        max_emit_fps_env = os.environ.get("EMBEREYE_ANOMALY_EMIT_MAX_FPS", "6")
+        try:
+            max_emit_fps = float(max_emit_fps_env)
+        except Exception:
+            max_emit_fps = 6.0
+        self._anomaly_emit_interval_s = (1.0 / max_emit_fps) if max_emit_fps > 0.0 else 0.0
+        self._last_anomaly_emit_ts = 0.0
         # Local cameras on macOS can intermittently return empty frames during
         # warm-up or when auto-exposure changes. Avoid tearing down the stream
         # on a single failed read.
@@ -89,10 +103,57 @@ class VideoWorker(QObject):
             self.force_yolo_every_n_frames = max(1, int(force_yolo_env))
         except Exception:
             self.force_yolo_every_n_frames = 10
+        heuristic_decimation_env = os.environ.get("EMBEREYE_HEURISTIC_DECIMATION", "3")
+        try:
+            self._heuristic_decimation = max(1, int(float(heuristic_decimation_env)))
+        except Exception:
+            self._heuristic_decimation = 3
+        heuristic_hot_decimation_env = os.environ.get("EMBEREYE_HEURISTIC_HOT_DECIMATION", "5")
+        try:
+            self._heuristic_hot_decimation = max(self._heuristic_decimation, int(float(heuristic_hot_decimation_env)))
+        except Exception:
+            self._heuristic_hot_decimation = max(self._heuristic_decimation, 5)
+        self._heuristic_frame_counter = 0
+        self._last_heuristic_score = None
+        overlay_decimation_env = os.environ.get("EMBEREYE_OVERLAY_DECIMATION", "3")
+        try:
+            self._overlay_decimation = max(1, int(float(overlay_decimation_env)))
+        except Exception:
+            self._overlay_decimation = 3
+        self._overlay_frame_counter = 0
         box_mode_env = str(os.environ.get("EMBEREYE_BBOX_MODE", "all")).strip().lower()
         self.detection_box_mode = box_mode_env if box_mode_env in ("all", "specific") else "all"
         box_classes_env = str(os.environ.get("EMBEREYE_BBOX_CLASSES", "")).strip()
-        self.detection_box_classes = set(class_name.strip() for class_name in box_classes_env.split(';') if class_name.strip())
+        self.detection_box_classes = set(
+            class_name.strip().lower().replace(' ', '_').replace('-', '_')
+            for class_name in box_classes_env.split(';')
+            if class_name.strip()
+        )
+        # Motion gating for PPE: suppress static sticker/sign detections.
+        # Nearest-neighbour tracking avoids the grid-cell boundary reset bug.
+        # 12 px movement threshold is well above RTSP compression jitter (2-5 px)
+        # but below real person movement.  2 static observations = fast suppression.
+        self._ppe_motion_px_threshold = 12.0
+        self._ppe_static_frames_to_drop = 2
+        self._ppe_track_merge_radius = 40.0   # px — max dist to associate with existing track
+        self._ppe_motion_state = {}
+        # Time-based cap on queue submissions: even when every frame passes the
+        # heuristic threshold (sustained alarm), frame.copy() + queue add are
+        # skipped when submissions would exceed this rate.  The YOLO worker runs
+        # at its own pace; exceeding ~10 submissions/sec only wastes GUI-thread
+        # time and floods the queue backpressure mechanism.
+        max_queue_fps_env = os.environ.get("EMBEREYE_MAX_QUEUE_FPS", "10")
+        try:
+            max_queue_fps = max(1.0, float(max_queue_fps_env))
+        except Exception:
+            max_queue_fps = 10.0
+        self._queue_submit_interval_s = 1.0 / max_queue_fps
+        self._last_queue_submit_ts = 0.0
+        backpressure_depth_env = os.environ.get("EMBEREYE_QUEUE_BACKPRESSURE_DEPTH", "2")
+        try:
+            self._queue_backpressure_depth = max(1, int(float(backpressure_depth_env)))
+        except Exception:
+            self._queue_backpressure_depth = 2
 
     def init_detection_worker(self):
         """Initialize the background DetectionWorker for async YOLO processing."""
@@ -107,6 +168,114 @@ class VideoWorker(QObject):
             print(f"[ERROR] DetectionWorker init failed: {e}", flush=True)
             self.detection_worker = None
 
+    def _is_ppe_mode_active(self):
+        try:
+            category = str(os.environ.get("EMBEREYE_ANALYTICS_CATEGORY", "fire") or "fire").strip().lower()
+            return category == "ppe"
+        except Exception:
+            return False
+
+    def _filter_ppe_static_detections(self, detections):
+        """Drop persistent static PPE detections to reduce sticker/sign false positives.
+
+        Uses nearest-neighbour track matching instead of grid-cell buckets to avoid
+        false resets caused by RTSP compression jitter crossing cell boundaries.
+        A track is considered static when the bbox centre hasn't moved more than
+        ``_ppe_motion_px_threshold`` pixels across ``_ppe_static_frames_to_drop``
+        consecutive inference observations.
+        """
+        if not detections:
+            return []
+        if not self._is_ppe_mode_active():
+            return list(detections)
+
+        now = time.time()
+        filtered = []
+        # Filter only hazard/equipment classes — never suppress PERSON detections.
+        # A real person standing still must still show a box (and drive alarm logic).
+        ppe_classes = {"helmet", "no_helmet", "head", "vest", "no_vest"}
+        merge_r = float(self._ppe_track_merge_radius)
+
+        # Prune stale tracks (not seen in 3 s).
+        stale_keys = [
+            k
+            for k, v in self._ppe_motion_state.items()
+            if isinstance(k, str)
+            and isinstance(v, dict)
+            and (now - float(v.get("last_seen", 0.0))) > 3.0
+        ]
+        for k in stale_keys:
+            self._ppe_motion_state.pop(k, None)
+
+        # Next track id counter (stored in state dict under "__next_id").
+        next_id = int(self._ppe_motion_state.pop("__next_id", 0))
+
+        for det in detections:
+            if not isinstance(det, dict):
+                continue
+            cls = str(det.get("class", "") or "").strip().lower().replace(" ", "_").replace("-", "_")
+            bbox = det.get("bbox")
+            if cls not in ppe_classes or not bbox or len(bbox) != 4:
+                filtered.append(det)
+                continue
+
+            try:
+                x1, y1, x2, y2 = [float(v) for v in bbox]
+                cx = (x1 + x2) * 0.5
+                cy = (y1 + y2) * 0.5
+            except Exception:
+                filtered.append(det)
+                continue
+
+            # Find nearest existing track of same class within merge_r.
+            best_key = None
+            best_dist = merge_r
+            for key, st in self._ppe_motion_state.items():
+                # Skip metadata slots (e.g. "__next_id") and any malformed states.
+                if not isinstance(key, str) or not isinstance(st, dict):
+                    continue
+                if not key.startswith(cls + ":"):
+                    continue
+                pcx, pcy = st.get("last_center", (cx, cy))
+                d = math.hypot(cx - float(pcx), cy - float(pcy))
+                if d < best_dist:
+                    best_dist = d
+                    best_key = key
+
+            if best_key is None:
+                # New track — always show on first observation.
+                best_key = f"{cls}:{next_id}"
+                next_id += 1
+                self._ppe_motion_state[best_key] = {
+                    "last_center": (cx, cy),
+                    "static_hits": 0,
+                    "last_seen": now,
+                }
+                filtered.append(det)
+                continue
+
+            st = self._ppe_motion_state[best_key]
+            prev_cx, prev_cy = st.get("last_center", (cx, cy))
+            dist = math.hypot(cx - float(prev_cx), cy - float(prev_cy))
+            moved = dist >= self._ppe_motion_px_threshold
+
+            if moved:
+                st["static_hits"] = 0
+                keep = True
+            else:
+                st["static_hits"] = int(st.get("static_hits", 0)) + 1
+                keep = int(st["static_hits"]) < int(self._ppe_static_frames_to_drop)
+
+            st["last_center"] = (cx, cy)
+            st["last_seen"] = now
+            self._ppe_motion_state[best_key] = st
+
+            if keep:
+                filtered.append(det)
+
+        self._ppe_motion_state["__next_id"] = next_id
+        return filtered
+
     def _on_detection_result(self, result):
         """Callback when DetectionWorker completes YOLO inference on a queued frame."""
         try:
@@ -120,7 +289,7 @@ class VideoWorker(QObject):
             
             status = result.status  # "CONFIRMED", "POSSIBLE", "LOW"
             confidence = result.confidence
-            detections = result.detections
+            detections = self._filter_ppe_static_detections(result.detections or [])
             primary_class = result.primary_class
             yolo_latency = result.yolo_latency_ms
 
@@ -164,8 +333,19 @@ class VideoWorker(QObject):
             if status in ['CONFIRMED', 'POSSIBLE'] and len(detections) > 0:
                 # Emit anomaly frame with YOLO results
                 if self._last_qimage:
-                    print(f"[DETECTION_RESULT] Emitting anomaly: stream={self.stream_id}, status={status}, yolo={yolo_score:.3f}, detections={len(detections)}", flush=True)
-                    self.anomaly_frame_ready.emit(self._last_qimage, yolo_score, str(self.stream_id), yolo_score, detections)
+                    now_s = time.time()
+                    can_emit = True
+                    if self._anomaly_emit_interval_s > 0.0:
+                        can_emit = (now_s - float(self._last_anomaly_emit_ts)) >= self._anomaly_emit_interval_s
+                    if can_emit:
+                        self._last_anomaly_emit_ts = now_s
+                        if is_debug_enabled():
+                            print(
+                                f"[DETECTION_RESULT] Emitting anomaly: stream={self.stream_id}, "
+                                f"status={status}, yolo={yolo_score:.3f}, detections={len(detections)}",
+                                flush=True,
+                            )
+                        self.anomaly_frame_ready.emit(self._last_qimage, yolo_score, str(self.stream_id), yolo_score, detections)
             else:
                 if is_debug_enabled():
                     print(f"[DETECTION_RESULT] Skipping emission: stream={self.stream_id}, status={status}, yolo={yolo_score:.3f} (below 0.50 threshold)", flush=True)
@@ -186,6 +366,58 @@ class VideoWorker(QObject):
             if age_ms > self._detection_overlay_ttl_ms:
                 return frame
 
+            # Use possible_conf_threshold from the detection worker as the
+            # display floor — only draw boxes that reach at least POSSIBLE level.
+            # Falls back to the EMBEREYE_POSSIBLE_CONF env var then 0.60.
+            min_conf = 0.60
+            try:
+                if self.detection_worker and getattr(self.detection_worker, 'detector', None):
+                    min_conf = float(getattr(self.detection_worker.detector, 'possible_threshold', min_conf))
+                else:
+                    env_val = os.environ.get('EMBEREYE_POSSIBLE_CONF', '')
+                    if env_val:
+                        min_conf = max(0.0, min(1.0, float(env_val)))
+            except Exception:
+                pass
+
+            # In PPE mode, only render PPE equipment/violation boxes when they
+            # are spatially associated with a detected person in the same frame.
+            # This avoids noisy arm/object-only boxes from cluttering the UI.
+            ppe_classes = {'helmet', 'no_helmet', 'head', 'vest', 'no_vest'}
+            person_bboxes = []
+            for det in detections:
+                try:
+                    cls_name = str(det.get('class', 'UNKNOWN')).strip().lower().replace(' ', '_').replace('-', '_')
+                    conf = float(det.get('confidence', 0.0))
+                    bbox = det.get('bbox')
+                    if cls_name == 'person' and conf >= min(0.4, min_conf) and bbox and len(bbox) == 4:
+                        person_bboxes.append([float(v) for v in bbox])
+                except Exception:
+                    continue
+
+            def _ppe_overlaps_person_local(ppe_bbox, persons, min_containment=0.3):
+                try:
+                    x1, y1, x2, y2 = [float(v) for v in ppe_bbox]
+                    ppe_w = max(0.0, x2 - x1)
+                    ppe_h = max(0.0, y2 - y1)
+                    ppe_area = ppe_w * ppe_h
+                    if ppe_area <= 0.0:
+                        return False
+                    for pb in persons:
+                        px1, py1, px2, py2 = [float(v) for v in pb]
+                        ix1 = max(x1, px1)
+                        iy1 = max(y1, py1)
+                        ix2 = min(x2, px2)
+                        iy2 = min(y2, py2)
+                        iw = max(0.0, ix2 - ix1)
+                        ih = max(0.0, iy2 - iy1)
+                        inter_area = iw * ih
+                        if (inter_area / ppe_area) >= float(min_containment):
+                            return True
+                except Exception:
+                    return False
+                return False
+
             for det in detections:
                 bbox = det.get('bbox')
                 if not bbox or len(bbox) != 4:
@@ -195,7 +427,18 @@ class VideoWorker(QObject):
                 class_name = det.get('class', 'UNKNOWN')
                 conf = float(det.get('confidence', 0.0))
 
-                if self.detection_box_mode == 'specific' and class_name not in self.detection_box_classes:
+                # Skip boxes below the display confidence threshold.
+                if conf < min_conf:
+                    continue
+
+                class_key = str(class_name).strip().lower().replace(' ', '_').replace('-', '_')
+                if class_key in ppe_classes:
+                    if not person_bboxes:
+                        continue
+                    if not _ppe_overlaps_person_local(bbox, person_bboxes):
+                        continue
+
+                if self.detection_box_mode == 'specific' and class_key not in self.detection_box_classes:
                     continue
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
@@ -352,10 +595,15 @@ class VideoWorker(QObject):
             # Record frame processed
             self.metrics.record_frame_processed(self.stream_id)
 
-            # Draw detections on frame BEFORE display (fast path)
-            display_frame = frame.copy()
-            display_frame = self._draw_hybrid_detections(display_frame)
-            display_frame = self._draw_detection_counter(display_frame)
+            # Draw overlays only every Nth frame; intermediate frames use fast raw path.
+            self._overlay_frame_counter += 1
+            draw_overlays = (self._overlay_frame_counter % self._overlay_decimation) == 0
+            if draw_overlays:
+                display_frame = frame.copy()
+                display_frame = self._draw_hybrid_detections(display_frame)
+                display_frame = self._draw_detection_counter(display_frame)
+            else:
+                display_frame = frame
 
             # Convert for display immediately (fast path)
             frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
@@ -369,11 +617,36 @@ class VideoWorker(QObject):
             
             # HYBRID DETECTION: Heuristic-first, then queue for YOLO if needed
             try:
-                # Step 1: Fast heuristic detection on current frame
-                h_score = self.vision_detector.heuristic_fire_smoke(frame)
+                queue_depth = self.detection_queue.get_queue_size()
+                # Step 1: Fast heuristic detection with decimation in UI thread.
+                self._heuristic_frame_counter += 1
+                effective_decimation = (
+                    self._heuristic_hot_decimation
+                    if queue_depth >= self._queue_backpressure_depth
+                    else self._heuristic_decimation
+                )
+                run_heuristic = (
+                    self._last_heuristic_score is None
+                    or (self._heuristic_frame_counter % effective_decimation) == 0
+                )
+                if run_heuristic:
+                    h_score = self.vision_detector.heuristic_fire_smoke(frame)
+                    self._last_heuristic_score = h_score
+                else:
+                    h_score = float(self._last_heuristic_score)
                 heuristic_threshold = self.heuristic_threshold
                 force_sample = (self._detection_frame_id % self.force_yolo_every_n_frames) == 0
-                should_queue = h_score >= heuristic_threshold or force_sample
+                _now_q = time.time()
+                # Adaptive back-pressure: double the minimum interval when the
+                # queue is running hot (≥3 pending frames) so the worker has
+                # time to catch up before we add more.
+                _effective_interval = (
+                    self._queue_submit_interval_s * 2
+                    if queue_depth >= self._queue_backpressure_depth
+                    else self._queue_submit_interval_s
+                )
+                _time_gate_open = (_now_q - self._last_queue_submit_ts) >= _effective_interval
+                should_queue = (h_score >= heuristic_threshold or force_sample) and _time_gate_open
                 queue_reason = "HEURISTIC" if h_score >= heuristic_threshold else "PERIODIC_SAMPLE"
                 
                 if is_debug_enabled():
@@ -382,6 +655,7 @@ class VideoWorker(QObject):
                 # Step 2: If heuristic score is above threshold, queue for YOLO validation
                 # This prevents obvious non-hazards from being sent to YOLO
                 if should_queue:
+                    self._last_queue_submit_ts = _now_q
                     # Queue the frame for background YOLO processing
                     frame_id = f"{self.stream_id}-{self._detection_frame_id:05d}"
                     metadata = FrameMetadata(
@@ -410,9 +684,9 @@ class VideoWorker(QObject):
                         )
             except Exception as e:
                 log_debug(f"Hybrid detection error: {e}")
+                queue_depth = self.detection_queue.get_queue_size()
 
             # Update metrics - track hybrid queue depth instead of old pending counter
-            queue_depth = self.detection_queue.get_queue_size()
             self.metrics.update_detection_queue_depth(self.stream_id, queue_depth)
             
             # Periodic FPS adjustment check

@@ -47,6 +47,16 @@ def build_installer():
     isolated_work_dir = studio_dir.parent / "build" / "studio_pyinstaller"
     isolated_work_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build a minimal runtime payload.
+    # Do not bundle the entire studio directory because it contains mutable runtime
+    # data (e.g. imported datasets) that can generate very long paths and break
+    # extraction/startup on Windows machines.
+    data_args = []
+    for static_name in ("master_classes.json", "threat_rules.json"):
+        static_path = studio_dir / static_name
+        if static_path.exists():
+            data_args.extend(["--add-data", f"{static_path}{os.pathsep}."])
+
     # Use the current Python environment so the suite build and direct runs are consistent.
     pyinstaller_cmd = [
         sys.executable,
@@ -59,7 +69,6 @@ def build_installer():
         "--windowed",  # No console window
         "--workpath", str(isolated_work_dir),
         "--specpath", str(isolated_work_dir),
-        "--add-data", f"{studio_dir}{os.pathsep}.",
         "--hidden-import=PyQt6",
         "--hidden-import=torch",
         "--hidden-import=cv2",
@@ -70,6 +79,10 @@ def build_installer():
         "--collect-all=PyQt6",
         str(studio_dir / "main.py")
     ]
+
+    if data_args:
+        # Keep static payload small and explicit.
+        pyinstaller_cmd[13:13] = data_args
 
     icon_path = studio_dir / "icon.ico"
     if icon_path.exists():
@@ -84,7 +97,7 @@ def build_installer():
         if result.returncode == 0:
             print("[4/5] [OK] Build completed successfully!")
             
-            exe_file = dist_dir / "EmberEyeStudio.exe"
+            exe_file = dist_dir / "EmberEyeStudio" / "EmberEyeStudio.exe"
             if exe_file.exists():
                 file_size = exe_file.stat().st_size / (1024*1024)
                 print(f"\n[5/5] [OK] Executable created: {exe_file}")
@@ -94,7 +107,7 @@ def build_installer():
                 print("=" * 60)
                 print("\nExecutable location:")
                 print(f"  {exe_file}")
-                print("\nTo run: Double-click EmberEyeStudio.exe or run:")
+                print("\nTo run: Double-click EmberEyeStudio.exe in the folder above or run:")
                 print(f"  {exe_file}")
                 return True
             else:

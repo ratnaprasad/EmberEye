@@ -61,7 +61,6 @@ def prepare_database():
     
     users = [
         ('admin', 'password', 'Admin', 'User'),
-        ('ratna', 'ratna', 'Ratna', 'Prasad'),
         ('s3micro', 's3micro', 'S3', 'Micro')
     ]
     
@@ -83,7 +82,7 @@ def prepare_database():
     
     conn.commit()
     conn.close()
-    print("✓ Database ready with users: admin, ratna, s3micro")
+    print("✓ Database ready with users: admin, s3micro")
 
 def create_spec_file():
     """Create PyInstaller spec file with all resources"""
@@ -290,15 +289,12 @@ def create_readme():
 
 ## Pre-configured Users
 
-The application comes with three pre-configured users:
+The application comes with two pre-configured users:
 
 1. **admin** / password
    - Administrator account for system setup
    
-2. **ratna** / ratna
-   - Standard user account
-   
-3. **s3micro** / s3micro
+2. **s3micro** / s3micro
    - Demo user account
 
 ## Installation
@@ -371,7 +367,6 @@ def main():
         
         print("\nAll users included:")
         print("  • admin/password")
-        print("  • ratna/ratna")
         print("  • s3micro/s3micro")
         print("\n💡 To create installers:")
         print("  Windows: Use Inno Setup or NSIS with the .exe")

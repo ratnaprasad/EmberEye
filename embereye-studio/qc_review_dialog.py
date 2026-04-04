@@ -3,6 +3,8 @@ Quality Control Review Dialog for EmberEye Training Data.
 Review and edit annotations before moving to training dataset.
 """
 
+import json
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QComboBox, QListWidget, QListWidgetItem, QMessageBox, QFrame, QSlider, QCheckBox, QApplication
@@ -14,7 +16,7 @@ import os
 import cv2
 import numpy as np
 from pathlib import Path
-from embereye.core.class_config import load_master_classes, get_hierarchical_class_labels
+from embereye.core.class_config import load_master_classes, get_leaf_classes_for_category
 
 
 class _FixedImageLabel(QLabel):
@@ -28,7 +30,7 @@ class _FixedImageLabel(QLabel):
 class QCReviewDialog(QDialog):
     """Dialog for reviewing and editing annotations before training."""
     
-    def __init__(self, annotations_dir: str, image_dir: str = None, parent=None):
+    def __init__(self, annotations_dir: str, image_dir: str = None, active_analytics_category: str | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("QC Review - Annotation Quality Control")
         self.resize(1000, 700)
@@ -36,14 +38,18 @@ class QCReviewDialog(QDialog):
         
         self.annotations_dir = Path(annotations_dir)
         self.image_dir = Path(image_dir) if image_dir else None
+        self.active_analytics_category = self._resolve_active_analytics_category(active_analytics_category)
         
-        # Load class hierarchy
+        # Load class hierarchy for the active analytics category only.
         self.classes_dict = load_master_classes()
-        self.hierarchical_labels = get_hierarchical_class_labels()
-        self.flat_classes = self._get_flat_class_list()
+        self.review_classes = self._get_active_class_list()
+        self.review_class_to_id = {name: idx for idx, name in enumerate(self.review_classes)}
+        self.current_file_classes = list(self.review_classes)
         
-        # Load all annotation files (recursive to support multi-base QC review)
-        self.all_annotation_files = sorted(list(self.annotations_dir.rglob("*.txt")))
+        # Load all annotation files (recursive to support multi-base QC review).
+        self.all_annotation_files = sorted(
+            [path for path in self.annotations_dir.rglob("*.txt") if path.name.lower() != "labels.txt"]
+        )
         if not self.all_annotation_files:
             QMessageBox.warning(self, "No Annotations", "No annotation files found in directory.")
             self.reject()
@@ -107,13 +113,62 @@ class QCReviewDialog(QDialog):
         if self.width() > max_w or self.height() > max_h:
             self.resize(min(self.width(), max_w), min(self.height(), max_h))
     
-    def _get_flat_class_list(self):
-        """Get flat list of all leaf classes."""
-        flat = []
-        for category in self.classes_dict.get("IncidentEnvironment", []):
-            for leaf_class in self.classes_dict.get(category, []):
-                flat.append(leaf_class)
-        return flat
+    def _resolve_active_analytics_category(self, value: str | None) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"fire", "ppe"}:
+            return raw
+
+        cfg = Path(__file__).resolve().parent.parent / "stream_config.json"
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            raw = str(data.get("active_analytics_category", "fire") or "fire").strip().lower()
+        except Exception:
+            raw = "fire"
+        return raw if raw in {"fire", "ppe"} else "fire"
+
+    def _get_active_class_list(self):
+        """Get leaf classes for the active analytics category."""
+        class_list = get_leaf_classes_for_category(self.active_analytics_category, self.classes_dict)
+        return list(class_list or [])
+
+    def _labels_path_for_annotation(self, ann_file: Path) -> Path:
+        candidate = ann_file.parent / "labels.txt"
+        if candidate.exists():
+            return candidate
+        fallback = self.annotations_dir / "labels.txt"
+        return fallback
+
+    def _load_labels_list(self, labels_path: Path) -> list[str]:
+        try:
+            rows = labels_path.read_text(encoding="utf-8").splitlines()
+            return [row.strip() for row in rows if row.strip()]
+        except Exception:
+            return []
+
+    def _class_list_for_annotation(self, ann_file: Path) -> list[str]:
+        labels = self._load_labels_list(self._labels_path_for_annotation(ann_file))
+        return labels or list(self.review_classes)
+
+    def _class_name_for_display(self, class_id: int, class_list: list[str] | None = None) -> str:
+        source = class_list or self.current_file_classes or self.review_classes
+        if 0 <= class_id < len(source):
+            return source[class_id]
+        if 0 <= class_id < len(self.review_classes):
+            return self.review_classes[class_id]
+        return f"class_{class_id}"
+
+    def _normalize_annotation_class_id(self, original_id: int, source_class_list: list[str]) -> int:
+        class_name = self._class_name_for_display(original_id, source_class_list)
+        mapped = self.review_class_to_id.get(class_name)
+        if mapped is not None:
+            return mapped
+        if 0 <= original_id < len(self.review_classes):
+            return original_id
+        return 0
+
+    def _persist_active_labels(self, ann_file: Path):
+        labels_path = self._labels_path_for_annotation(ann_file)
+        labels_path.write_text("\n".join(self.review_classes) + "\n", encoding="utf-8")
     
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -206,7 +261,7 @@ class QCReviewDialog(QDialog):
         class_layout = QHBoxLayout()
         class_layout.addWidget(QLabel("Class:"))
         self.class_combo = QComboBox()
-        self.class_combo.addItems(self.flat_classes)
+        self.class_combo.addItems(self.review_classes)
         self.class_combo.currentIndexChanged.connect(self.on_class_changed)
         class_layout.addWidget(self.class_combo)
         control_layout.addLayout(class_layout)
@@ -282,22 +337,24 @@ class QCReviewDialog(QDialog):
         
         # Load annotations
         self.current_annotations = []
+        self.current_file_classes = self._class_list_for_annotation(ann_file)
         with open(ann_file, 'r') as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 5:
+                    normalized_id = self._normalize_annotation_class_id(int(parts[0]), self.current_file_classes)
                     # Check if rectangle (5 values) or polygon (odd number >= 5)
                     if len(parts) == 5:
                         # Rectangle: class_id xc yc width height
                         self.current_annotations.append([
-                            int(parts[0]),
+                            normalized_id,
                             float(parts[1]),
                             float(parts[2]),
                             float(parts[3]),
                             float(parts[4])
                         ])
                     elif len(parts) % 2 == 1:  # Polygon: odd number of values (class_id x1 y1 x2 y2 ... xn yn)
-                        annotation = [int(parts[0])]
+                        annotation = [normalized_id]
                         for i in range(1, len(parts)):
                             annotation.append(float(parts[i]))
                         self.current_annotations.append(annotation)
@@ -567,7 +624,7 @@ class QCReviewDialog(QDialog):
                     continue
             
             # Draw class label
-            class_name = self.flat_classes[class_id] if class_id < len(self.flat_classes) else f"class_{class_id}"
+            class_name = self._class_name_for_display(class_id, self.review_classes)
             label = f"{class_name} #{idx+1}"
             
             font = cv2.FONT_HERSHEY_SIMPLEX
@@ -585,7 +642,7 @@ class QCReviewDialog(QDialog):
         self.ann_list.clear()
         for idx, annotation in enumerate(self.current_annotations):
             class_id = annotation[0]
-            class_name = self.flat_classes[class_id] if class_id < len(self.flat_classes) else f"class_{class_id}"
+            class_name = self._class_name_for_display(class_id, self.review_classes)
             
             if len(annotation) == 5:
                 # Rectangle
@@ -605,7 +662,7 @@ class QCReviewDialog(QDialog):
         # Update class combo
         if 0 <= self.selected_annotation_idx < len(self.current_annotations):
             class_id = self.current_annotations[self.selected_annotation_idx][0]
-            if class_id < len(self.flat_classes):
+            if class_id < len(self.review_classes):
                 self.class_combo.blockSignals(True)
                 self.class_combo.setCurrentIndex(class_id)
                 self.class_combo.blockSignals(False)
@@ -682,6 +739,7 @@ class QCReviewDialog(QDialog):
     def save_current_annotations(self):
         """Save current annotations to file, preserving polygons and boxes."""
         ann_file = self.annotation_files[self.current_index]
+        self._persist_active_labels(ann_file)
         with open(ann_file, 'w') as f:
             for ann in self.current_annotations:
                 if len(ann) == 5:

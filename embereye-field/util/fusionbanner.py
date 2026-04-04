@@ -105,9 +105,27 @@ def _draw_ppe_overlay(widget, painter, width, height, fusion):
         no_vest        = _int(fusion.get("no_vest_count", 0))
         total_persons  = _int(fusion.get("total_persons", 0))
 
-        # Compliance ratios (0.0–1.0).  Avoid div-by-zero.
-        helmet_pct = (helmet_count / max(1, helmet_count + no_helmet)) * 100.0
-        vest_pct   = (vest_count   / max(1, vest_count   + no_vest))   * 100.0
+        # Compliance ratios (0.0–1.0).
+        # Person-aware fallback: in some PPE model variants, explicit "helmet"
+        # hits may be sparse while "no_helmet" drives violations. For operator UX,
+        # show compliance against detected persons when explicit PPE counts are missing.
+        if total_persons > 0 and (helmet_count + no_helmet) == 0:
+            inferred_helmet = max(0, total_persons - no_helmet)
+            helmet_pct = (inferred_helmet / max(1, total_persons)) * 100.0
+        else:
+            helmet_pct = (helmet_count / max(1, helmet_count + no_helmet)) * 100.0
+
+        if total_persons > 0 and (vest_count + no_vest) == 0:
+            inferred_vest = max(0, total_persons - no_vest)
+            vest_pct = (inferred_vest / max(1, total_persons)) * 100.0
+        else:
+            vest_pct = (vest_count / max(1, vest_count + no_vest)) * 100.0
+
+        # Empty scene baseline: no people/no violations => show compliant baseline.
+        if total_persons <= 0 and helmet_count == 0 and no_helmet == 0:
+            helmet_pct = 100.0
+        if total_persons <= 0 and vest_count == 0 and no_vest == 0:
+            vest_pct = 100.0
         violations = no_helmet + no_vest
 
         def sev_compliance(pct):
@@ -117,8 +135,8 @@ def _draw_ppe_overlay(widget, painter, width, height, fusion):
                 return 2
             return 1
 
-        sev_helmet = sev_compliance(helmet_pct) if (helmet_count + no_helmet) > 0 else 1
-        sev_vest   = sev_compliance(vest_pct)   if (vest_count   + no_vest)   > 0 else 1
+        sev_helmet = sev_compliance(helmet_pct) if ((helmet_count + no_helmet) > 0 or total_persons > 0) else 1
+        sev_vest   = sev_compliance(vest_pct)   if ((vest_count   + no_vest)   > 0 or total_persons > 0) else 1
         sev_viol   = 3 if violations > 2 else (2 if violations > 0 else 1)
         sev_global = max(sev_helmet, sev_vest, sev_viol, 1 if alarm else 0)
 
@@ -384,14 +402,6 @@ def _draw_ppe_overlay(widget, painter, width, height, fusion):
                 widget._action_card_rect = QRect(card)
                 draw_shadow_text(card.adjusted(int(8 * scale), int(18 * scale), 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "Actions:", _col_title, small_font)
                 draw_glow_dot(card.right() - int(12 * scale), card.top() + int(12 * scale), _col_accent, max(3, int(4 * scale)))
-                slot_w = card.width() - int(16 * scale)
-                slot_h = max(14, int(18 * scale))
-                slot_x = card.x() + int(8 * scale)
-                top_slot = QRect(slot_x, card.y() + int(30 * scale), slot_w, slot_h)
-                painter.fillRect(top_slot, QColor(0x32, 0x3A, 0x46, 200))
-                painter.setPen(QPen(QColor(0xFF, 0xD2, 0x00, 180), 1))
-                painter.drawRoundedRect(top_slot, int(6 * scale), int(6 * scale))
-                draw_shadow_text(top_slot, Qt.AlignmentFlag.AlignCenter, "SECURE", _col_value, QFont("Roboto Mono", max(10, int(11 * scale)), QFont.Weight.Bold))
 
         widget._position_action_controls()
 
@@ -841,15 +851,6 @@ def _draw_fire_overlay(widget, painter, width, height, fusion):
                 widget._action_card_rect = QRect(card)
                 draw_shadow_text(card.adjusted(int(8 * scale), int(18 * scale), 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, "Actions:", _col_title, small_font)
                 draw_glow_dot(card.right() - int(12 * scale), card.top() + int(12 * scale), _col_accent, max(3, int(4 * scale)))
-
-                slot_w = card.width() - int(16 * scale)
-                slot_h = max(14, int(18 * scale))
-                slot_x = card.x() + int(8 * scale)
-                top_slot = QRect(slot_x, card.y() + int(30 * scale), slot_w, slot_h)
-                painter.fillRect(top_slot, QColor(0x32, 0x3A, 0x46, 200))
-                painter.setPen(QPen(QColor(0xFF, 0xD2, 0x00, 180), 1))
-                painter.drawRoundedRect(top_slot, int(6 * scale), int(6 * scale))
-                draw_shadow_text(top_slot, Qt.AlignmentFlag.AlignCenter, "SECURE", _col_value, QFont("Roboto Mono", max(10, int(11 * scale)), QFont.Weight.Bold))
 
         widget._position_action_controls()
 

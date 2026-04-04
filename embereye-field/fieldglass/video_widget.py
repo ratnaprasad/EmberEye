@@ -1,8 +1,4 @@
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vigilstream'))
-
-from video_worker import VideoWorker
+from vigilstream.video_worker import VideoWorker
 from PyQt6.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QSizePolicy, QApplication
 from PyQt6.QtCore import Qt, QRect, QRectF, pyqtSignal, QThread, QTimer, QObject, QMutexLocker, pyqtSlot
 from PyQt6.QtGui import QColor, QImage
@@ -979,6 +975,9 @@ class VideoWidget(QWidget):
 
         # Initialize alarm UI after fusion controls exist.
         self.update_fire_alarm(False)
+        # Force initial SECURE visual — update_fire_alarm(False) early-returns
+        # when alarm_active is already False, so we must set the visual explicitly.
+        self._update_action_pill_visual()
         
         self.temp_label = QLabel("--°C")
         if is_modern:
@@ -1597,16 +1596,27 @@ class VideoWidget(QWidget):
             if (not remote_alarm_active) and was_alarm_active and (not bool(getattr(self, 'alarm_acknowledged', False))):
                 remote_alarm_active = True
             self._remote_alarm_active = remote_alarm_active
+            # When remote alarm triggers a NEW cycle, clear any stale manual override
+            # so the remote state takes effect.
+            if remote_alarm_active and not was_alarm_active:
+                self._manual_alarm_override = None
+                self._alarm_silenced = False
+                self._manual_action_state = 'normal'
             if self._manual_alarm_override is not None:
                 effective_alarm = bool(self._manual_alarm_override)
             else:
                 effective_alarm = self._remote_alarm_active
 
+        # --- Early return when effective state hasn't changed (avoids UI thrash at 30 fps) ---
+        # But ALWAYS process transitions (False→True or True→False) so UI updates.
+        if effective_alarm == was_alarm_active and source != "manual":
+            return
+
         self.alarm_active = effective_alarm  # Store currently rendered alarm state
 
-        # Alarm clear always resets local silence latch.
-        if not effective_alarm:
-            self._alarm_silenced = False
+        # Only clear _alarm_silenced when a NEW alarm cycle starts (False→True).
+        # Do NOT clear it when alarm goes False — the silenced state must persist
+        # through the post-ACK cooldown period so the label stays "SILENCED".
 
         if self._manual_alarm_override is None:
             self.fusion_alarm_btn.setToolTip("Sensor-driven alarm state. Click to toggle demo override")
@@ -1619,7 +1629,9 @@ class VideoWidget(QWidget):
             self._ack_count = 0
             self.alarm_acknowledged = False
         if not effective_alarm:
-            self.set_alarm_acknowledged(False)
+            # Don't clear alarm_acknowledged here — it's managed by the main window
+            # via set_alarm_acknowledged(). Clearing it prematurely causes the widget
+            # to re-latch alarms during the post-ACK cooldown period.
             self._manual_action_state = 'normal'
             self._ack_count = 0
         self._sync_alarm_ack_button()
@@ -1628,15 +1640,28 @@ class VideoWidget(QWidget):
         self.position_controls()
 
     def _toggle_local_alarm_override(self):
-        """Tactical single-button flow: EMERGENCY -> SILENCE (visual threat remains)."""
-        if bool(getattr(self, 'alarm_active', False)):
-            # Active alarm click silences audible channel but keeps visual threat active.
-            if not bool(getattr(self, '_alarm_silenced', False)):
-                self.alarm_ack_requested.emit(str(self.loc_id))
-                self._alarm_silenced = True
-                self._manual_action_state = 'silenced'
+        """Three-state button flow:
+
+        SECURE  → click → raise emergency alarm
+        SILENCE → click → silence active alarm (ACK to PFDS, visual clears)
+        SILENCED → click → return to SECURE state
+        """
+        if bool(getattr(self, '_alarm_silenced', False)):
+            # Currently silenced (cooldown active) — user wants to return to SECURE.
+            self._alarm_silenced = False
+            self._manual_action_state = 'normal'
+            self.alarm_active = False
+            self._refresh_tile_highlight()
+        elif bool(getattr(self, 'alarm_active', False)):
+            # Active alarm — silence it.
+            self.alarm_ack_requested.emit(str(self.loc_id))
+            self._alarm_silenced = True
+            self._manual_action_state = 'silenced'
+            # Clear visual alarm immediately so red border goes away.
+            self.alarm_active = False
+            self._refresh_tile_highlight()
         else:
-            # Secure click raises emergency alarm.
+            # SECURE state — raise emergency alarm.
             self._alarm_silenced = False
             self._manual_action_state = 'raised'
             self.update_fire_alarm(True, source="manual")
@@ -1673,7 +1698,13 @@ class VideoWidget(QWidget):
             return
         from math import sin
         from time import time as now_time
-        label = 'SILENCED' if (self.alarm_active and bool(getattr(self, '_alarm_silenced', False))) else ('SILENCE' if self.alarm_active else 'EMERGENCY')
+        # Three-state label: SILENCED (cooldown), SILENCE (alarm active), SECURE (idle)
+        if bool(getattr(self, '_alarm_silenced', False)):
+            label = 'SILENCED'
+        elif self.alarm_active:
+            label = 'SILENCE'
+        else:
+            label = 'SECURE'
 
         if self.alarm_active:
             pulse_alpha = int(156 + 76 * ((sin(now_time() * 7.0) + 1.0) * 0.5))
@@ -1697,6 +1728,26 @@ class VideoWidget(QWidget):
                     background-color: rgba(110, 0, 0, 0.96);
                 }
             """ % pulse_alpha)
+        elif bool(getattr(self, '_alarm_silenced', False)):
+            # Silenced state: static dark red (not pulsing), indicates suppressed alarm
+            self.fusion_alarm_btn.setStyleSheet("""
+                QPushButton {
+                    color: #ff9999;
+                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 rgba(50, 10, 10, 0.94),
+                        stop:0.5 rgba(65, 15, 15, 0.94),
+                        stop:1 rgba(50, 10, 10, 0.94));
+                    border: 1px solid rgba(255, 80, 80, 0.6);
+                    border-radius: 9px;
+                    padding: 0 10px;
+                    font-size: 14px;
+                    font-weight: 700;
+                    font-family: 'Roboto Mono';
+                }
+                QPushButton:hover {
+                    background-color: rgba(75, 20, 20, 0.96);
+                }
+            """)
         else:
             self.fusion_alarm_btn.setStyleSheet("""
                 QPushButton {
@@ -1719,10 +1770,12 @@ class VideoWidget(QWidget):
                 }
             """)
         self.fusion_alarm_btn.setText(label)
-        if self.alarm_active:
-            self.fusion_alarm_btn.setToolTip("Alarm active. Click SILENCE to mute audible alarm while visual threat stays active")
+        if bool(getattr(self, '_alarm_silenced', False)):
+            self.fusion_alarm_btn.setToolTip("Alarm silenced. Click to return to SECURE state")
+        elif self.alarm_active:
+            self.fusion_alarm_btn.setToolTip("Alarm active. Click SILENCE to suppress alarm")
         else:
-            self.fusion_alarm_btn.setToolTip("SECURE state. Click EMERGENCY to trigger alarm")
+            self.fusion_alarm_btn.setToolTip("SECURE state. Click to trigger emergency alarm")
 
     def _position_action_controls(self):
         if not hasattr(self, 'fusion_alarm_btn'):

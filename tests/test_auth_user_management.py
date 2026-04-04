@@ -325,11 +325,11 @@ def test_user_management():
                     all_users_exist,
                     None if all_users_exist else "Some users not found")
             
-            # Test 5: Default admin users exist
-            admin_exists = db.get_user('admin') is not None
-            log_test("UserMgmt: Default admin user exists",
-                    admin_exists,
-                    None if admin_exists else "Admin not found")
+            # Test 5: Default superadmin bootstrap user exists
+            superadmin_exists = db.get_user('superadmin') is not None
+            log_test("UserMgmt: Default superadmin user exists",
+                    superadmin_exists,
+                    None if superadmin_exists else "Superadmin not found")
             
             # Test 6: Failed attempts per user are independent
             db.increment_failed_attempt('user1')

@@ -51,7 +51,7 @@ except Exception:
     HAS_WEBENGINE = False
 from datetime import datetime, timezone
 from embereye_base.app.streamconfig_dialog import StreamConfigDialog
-from video_widget import VideoWidget
+from fieldglass.video_widget import VideoWidget
 from embereye_base.core.fusion import FusionOrchestrator, DetectionSource
 from embereye_base.core.configuration.fusion_config import fusion_config
 from embereye_base.core.configuration.hybrid_detection_config import hybrid_detection_config
@@ -78,6 +78,50 @@ logger = logging.getLogger(__name__)
 
 ALARM_EVALUATION_MODES = ("fusion", "vision")
 DEFAULT_ALARM_EVALUATION_MODE = "vision"
+DEFAULT_ALARM_ACK_COOLDOWN_S = 30.0  # suppress re-triggering for N seconds after operator ACK
+
+# Conditional alarm rules: each rule says "if trigger_classes are detected,
+# require_classes must ALSO be present — otherwise suppress the alarm".
+# Stored in stream_config.json under "conditional_alarm_rules".
+DEFAULT_CONDITIONAL_ALARM_RULES = [
+    # Example: PPE violation alarm only when a vehicle is also in scene
+    # {
+    #     "name": "PPE requires Vehicle",
+    #     "enabled": false,
+    #     "trigger_classes": ["no_helmet", "no_vest"],
+    #     "require_classes": ["vehicle", "commercial_vehicle", "industrial_vehicle"],
+    #     "description": "PPE alarm only if a vehicle is present"
+    # }
+]
+
+
+def _ppe_overlaps_person(ppe_bbox, person_bboxes, min_containment=0.3):
+    """Check if a PPE bounding box overlaps sufficiently with any person bbox.
+
+    Uses containment ratio (intersection area / ppe area) rather than IoU,
+    because PPE items (helmets, vests) are typically small and mostly *inside*
+    the person bbox.  A containment threshold of 0.3 means at least 30 % of the
+    PPE bbox must be inside a person bbox.
+
+    Args:
+        ppe_bbox: [x1, y1, x2, y2] pixel coordinates of PPE detection.
+        person_bboxes: List of [x1, y1, x2, y2] person bounding boxes.
+        min_containment: Minimum fraction of PPE area that must overlap a person.
+    """
+    px1, py1, px2, py2 = ppe_bbox
+    ppe_area = max(0.0, px2 - px1) * max(0.0, py2 - py1)
+    if ppe_area <= 0:
+        return False
+    for pb in person_bboxes:
+        bx1, by1, bx2, by2 = pb
+        ix1 = max(px1, bx1)
+        iy1 = max(py1, by1)
+        ix2 = min(px2, bx2)
+        iy2 = min(py2, by2)
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        if inter / ppe_area >= min_containment:
+            return True
+    return False
 
 
 class WebSocketClient(QObject):
@@ -534,7 +578,66 @@ class BEMainWindow(QMainWindow):
         self.config['alarm_evaluation_mode'] = self._normalize_alarm_evaluation_mode(
             getattr(self, 'alarm_evaluation_mode', DEFAULT_ALARM_EVALUATION_MODE)
         )
+        self._sync_ppe_box_filter_from_watch_config()
         StreamConfig.save_config(self.config)
+
+    def _get_configured_ppe_violation_classes(self):
+        """Resolve currently watched PPE violation classes from rules + banner cards.
+
+        This drives alarm evidence checks, incidents filtering, and box rendering.
+        """
+        category = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+        if category != 'ppe':
+            return []
+
+        base_violation = {'no_helmet', 'head', 'no_vest'}
+        allowed = self._get_allowed_ppe_classes()
+        allowed_violation = set(base_violation)
+        if isinstance(allowed, set) and allowed:
+            allowed_violation = {c for c in allowed if c in base_violation}
+
+        rules = getattr(self, '_conditional_alarm_rules', None) or []
+        trigger_violation = set()
+        for rule in rules:
+            if not isinstance(rule, dict) or not rule.get('enabled', True):
+                continue
+            for c in (rule.get('trigger_classes') or []):
+                name = str(c).strip().lower().replace(' ', '_').replace('-', '_')
+                if name in base_violation:
+                    trigger_violation.add(name)
+
+        if trigger_violation and allowed_violation:
+            watched = trigger_violation & allowed_violation
+        elif trigger_violation:
+            watched = set(trigger_violation)
+        else:
+            watched = set(allowed_violation)
+
+        # Treat HEAD as no-helmet alias for filtering/visual consistency.
+        if 'no_helmet' in watched:
+            watched.add('head')
+        if 'head' in watched:
+            watched.add('no_helmet')
+        return sorted(watched)
+
+    def _sync_ppe_box_filter_from_watch_config(self):
+        """For PPE mode, force box rendering to configured watched violation classes."""
+        watched = self._get_configured_ppe_violation_classes()
+        if not watched:
+            return
+        self.detection_box_mode = 'specific'
+        self.detection_box_classes = list(watched)
+        self.config['detection_box_mode'] = self.detection_box_mode
+        self.config['detection_box_classes'] = list(self.detection_box_classes)
+        os.environ['EMBEREYE_BBOX_MODE'] = self.detection_box_mode
+        os.environ['EMBEREYE_BBOX_CLASSES'] = ';'.join(self.detection_box_classes)
+        # Push immediately to any already-running video workers so the draw
+        # filter takes effect without needing a full settings re-apply.
+        _cls_set = set(self.detection_box_classes)
+        for _widget in getattr(self, 'video_widgets', {}).values():
+            if hasattr(_widget, 'worker') and _widget.worker:
+                _widget.worker.detection_box_mode = self.detection_box_mode
+                _widget.worker.detection_box_classes = _cls_set
 
     def _apply_banner_preferences_to_widgets(self):
         """Push banner preferences into existing tile fusion payloads for immediate redraw."""
@@ -553,6 +656,239 @@ class BEMainWindow(QMainWindow):
                     widget.update()
             except Exception:
                 continue
+
+    # Mapping from display-card names to the detection classes they cover.
+    # If a card is NOT selected, detections of its mapped classes are suppressed.
+    _CARD_CLASS_MAP = {
+        'helmet': {'helmet', 'no_helmet', 'head'},
+        'vest':   {'vest', 'no_vest'},
+    }
+
+    def _get_allowed_ppe_classes(self):
+        """Return the set of PPE classes allowed by the current display-card selection.
+
+        Returns None when all classes are allowed (auto mode or no explicit selection).
+        """
+        mode = str(getattr(self, 'fusion_banner_mode', 'auto')).strip().lower()
+        if mode != 'manual':
+            return None
+        category = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+        manual_cards = getattr(self, 'fusion_banner_manual_cards', {}) or {}
+        selected = manual_cards.get(category, [])
+        if not selected:
+            return None
+        selected_lower = {str(c).strip().lower() for c in selected}
+        allowed = set()
+        for card_name, mapped_classes in self._CARD_CLASS_MAP.items():
+            if card_name in selected_lower:
+                allowed.update(mapped_classes)
+        return allowed if allowed else None
+
+    def _is_alarm_card_active(self, detections=None):
+        """Return True if the alarm-triggering detections belong to selected display cards.
+
+        When the banner is in 'auto' mode all cards are implicitly active.
+        In 'manual' mode:
+          - The 'action' card must be selected (alarm UI control).
+          - Detection classes must map to at least one *other* selected card.
+            e.g. if only 'helmet' + 'action' are selected, vest detections
+            will NOT trigger an alarm.
+        """
+        mode = str(getattr(self, 'fusion_banner_mode', 'auto')).strip().lower()
+        if mode != 'manual':
+            return True  # auto mode → all cards active
+        category = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+        manual_cards = getattr(self, 'fusion_banner_manual_cards', {}) or {}
+        selected = manual_cards.get(category, [])
+        if not selected:
+            return True  # no explicit selection → treat as all active
+        selected_lower = {str(c).strip().lower() for c in selected}
+        if 'action' not in selected_lower:
+            return False  # action card must be selected for alarms
+
+        # If no detections provided, fall back to action-only check (legacy callers)
+        if not detections:
+            return True
+
+        # Build the set of detection classes that are permitted by selected cards
+        allowed_classes = set()
+        for card_name, mapped_classes in self._CARD_CLASS_MAP.items():
+            if card_name in selected_lower:
+                allowed_classes.update(mapped_classes)
+
+        # If no class-specific cards are selected (e.g. only 'action' + 'global'),
+        # allow all detections (no per-class filtering).
+        if not allowed_classes:
+            return True
+
+        # Check if at least one alarm-triggering detection belongs to an allowed class
+        for d in detections:
+            cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+            if cn in allowed_classes:
+                return True
+        return False
+
+    def _has_active_alarm_rules(self):
+        """Return True if at least one enabled rule with trigger_classes is configured.
+
+        When this returns True the system operates in rule-driven mode: alarm decisions
+        are made exclusively by ``_evaluate_conditional_alarm_rules``, bypassing the
+        default fusion/card-gate path.
+        """
+        rules = getattr(self, '_conditional_alarm_rules', None) or []
+        return any(
+            isinstance(r, dict) and r.get('enabled', True) and bool(r.get('trigger_classes'))
+            for r in rules
+        )
+
+    def _evaluate_conditional_alarm_rules(self, detections):
+        """Evaluate alarm rules as positive triggers.
+
+        **Rule-driven mode** (at least one enabled rule with trigger_classes):
+          - Returns True  if any rule FIRES  → alarm triggered.
+          - Returns False if no  rule fires  → alarm suppressed.
+
+        **No active rules** (empty list or all disabled):
+          - Returns True so the default card/fusion path handles alarm decisions.
+
+        Rule schema (stream_config.json ``conditional_alarm_rules``):
+            {
+                "name":            "No Helmet Alert",
+                "enabled":         true,
+                "trigger_classes": ["no_helmet", "no_vest"],
+                "require_classes": ["person"]
+            }
+        An alarm fires when ANY trigger_class is detected.  If require_classes is
+        non-empty, ALL listed classes must also be present for the rule to fire.
+        """
+        rules = getattr(self, '_conditional_alarm_rules', None) or []
+        enabled_rules = [
+            r for r in rules
+            if isinstance(r, dict) and r.get('enabled', True) and r.get('trigger_classes')
+        ]
+        if not enabled_rules:
+            return True  # no active rules → defer to card-based mode
+
+        if not detections:
+            return False  # rule mode with no detections → no trigger
+
+        min_rule_conf = 0.6
+        try:
+            min_rule_conf = max(0.0, min(1.0, float((self.config or {}).get('rule_min_yolo_conf', 0.6))))
+        except Exception:
+            min_rule_conf = 0.6
+        # Person association can use a slightly lower floor than violation classes,
+        # otherwise marginal PERSON confidence can suppress valid PPE context.
+        person_min_conf = min(min_rule_conf, 0.4)
+
+        category = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+        ppe_classes = {'helmet', 'no_helmet', 'head', 'vest', 'no_vest'}
+        person_bboxes = []
+
+        # Collect person boxes for PPE association filtering.
+        if category == 'ppe':
+            for d in detections:
+                if not isinstance(d, dict):
+                    continue
+                cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                if cn != 'person':
+                    continue
+                try:
+                    conf = float(d.get('confidence', 0.0) or 0.0)
+                except Exception:
+                    conf = 0.0
+                bbox = d.get('bbox')
+                if conf >= person_min_conf and bbox and len(bbox) == 4:
+                    person_bboxes.append(bbox)
+
+        detected_classes = set()
+        for d in detections:
+            cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+            if not cn:
+                continue
+            try:
+                conf = float(d.get('confidence', 0.0) or 0.0)
+            except Exception:
+                conf = 0.0
+            if cn == 'person':
+                if conf < person_min_conf:
+                    continue
+            else:
+                if conf < min_rule_conf:
+                    continue
+
+            # In PPE mode, only count PPE detections that are spatially
+            # associated with a person bbox to avoid arm/object-only false hits.
+            if category == 'ppe' and cn in ppe_classes:
+                bbox = d.get('bbox') if isinstance(d, dict) else None
+                if not (bbox and len(bbox) == 4 and person_bboxes and _ppe_overlaps_person(bbox, person_bboxes)):
+                    continue
+
+            detected_classes.add(cn)
+
+        if not detected_classes:
+            return False
+
+        for rule in enabled_rules:
+            trigger_classes = {
+                str(c).strip().lower().replace(' ', '_').replace('-', '_')
+                for c in (rule.get('trigger_classes') or [])
+            }
+            require_classes = {
+                str(c).strip().lower().replace(' ', '_').replace('-', '_')
+                for c in (rule.get('require_classes') or [])
+            }
+            if bool(rule.get('require_person', False)):
+                require_classes = set(require_classes)
+                require_classes.add('person')
+            # Safety default for PPE rule mode: if a rule triggers on PPE classes but
+            # does not explicitly require PERSON, enforce PERSON presence to avoid
+            # arm/object-only false alarms.
+            ppe_trigger_classes = {'helmet', 'no_helmet', 'head', 'vest', 'no_vest'}
+            if category == 'ppe' and (trigger_classes & ppe_trigger_classes) and ('person' not in require_classes):
+                require_classes = set(require_classes)
+                require_classes.add('person')
+            if trigger_classes & detected_classes:
+                if not require_classes or (require_classes <= detected_classes):
+                    return True  # rule fired
+        return False  # no rule fired
+
+    def _get_detection_class_options(self):
+        """Return a sorted list of detection class names available from the active model.
+
+        Priority:
+          1. Active model's ``.names`` dict (via ``_rule_engine`` or a video worker).
+          2. ``get_leaf_classes()`` from master_classes.json.
+          3. Hard-coded PPE fallback.
+        """
+        classes = set()
+        # 1. Rule-engine model (the per-category analytics model)
+        try:
+            detector = getattr(self, '_rule_engine', None)
+            if detector and getattr(detector, 'model_loaded', False):
+                model = getattr(detector, 'model', None)
+                if model is not None:
+                    model_names = getattr(model, 'names', None)
+                    if isinstance(model_names, dict):
+                        for v in model_names.values():
+                            classes.add(str(v).strip().lower().replace(' ', '_').replace('-', '_'))
+                    elif isinstance(model_names, (list, tuple)):
+                        for v in model_names:
+                            classes.add(str(v).strip().lower().replace(' ', '_').replace('-', '_'))
+        except Exception:
+            pass
+        # 2. Fall back to master_classes leaf classes
+        if not classes:
+            try:
+                from embereye_base.core.class_config import get_leaf_classes
+                for cls in get_leaf_classes():
+                    classes.add(str(cls).strip().lower().replace(' ', '_').replace('-', '_'))
+            except Exception:
+                pass
+        # 3. Absolute fallback
+        if not classes:
+            classes = {'helmet', 'no_helmet', 'no_vest', 'vest', 'person'}
+        return sorted(classes)
 
     def _resolve_model_path_for_category(self, category):
         """Resolve a model path for the active analytics category.
@@ -621,6 +957,17 @@ class BEMainWindow(QMainWindow):
                 continue
 
         if not candidates:
+            # Fallback for deployments that keep a generic active model filename
+            # (for example models/yolo_versions/current_best.pt) without category hints.
+            fallback_rel = Path('yolo_versions') / 'current_best.pt'
+            for model_dir in model_dirs:
+                try:
+                    resolved_dir = model_dir.resolve()
+                except Exception:
+                    continue
+                fallback_candidate = resolved_dir / fallback_rel
+                if fallback_candidate.exists():
+                    return str(fallback_candidate)
             return None
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates[0][1]
@@ -730,13 +1077,24 @@ class BEMainWindow(QMainWindow):
         return result
 
     def handle_vision_score_from_widget(self, loc_id, score):
-        """Run fusion for this loc_id with vision score and update alarm indicator."""
+        """Run fusion for this loc_id with vision score and update alarm indicator.
+
+        Throttled to at most once per ``_vision_fusion_interval_s`` per camera
+        to prevent main-thread overload with multiple simultaneous streams.
+        """
+        # --- Per-camera throttle (default: 1 evaluation per second) ---
+        loc_key = str(loc_id) if loc_id is not None else None
+        now_ts = time.time()
+        if loc_key:
+            last_fusion_ts = self._vision_fusion_last_ts_by_loc.get(loc_key, 0.0)
+            if now_ts - last_fusion_ts < self._vision_fusion_interval_s:
+                return  # skip this frame — too soon since last evaluation
+            self._vision_fusion_last_ts_by_loc[loc_key] = now_ts
+
         try:
             self._record_incident_vision_event(loc_id, score)
         except Exception:
             pass
-        loc_key = str(loc_id) if loc_id is not None else None
-        now_ts = time.time()
         last_sensor_ts = float(self._sensor_last_packet_ts_by_loc_id.get(loc_key, 0.0)) if loc_key else 0.0
         has_recent_sensor = bool(last_sensor_ts > 0.0 and (now_ts - last_sensor_ts) <= float(self._sensor_overlay_stale_timeout_s))
         alarm_mode = self._normalize_alarm_evaluation_mode(
@@ -775,11 +1133,43 @@ class BEMainWindow(QMainWindow):
                         raw_dets = getattr(widget, '_latest_detections', None) or []
                         if raw_dets:
                             h_c = no_h = v_c = no_v = tp = 0
+                            person_min_conf = 0.4
+                            try:
+                                person_min_conf = max(0.0, min(1.0, float((self.config or {}).get('ppe_person_min_conf', 0.4))))
+                            except Exception:
+                                person_min_conf = 0.4
+                            # Separate person bboxes for association filtering
+                            person_bboxes = []
+                            ppe_items = []  # (class_name, detection)
                             for d in raw_dets:
                                 cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                                try:
+                                    conf = float(d.get('confidence', 0.0) or 0.0)
+                                except Exception:
+                                    conf = 0.0
                                 if cn == 'person':
+                                    if conf < person_min_conf:
+                                        continue
                                     tp += 1
-                                elif cn == 'helmet':
+                                    bbox = d.get('bbox')
+                                    if bbox and len(bbox) == 4:
+                                        person_bboxes.append(bbox)
+                                elif cn in ('helmet', 'no_helmet', 'head', 'vest', 'no_vest'):
+                                    ppe_items.append((cn, d))
+
+                            # Only count PPE detections that overlap with a person bbox.
+                            # This prevents static objects (fire extinguishers, pillars)
+                            # from being falsely counted as PPE violations.
+                            for cn, d in ppe_items:
+                                bbox = d.get('bbox')
+                                if person_bboxes and bbox and len(bbox) == 4:
+                                    associated = _ppe_overlaps_person(bbox, person_bboxes)
+                                else:
+                                    # No person detected at all — skip this PPE detection
+                                    associated = False
+                                if not associated:
+                                    continue
+                                if cn == 'helmet':
                                     h_c += 1
                                 elif cn in ('no_helmet', 'head'):
                                     no_h += 1
@@ -787,14 +1177,39 @@ class BEMainWindow(QMainWindow):
                                     v_c += 1
                                 elif cn == 'no_vest':
                                     no_v += 1
-                            if tp == 0:
-                                tp = max(h_c + no_h, v_c + no_v)
+
+                            # total_persons is ONLY actual detected persons
                             ppe_kwargs.update({
                                 'helmet_count': h_c,
                                 'no_helmet_count': no_h,
                                 'vest_count': v_c,
                                 'no_vest_count': no_v,
                                 'total_persons': tp,
+                            })
+
+                            # --- Display-card class filtering ---
+                            # Zero out PPE stats for classes whose card is NOT selected.
+                            # This ensures fusion only triggers on classes the operator cares about.
+                            allowed = self._get_allowed_ppe_classes()
+                            if allowed is not None:
+                                if 'helmet' not in allowed and 'no_helmet' not in allowed and 'head' not in allowed:
+                                    ppe_kwargs['helmet_count'] = 0
+                                    ppe_kwargs['no_helmet_count'] = 0
+                                if 'vest' not in allowed and 'no_vest' not in allowed:
+                                    ppe_kwargs['vest_count'] = 0
+                                    ppe_kwargs['no_vest_count'] = 0
+
+                            cache[loc_key] = dict(ppe_kwargs)
+                            self._ppe_stats_by_loc_id = cache
+                        else:
+                            # No detections this cycle: clear cached PPE counters so
+                            # banner cards don't display stale violation/compliance values.
+                            ppe_kwargs.update({
+                                'helmet_count': 0,
+                                'no_helmet_count': 0,
+                                'vest_count': 0,
+                                'no_vest_count': 0,
+                                'total_persons': 0,
                             })
                             cache[loc_key] = dict(ppe_kwargs)
                             self._ppe_stats_by_loc_id = cache
@@ -820,8 +1235,37 @@ class BEMainWindow(QMainWindow):
                 if hasattr(widget, 'update_fire_alarm'):
                     try:
                         source_name = 'vision_only' if has_recent_sensor else 'vision_only_no_sensor'
-                        self._handle_alarm_transition(loc_id, bool(fusion_result.get('alarm')), source=source_name)
-                        effective_alarm = bool(self._alarm_state_by_loc_id.get(str(loc_id), bool(fusion_result.get('alarm'))))
+                        # Determine alarm mode:
+                        #   Rule-driven  — when enabled rules are configured, rules are
+                        #                  the sole trigger (card defaults are bypassed).
+                        #   Card-based   — default: fusion confidence + PPE fail-safe +
+                        #                  card-gate drive the alarm decision.
+                        raw_dets_alarm = getattr(widget, '_latest_detections', None) or []
+                        if self._has_active_alarm_rules():
+                            alarm_from_fusion = self._evaluate_conditional_alarm_rules(raw_dets_alarm)
+                            if alarm_from_fusion and (not self._is_alarm_card_active(detections=raw_dets_alarm)):
+                                alarm_from_fusion = False
+                        else:
+                            # Default card mode: fusion + PPE fail-safe + card gate.
+                            _cat = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+                            if _cat == 'ppe':
+                                # PPE mode: alarm driven ONLY by violation counts,
+                                # not raw fusion confidence (which can trigger on any detection).
+                                try:
+                                    no_helmet = int((ppe_kwargs or {}).get('no_helmet_count', 0) or 0)
+                                    no_vest = int((ppe_kwargs or {}).get('no_vest_count', 0) or 0)
+                                    total_persons = int((ppe_kwargs or {}).get('total_persons', 0) or 0)
+                                    alarm_from_fusion = (no_helmet > 0 or no_vest > 0) and total_persons > 0
+                                except Exception:
+                                    alarm_from_fusion = False
+                            else:
+                                alarm_from_fusion = bool(fusion_result.get('alarm'))
+                            if alarm_from_fusion:
+                                if not self._is_alarm_card_active(detections=raw_dets_alarm):
+                                    alarm_from_fusion = False
+                        dets_for_scene = getattr(widget, '_latest_detections', None) or []
+                        self._handle_alarm_transition(loc_id, alarm_from_fusion, source=source_name, detections=dets_for_scene)
+                        effective_alarm = bool(self._alarm_state_by_loc_id.get(str(loc_id), False))
                         widget.update_fire_alarm(effective_alarm)
                         if hasattr(widget, 'set_alarm_acknowledged'):
                             acked = bool(self._alarm_ack_by_loc_id.get(str(loc_id), False))
@@ -947,6 +1391,126 @@ class BEMainWindow(QMainWindow):
                 print(f"[DEVICE_TELEMETRY] {json.dumps(payload, sort_keys=True, default=str)}")
         except Exception:
             print(f"[DEVICE_TELEMETRY] {payload}")
+
+    @staticmethod
+    def _normalize_session_role(role_value) -> str:
+        role_key = str(role_value or 'user').strip().lower()
+        if role_key in ('superadmin', 'sa', 'root'):
+            return 'superadmin'
+        return 'user'
+
+    def _is_superadmin(self) -> bool:
+        return str(getattr(self, 'session_role', 'user')).strip().lower() == 'superadmin'
+
+    def _require_superadmin(self, feature_name: str = 'this setting', parent=None) -> bool:
+        if self._is_superadmin():
+            return True
+        QMessageBox.warning(
+            parent or self,
+            'Access Restricted',
+            f"{feature_name} is available only to superadmin.",
+        )
+        return False
+
+    def _tab_allowed(self, tab_key: str) -> bool:
+        """Return True if tab should be initialized for the current session role.
+
+        Config keys (all optional):
+          tab_<key>_enabled  : bool  — False hard-disables regardless of role (default True)
+          tab_<key>_min_role : str   — 'superadmin' restricts to SA only; 'user' = everyone (default 'user')
+        """
+        enabled_key = f'tab_{tab_key}_enabled'
+        role_key = f'tab_{tab_key}_min_role'
+        if not bool(self.config.get(enabled_key, True)):
+            print(f"[TAB] '{tab_key}' disabled by config ({enabled_key}=false)")
+            return False
+        min_role = str(self.config.get(role_key, 'user')).strip().lower()
+        if min_role in ('superadmin', 'sa', 'root'):
+            allowed = self._is_superadmin()
+            if not allowed:
+                print(f"[TAB] '{tab_key}' restricted to superadmin — skipping init for role '{getattr(self, 'session_role', 'user')}'")
+            return allowed
+        return True
+
+    @staticmethod
+    def _auto_inference_tuning_for_camera_count(camera_count: int) -> dict:
+        """Return CPU-friendly YOLO tuning values for the given camera count."""
+        cams = max(1, int(camera_count or 1))
+        if cams <= 1:
+            return {'batch_size': 1, 'batch_wait_ms': 0, 'infer_imgsz': 736}
+        if cams <= 4:
+            return {'batch_size': 1, 'batch_wait_ms': 1, 'infer_imgsz': 640}
+        if cams <= 8:
+            return {'batch_size': 2, 'batch_wait_ms': 4, 'infer_imgsz': 640}
+        if cams <= 16:
+            return {'batch_size': 4, 'batch_wait_ms': 8, 'infer_imgsz': 512}
+        if cams <= 24:
+            return {'batch_size': 6, 'batch_wait_ms': 10, 'infer_imgsz': 384}
+        return {'batch_size': 8, 'batch_wait_ms': 12, 'infer_imgsz': 320}
+
+    def _get_inference_tuning_config(self) -> dict:
+        """Resolve saved inference tuning config with sane defaults."""
+        streams = self.config.get('streams', [])
+        if isinstance(streams, list):
+            default_camera_count = max(1, len(streams))
+        else:
+            default_camera_count = 1
+
+        try:
+            default_camera_count = int(self.config.get('perf_tuning_camera_count', default_camera_count))
+        except Exception:
+            default_camera_count = max(1, default_camera_count)
+
+        mode = str(self.config.get('perf_tuning_mode', 'auto')).strip().lower()
+        if mode not in ('auto', 'manual'):
+            mode = 'auto'
+
+        return {
+            'mode': mode,
+            'camera_count': max(1, default_camera_count),
+            'manual_batch_size': int(self.config.get('perf_tuning_manual_batch_size', 1)),
+            'manual_batch_wait_ms': int(self.config.get('perf_tuning_manual_batch_wait_ms', 0)),
+            'manual_infer_imgsz': int(self.config.get('perf_tuning_manual_infer_imgsz', 640)),
+        }
+
+    def _apply_inference_tuning_env_from_config(self) -> dict:
+        """Apply tuning values to process env vars used by detection worker/detector."""
+        tuning = self._get_inference_tuning_config()
+        if tuning['mode'] == 'auto':
+            resolved = self._auto_inference_tuning_for_camera_count(tuning['camera_count'])
+        else:
+            resolved = {
+                'batch_size': max(1, int(tuning['manual_batch_size'])),
+                'batch_wait_ms': max(0, int(tuning['manual_batch_wait_ms'])),
+                'infer_imgsz': max(160, int(tuning['manual_infer_imgsz'])),
+            }
+
+        os.environ['EMBEREYE_YOLO_BATCH_SIZE'] = str(resolved['batch_size'])
+        os.environ['EMBEREYE_YOLO_BATCH_WAIT_MS'] = str(resolved['batch_wait_ms'])
+        os.environ['EMBEREYE_INFER_IMGSZ'] = str(resolved['infer_imgsz'])
+
+        self._inference_tuning_runtime = {
+            'mode': tuning['mode'],
+            'camera_count': tuning['camera_count'],
+            **resolved,
+        }
+        return self._inference_tuning_runtime
+
+    def _rebind_detection_worker_callbacks(self):
+        """Restart global DetectionWorker and rebind per-stream callbacks."""
+        try:
+            from embereye_base.core.detection_worker import stop_detection_worker
+            stop_detection_worker()
+        except Exception:
+            pass
+
+        for _widget in getattr(self, 'video_widgets', {}).values():
+            try:
+                _worker = getattr(_widget, 'worker', None)
+                if _worker is not None:
+                    _worker.init_detection_worker()
+            except Exception:
+                continue
 
     def _operator_actor(self) -> str:
         operator_id = str(getattr(self, '_operator_id', '') or '').strip()
@@ -1511,26 +2075,36 @@ class BEMainWindow(QMainWindow):
         """Play the configured alarm WAV in a loop (async, non-blocking)."""
         if self._alarm_audio_is_playing:
             return
-        try:
-            path = str(getattr(self, '_alarm_audio_file', '') or '')
-            if winsound and path and os.path.isfile(path):
-                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_LOOP | winsound.SND_ASYNC)
-            elif winsound:
-                winsound.PlaySound('SystemExclamation', winsound.SND_ALIAS | winsound.SND_LOOP | winsound.SND_ASYNC)
-            self._alarm_audio_is_playing = True
-        except Exception as e:
-            print(f"[ALARM_AUDIO] play error: {e}")
+        self._alarm_audio_is_playing = True
+
+        def _bg_play():
+            try:
+                path = str(getattr(self, '_alarm_audio_file', '') or '')
+                if winsound and path and os.path.isfile(path):
+                    winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_LOOP | winsound.SND_ASYNC)
+                elif winsound:
+                    winsound.PlaySound('SystemExclamation', winsound.SND_ALIAS | winsound.SND_LOOP | winsound.SND_ASYNC)
+            except Exception as e:
+                print(f"[ALARM_AUDIO] play error: {e}")
+
+        import threading
+        threading.Thread(target=_bg_play, daemon=True, name='alarm_audio_play').start()
 
     def _stop_alarm_audio(self):
         """Stop any looping alarm audio."""
         if not self._alarm_audio_is_playing:
             return
-        try:
-            if winsound:
-                winsound.PlaySound(None, 0)
-            self._alarm_audio_is_playing = False
-        except Exception as e:
-            print(f"[ALARM_AUDIO] stop error: {e}")
+        self._alarm_audio_is_playing = False
+
+        def _bg_stop():
+            try:
+                if winsound:
+                    winsound.PlaySound(None, 0)
+            except Exception as e:
+                print(f"[ALARM_AUDIO] stop error: {e}")
+
+        import threading
+        threading.Thread(target=_bg_stop, daemon=True, name='alarm_audio_stop').start()
 
     def _update_alarm_audio_state(self):
         """Start or stop alarm audio based on whether any location has an active alarm."""
@@ -1544,11 +2118,13 @@ class BEMainWindow(QMainWindow):
         elif not any_active and self._alarm_audio_is_playing:
             self._stop_alarm_audio()
 
-    def _handle_alarm_transition(self, loc_id, alarm_active, source='fusion'):
+    def _handle_alarm_transition(self, loc_id, alarm_active, source='fusion', detections=None):
         """Track alarm transitions and send ALARM_ON once per active cycle.
 
         Alarm UI is latched until explicit ACK/Silence from operator.
         Incident recording stops when live fusion clears.
+        A post-ACK cooldown suppresses re-triggering for a configurable period.
+        After cooldown expires, re-trigger only if the scene has changed.
         """
         key = self._normalize_loc_key(loc_id)
         if not key:
@@ -1558,72 +2134,234 @@ class BEMainWindow(QMainWindow):
         active = bool(alarm_active)
         prev_active = bool(self._alarm_state_by_loc_id.get(key, False))
 
+        # Debug: log transitions only
+        if active != prev_active:
+            print(f"[ALARM_TRANS] loc={key} active={active} prev={prev_active} source={source}")
+
+        # --- Post-ACK cooldown: suppress new alarm triggers for N seconds after operator ACK ---
+        cooldown_ts = float(self._alarm_ack_cooldown_ts_by_loc_id.get(key, 0.0))
+        if active and cooldown_ts > 0.0:
+            elapsed = now - cooldown_ts
+            if elapsed < self._alarm_ack_cooldown_s:
+                # Still in cooldown — treat as inactive to prevent re-trigger
+                active = False
+            else:
+                # Cooldown expired — only re-trigger if scene has changed
+                if not self._is_scene_changed_since_ack(key, detections):
+                    active = False  # same scene as when operator ACK'd — suppress
+
         if not active:
             # Stop capture when fusion clears, but keep the visible alarm latched
             # until the operator explicitly acknowledges/silences it.
             if prev_active:
                 self._finalize_incident_session(key, feedback='pending', acked=False, end_reason='fusion_clear')
 
-            if prev_active and not bool(self._alarm_ack_by_loc_id.get(key, False)):
+            # Auto-resolve: if the scene is completely empty of persons, clear the
+            # alarm immediately without requiring manual silence.
+            scene_has_person = any(
+                str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_') == 'person'
+                for d in (detections or [])
+            )
+            # Don't auto-resolve manually-raised alarms — only clear when operator ACKs.
+            manual_latch = bool(self._manual_alarm_latch_by_loc_id.get(key, False))
+            auto_resolve = not scene_has_person and not manual_latch
+
+            if prev_active and not bool(self._alarm_ack_by_loc_id.get(key, False)) and not auto_resolve:
+                # Keep alarm visually latched (no state change) — return immediately
+                # to avoid re-processing the same latch state every frame.
+                # This applies to ALL modes (fire AND PPE) so the operator can ACK/silence.
                 self._alarm_state_by_loc_id[key] = True
+                self._update_alarm_audio_state()
                 return
 
+            if auto_resolve and prev_active:
+                # Scene cleared — fully reset alarm and widget state immediately.
+                print(f"[ALARM_TRANS] loc={key} AUTO_RESOLVE: scene empty, clearing alarm")
+                # Send ACK_ON to PFDS so the device stops alarming too.
+                if self._alarm_on_sent_by_loc_id.get(key, False):
+                    import threading
+                    threading.Thread(
+                        target=self._send_emberhawk_command_for_loc,
+                        args=(key, 'ACK_ON'),
+                        kwargs={'reason': 'auto_resolve'},
+                        daemon=True, name=f'alarm_autoresolve_ack_{key}',
+                    ).start()
+                widget = self.video_widgets.get(key)
+                self._manual_alarm_latch_by_loc_id[key] = False
+                if widget:
+                    try:
+                        widget._alarm_silenced = False
+                        widget._manual_action_state = 'normal'
+                        widget._remote_alarm_active = False
+                        widget._manual_alarm_override = None
+                        widget.alarm_active = False
+                        widget.alarm_acknowledged = False
+                        if hasattr(widget, '_sync_alarm_ack_button'):
+                            widget._sync_alarm_ack_button()
+                        if hasattr(widget, '_update_action_pill_visual'):
+                            widget._update_action_pill_visual()
+                        if hasattr(widget, '_refresh_tile_highlight'):
+                            widget._refresh_tile_highlight()
+                    except Exception:
+                        pass
+                self._set_loc_alarm_ack_state(key, False)
+                self._alarm_ack_cooldown_ts_by_loc_id[key] = 0.0
+
+            # During post-ACK cooldown, keep the ACK flag intact so the widget
+            # does not re-latch the alarm visually.  Only fully reset when the
+            # cooldown has expired AND fusion is no longer requesting alarm.
+            cooldown_active = bool(
+                cooldown_ts > 0.0 and (now - cooldown_ts) < self._alarm_ack_cooldown_s
+            )
             self._alarm_state_by_loc_id[key] = False
             self._alarm_on_sent_by_loc_id[key] = False
             self._alarm_on_retry_ts_by_loc_id[key] = 0.0
-            self._set_loc_alarm_ack_state(key, False)
+            if not cooldown_active:
+                self._set_loc_alarm_ack_state(key, False)
+                # Cooldown fully expired — clear the silenced state on the widget
+                # so the button returns to SECURE.
+                widget = self.video_widgets.get(key)
+                if widget:
+                    widget._alarm_silenced = False
+                    widget._manual_action_state = 'normal'
+                    widget._update_action_pill_visual()
+                # Clear stale cooldown timestamp
+                self._alarm_ack_cooldown_ts_by_loc_id[key] = 0.0
+                self._manual_alarm_latch_by_loc_id[key] = False
+            self._update_alarm_audio_state()
             return
 
+        # --- Early return when alarm state has not changed (active → active) ---
+        if prev_active:
+            # Alarm is already active; only need to retry ALARM_ON if not yet sent
+            if key not in self._active_incident_sessions:
+                self._start_incident_session(key, reason=source)
+
+            if self._alarm_on_sent_by_loc_id.get(key, False):
+                self._update_alarm_audio_state()
+                return
+
+            # Limit retries to avoid infinite ALARM_ON sends when no device is mapped
+            _MAX_ALARM_ON_RETRIES = 3
+            retry_count = int(self._alarm_on_retry_count_by_loc_id.get(key, 0))
+            if retry_count >= _MAX_ALARM_ON_RETRIES:
+                self._update_alarm_audio_state()
+                return
+
+            retry_every_s = 2.0
+            last_retry = float(self._alarm_on_retry_ts_by_loc_id.get(key, 0.0))
+            if now - last_retry < retry_every_s:
+                return
+
+            self._alarm_on_retry_ts_by_loc_id[key] = now
+            self._alarm_on_retry_count_by_loc_id[key] = retry_count + 1
+            import threading
+            threading.Thread(
+                target=self._bg_send_alarm_on, args=(key, source),
+                daemon=True, name=f'alarm_retry_{key}',
+            ).start()
+            self._update_alarm_audio_state()
+            return
+
+        # --- Minimum interval between alarm triggers to prevent UI freeze ---
+        _MIN_RETRIGGER_INTERVAL_S = 5.0
+        last_trigger_ts = float(self._alarm_on_retry_ts_by_loc_id.get(key, 0.0))
+        if last_trigger_ts > 0.0 and (now - last_trigger_ts) < _MIN_RETRIGGER_INTERVAL_S:
+            return  # too soon since last trigger — skip to protect main thread
+
+        # --- New alarm trigger (inactive → active) ---
         self._alarm_state_by_loc_id[key] = True
-
-        if not prev_active:
-            self._alarm_on_sent_by_loc_id[key] = False
-            self._alarm_on_retry_ts_by_loc_id[key] = 0.0
-            self._set_loc_alarm_ack_state(key, False)
-            self._start_incident_session(key, reason=source)
-        elif key not in self._active_incident_sessions:
-            self._start_incident_session(key, reason=source)
-
-        if self._alarm_on_sent_by_loc_id.get(key, False):
-            return
-
-        retry_every_s = 2.0
-        last_retry = float(self._alarm_on_retry_ts_by_loc_id.get(key, 0.0))
-        if now - last_retry < retry_every_s:
-            return
+        self._alarm_on_sent_by_loc_id[key] = False
+        self._alarm_on_retry_ts_by_loc_id[key] = 0.0
+        self._alarm_on_retry_count_by_loc_id[key] = 0
+        self._alarm_ack_pending_by_loc_id[key] = False  # clear stale ACK-cancel flag
+        self._set_loc_alarm_ack_state(key, False)
+        self._alarm_ack_cooldown_ts_by_loc_id[key] = 0.0  # clear any stale cooldown
+        self._start_incident_session(key, reason=source)
 
         self._alarm_on_retry_ts_by_loc_id[key] = now
-        sent = self._send_emberhawk_command_for_loc(key, 'ALARM_ON', reason=source)
-        if sent:
-            self._alarm_on_sent_by_loc_id[key] = True
+        # Dispatch ALARM_ON on a background thread to avoid blocking the UI
+        import threading
+        threading.Thread(
+            target=self._bg_send_alarm_on, args=(key, source),
+            daemon=True, name=f'alarm_on_{key}',
+        ).start()
         self._update_alarm_audio_state()
+
+    def _bg_send_alarm_on(self, key, source):
+        """Send ALARM_ON in a background thread; update flag via thread-safe call."""
+        try:
+            # If an ACK was requested for this loc while we were waiting for CPU,
+            # skip the send to avoid ALARM_ON arriving after ACK_ON on the wire.
+            if self._alarm_ack_pending_by_loc_id.get(key, False):
+                print(f"[ALARM_BG] ALARM_ON suppressed for {key} (ACK pending)")
+                return
+            sent = self._send_emberhawk_command_for_loc(key, 'ALARM_ON', reason=source)
+            if sent:
+                self._alarm_on_sent_by_loc_id[key] = True
+        except Exception as e:
+            print(f"[ALARM_BG] ALARM_ON send error for {key}: {e}")
 
     def handle_alarm_ack_from_widget(self, loc_id):
         """Handle per-tile triggered action by sending ACK_ON to the mapped device."""
+        print(f"[ALARM_ACK] handle_alarm_ack_from_widget called for loc_id={loc_id!r}")
         key = self._normalize_loc_key(loc_id)
         if not key:
+            print(f"[ALARM_ACK] normalize_loc_key returned None for loc_id={loc_id!r}")
             return
 
-        if not bool(self._alarm_state_by_loc_id.get(key, False)):
-            self._set_loc_alarm_ack_state(key, False)
-            print(f"Ignoring ACK for loc_id={key}: alarm is not active")
-            return
+        # ALWAYS dispatch ACK_ON when this handler is called.
+        # The alarm_ack_requested signal is ONLY emitted from _toggle_local_alarm_override
+        # when the user explicitly clicks SILENCE on an active alarm.  Due to the
+        # QueuedConnection, a vision frame can slip in between the user press and this
+        # slot, auto-resolving the alarm and clearing both server and widget state.
+        # Guarding on those states would silently drop the ACK_ON, leaving the PFDS
+        # device alarming indefinitely.
+        print(f"[ALARM_ACK] Dispatching ACK_ON for loc_id={key}")
 
-        success = self._send_emberhawk_command_for_loc(key, 'ACK_ON', reason='ui_ack')
-        if not success:
-            # Keep UI responsive even when PFDS transport is temporarily unavailable.
-            print(f"ACK_ON failed for loc_id={key}; forcing local stop and finalizing incident")
+        # Set ACK-pending flag BEFORE sending so any in-flight _bg_send_alarm_on
+        # threads see it and skip their ALARM_ON send (prevents ALARM_ON arriving
+        # at the PFDS device after ACK_ON).
+        self._alarm_ack_pending_by_loc_id[key] = True
+
+        # Send ACK_ON directly — send_command_to_client is non-blocking (schedules
+        # an async coroutine).  Calling it on the main thread guarantees it's ordered
+        # after any ALARM_ON already scheduled on the event loop, and before any
+        # ALARM_ON from a bg thread that hasn't called send yet.
+        self._send_emberhawk_command_for_loc(key, 'ACK_ON', reason='ui_ack')
+
+        # Clear flag after ACK_ON is scheduled on the event loop.
+        self._alarm_ack_pending_by_loc_id[key] = False
 
         self._alarm_state_by_loc_id[key] = False
         self._alarm_on_sent_by_loc_id[key] = False
         self._alarm_on_retry_ts_by_loc_id[key] = 0.0
         self._set_loc_alarm_ack_state(key, True)
+        self._alarm_ack_cooldown_ts_by_loc_id[key] = time.time()  # start cooldown to suppress re-trigger
+        self._manual_alarm_latch_by_loc_id[key] = False  # manual latch cleared on explicit ACK
+        # Save scene fingerprint at ACK time so post-cooldown re-trigger
+        # only fires if the scene has actually changed.
+        widget_for_fp = self.video_widgets.get(key)
+        dets_at_ack = getattr(widget_for_fp, '_latest_detections', None) if widget_for_fp else None
+        self._alarm_scene_fingerprint_by_loc_id[key] = self._compute_scene_fingerprint(dets_at_ack or [])
         self._finalize_incident_session(key, feedback='pending', acked=True, end_reason='operator_ack')
         self._update_alarm_audio_state()
         widget = self.video_widgets.get(key)
         if widget and hasattr(widget, 'update_fire_alarm'):
             try:
-                widget.update_fire_alarm(False, source='manual')
+                # Clear the remote latch so the widget won't re-latch the alarm
+                # from stale _remote_alarm_active state.
+                widget._remote_alarm_active = False
+                widget._manual_alarm_override = None
+                # KEEP _alarm_silenced = True — it was set by _toggle_local_alarm_override
+                # before this handler was called.  Clearing it would undo the silence.
+                widget._alarm_silenced = True
+                widget._manual_action_state = 'silenced'
+                widget.alarm_active = False
+                widget.alarm_acknowledged = True
+                widget._sync_alarm_ack_button()
+                widget._update_action_pill_visual()
+                widget._refresh_tile_highlight()
             except Exception:
                 pass
 
@@ -1632,7 +2370,62 @@ class BEMainWindow(QMainWindow):
         key = self._normalize_loc_key(loc_id)
         if not key:
             return
+        # Mark as manually latched so auto-resolve won't clear it on next vision cycle.
+        self._manual_alarm_latch_by_loc_id[key] = True
         self._handle_alarm_transition(key, True, source='ui_raise')
+
+    def _cleanup_loc_state(self, loc_key):
+        """Remove all per-location tracking entries for the given loc_key."""
+        for attr in (
+            '_alarm_state_by_loc_id', '_alarm_ack_by_loc_id',
+            '_alarm_on_sent_by_loc_id', '_alarm_on_retry_ts_by_loc_id', '_alarm_on_retry_count_by_loc_id', '_alarm_ack_pending_by_loc_id',
+            '_alarm_ack_cooldown_ts_by_loc_id', '_vision_fusion_last_ts_by_loc',
+            '_fusion_by_loc_id', '_fusion_ts_by_loc_id',
+            '_sensor_last_packet_ts_by_loc_id', '_last_thermal_matrix_by_loc_id',
+            '_ppe_stats_by_loc_id', '_alarm_scene_fingerprint_by_loc_id',
+            '_manual_alarm_latch_by_loc_id',
+        ):
+            d = getattr(self, attr, None)
+            if isinstance(d, dict):
+                d.pop(loc_key, None)
+        # Finalize any active incident session for this location
+        if loc_key in getattr(self, '_active_incident_sessions', {}):
+            try:
+                self._finalize_incident_session(loc_key, feedback='pending', acked=False, end_reason='widget_removed')
+            except Exception:
+                pass
+
+    def _compute_scene_fingerprint(self, detections):
+        """Compute a compact fingerprint of the current detection scene.
+
+        Uses only violation classes (not person count) to avoid re-triggering
+        when the same violations persist but people move around.  The fingerprint
+        is a frozenset of violation class names present in the frame.
+        """
+        if not detections:
+            return frozenset()
+        violation_classes = set()
+        for d in detections:
+            cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+            # Only track violation/alarm-relevant classes — ignore 'person', 'helmet', 'vest'
+            if cn in ('no_helmet', 'no_vest', 'head', 'fire', 'smoke', 'flame'):
+                violation_classes.add(cn)
+        return frozenset(violation_classes)
+
+    def _is_scene_changed_since_ack(self, loc_key, detections):
+        """Check if the detection scene has changed since the last alarm ACK.
+
+        Returns True (alarm should re-trigger) only if *new* violation types
+        have appeared that were not present when the operator last acknowledged.
+        Returning False keeps the alarm suppressed even after cooldown.
+        """
+        prev_fp = self._alarm_scene_fingerprint_by_loc_id.get(loc_key)
+        if prev_fp is None:
+            return True  # no stored fingerprint → allow trigger
+        current_fp = self._compute_scene_fingerprint(detections)
+        # Re-trigger only if there are NEW violation classes not seen at ACK time
+        new_violations = current_fp - prev_fp
+        return len(new_violations) > 0
 
     def _evaluate_rule_alarm(self, detections, yolo_score=0.0, fusion_result=None):
         """Evaluate rule-based alarm from detection classes."""
@@ -1670,7 +2463,11 @@ class BEMainWindow(QMainWindow):
         return result
 
     def _extract_ppe_counts_from_detections(self, detections):
-        """Extract PPE summary counters from raw detection events."""
+        """Extract PPE summary counters from raw detection events.
+
+        Counts PPE items only when associated with detected PERSON boxes.
+        This avoids false PPE violations in empty scenes or on static objects.
+        """
         stats = {
             'helmet_count': 0,
             'no_helmet_count': 0,
@@ -1679,16 +2476,48 @@ class BEMainWindow(QMainWindow):
             'total_persons': 0,
         }
         try:
+            person_bboxes = []
+            person_min_conf = 0.4
+            try:
+                person_min_conf = max(0.0, min(1.0, float((self.config or {}).get('ppe_person_min_conf', 0.4))))
+            except Exception:
+                person_min_conf = 0.4
+
+            pending_ppe = []
             for det in detections or []:
                 raw_name = ''
+                conf = 0.0
+                bbox = None
                 if isinstance(det, dict):
                     raw_name = str(det.get('class', '') or '').strip().lower().replace(' ', '_').replace('-', '_')
+                    try:
+                        conf = float(det.get('confidence', 0.0) or 0.0)
+                    except Exception:
+                        conf = 0.0
+                    bbox = det.get('bbox')
                 elif det is not None:
                     raw_name = str(det).strip().lower().replace(' ', '_').replace('-', '_')
 
                 if raw_name in {'person', 'worker'}:
+                    if conf < person_min_conf:
+                        continue
                     stats['total_persons'] += 1
-                elif raw_name in {'helmet', 'hardhat', 'safety_helmet'}:
+                    if bbox and len(bbox) == 4:
+                        person_bboxes.append(bbox)
+                elif raw_name in {
+                    'helmet', 'hardhat', 'safety_helmet',
+                    'no_helmet', 'without_helmet', 'head', 'head_no_helmet',
+                    'vest', 'safety_vest', 'high_visibility_vest',
+                    'no_vest', 'without_vest',
+                }:
+                    pending_ppe.append((raw_name, bbox))
+
+            # Count only PPE detections associated with PERSON.
+            for raw_name, bbox in pending_ppe:
+                associated = bool(bbox and len(bbox) == 4 and person_bboxes and _ppe_overlaps_person(bbox, person_bboxes))
+                if not associated:
+                    continue
+                if raw_name in {'helmet', 'hardhat', 'safety_helmet'}:
                     stats['helmet_count'] += 1
                 elif raw_name in {'no_helmet', 'without_helmet', 'head', 'head_no_helmet'}:
                     stats['no_helmet_count'] += 1
@@ -1696,12 +2525,6 @@ class BEMainWindow(QMainWindow):
                     stats['vest_count'] += 1
                 elif raw_name in {'no_vest', 'without_vest'}:
                     stats['no_vest_count'] += 1
-
-            if stats['total_persons'] == 0:
-                stats['total_persons'] = max(
-                    stats['helmet_count'] + stats['no_helmet_count'],
-                    stats['vest_count'] + stats['no_vest_count'],
-                )
         except Exception:
             return {
                 'helmet_count': 0,
@@ -1762,7 +2585,8 @@ class BEMainWindow(QMainWindow):
             print(f"apply_sensor_config error: {e}")
 
     def __init__(self, theme_manager=None, tcp_server=None, tcp_sensor_server=None, 
-                 emberhawk=None, async_loop=None, async_thread=None):
+                 emberhawk=None, async_loop=None, async_thread=None,
+                 session_username=None, session_role='user'):
         """
         Initialize MainWindow with optional server reuse for efficiency.
         
@@ -1775,6 +2599,8 @@ class BEMainWindow(QMainWindow):
             async_thread: Shared async thread
         """
         super().__init__()
+        self.session_username = str(session_username or 'operator').strip() or 'operator'
+        self.session_role = self._normalize_session_role(session_role)
         # Optional theme manager support for Modern/Classic themes
         self.theme_manager = theme_manager
         try:
@@ -1808,6 +2634,7 @@ class BEMainWindow(QMainWindow):
         self._live_pfds_refresh_inflight = False
         self._live_pfds_deferred_filter = None
         self.config = StreamConfig.load_config()
+        self._apply_inference_tuning_env_from_config()
         self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
         self._load_analytics_banner_preferences()
         self.alarm_evaluation_mode = self._normalize_alarm_evaluation_mode(
@@ -1868,6 +2695,21 @@ class BEMainWindow(QMainWindow):
         self._alarm_ack_by_loc_id = {}
         self._alarm_on_sent_by_loc_id = {}
         self._alarm_on_retry_ts_by_loc_id = {}
+        self._alarm_on_retry_count_by_loc_id = {}
+        self._alarm_ack_pending_by_loc_id = {}  # cancel flag for in-flight ALARM_ON threads
+        self._alarm_ack_cooldown_ts_by_loc_id = {}  # timestamp of last ACK per location
+        self._alarm_ack_cooldown_s = float(self.config.get('alarm_ack_cooldown_s', DEFAULT_ALARM_ACK_COOLDOWN_S))
+        # Track manually-raised alarms (ui_raise) — skip auto-resolve until operator ACKs
+        self._manual_alarm_latch_by_loc_id = {}
+        # Scene fingerprint at time of ACK — used to suppress re-trigger for unchanged scenes
+        self._alarm_scene_fingerprint_by_loc_id = {}
+        # Per-camera vision fusion throttle (avoids main-thread overload with multi-cam)
+        self._vision_fusion_last_ts_by_loc = {}
+        self._vision_fusion_interval_s = float(self.config.get('vision_fusion_interval_s', 1.0))
+        # Conditional alarm rules (loaded from config)
+        self._conditional_alarm_rules = self.config.get(
+            'conditional_alarm_rules', list(DEFAULT_CONDITIONAL_ALARM_RULES)
+        )
         # Alarm audio state
         self._alarm_audio_is_playing = False
         self._alarm_audio_enabled = bool(self.config.get('alarm_audio_enabled', True))
@@ -1935,8 +2777,10 @@ class BEMainWindow(QMainWindow):
         if not isinstance(raw_box_classes, list):
             raw_box_classes = []
         self.detection_box_classes = [str(class_name).strip() for class_name in raw_box_classes if str(class_name).strip()]
+        self._sync_ppe_box_filter_from_watch_config()
         os.environ['EMBEREYE_BBOX_MODE'] = self.detection_box_mode
         os.environ['EMBEREYE_BBOX_CLASSES'] = ';'.join(self.detection_box_classes)
+        os.environ['EMBEREYE_ANALYTICS_CATEGORY'] = str(self.active_analytics_category)
         self._sync_shared_configs()
         self.baseline_manager = BaselineManager()
         self.baseline_manager.load_from_disk()
@@ -2217,7 +3061,7 @@ class BEMainWindow(QMainWindow):
                         # Update fire alarm status
                         if hasattr(widget, 'update_fire_alarm'):
                             try:
-                                effective_alarm = bool(self._alarm_state_by_loc_id.get(str(widget_loc_id), bool(fusion_result.get('alarm'))))
+                                effective_alarm = bool(self._alarm_state_by_loc_id.get(str(widget_loc_id), False))
                                 widget.update_fire_alarm(effective_alarm)
                                 if hasattr(widget, 'set_alarm_acknowledged'):
                                     acked = bool(self._alarm_ack_by_loc_id.get(str(widget_loc_id), False))
@@ -2487,9 +3331,11 @@ class BEMainWindow(QMainWindow):
             # Conditionally initialize Grafana metrics tab if enabled in config
             if self.config.get('enable_grafana', False):
                 self.init_grafana_tab()
-            # Always initialize Incidents tab
-            self.init_incidents_tab()
-            self.init_live_pfds_tab()
+            # Role- and config-gated tabs: backend only runs when tab is initialized
+            if self._tab_allowed('incidents'):
+                self.init_incidents_tab()
+            if self._tab_allowed('live_pfds'):
+                self.init_live_pfds_tab()
             # Training Manager removed - Studio-only feature
             # Field Edition focuses on monitoring and detection
             # Failed Devices tab retired; Live PFDS tab is the supported device view.
@@ -2536,6 +3382,11 @@ class BEMainWindow(QMainWindow):
     def init_incidents_tab(self):
         """Create a tactical Incidents tab for post-mission analysis."""
         from PyQt6.QtCore import QSize
+        incident_cfg = self._get_incident_ui_settings()
+        if not bool(incident_cfg.get('enabled', True)):
+            print("[INCIDENTS] Tab disabled by configuration (incident_tab_enabled=false)")
+            return
+
         incidents_tab = QWidget()
         layout = QVBoxLayout(incidents_tab)
 
@@ -2597,7 +3448,8 @@ class BEMainWindow(QMainWindow):
         header_layout.addWidget(self.incident_filter_severity)
 
         self.incident_filter_sensor = QComboBox()
-        self.incident_filter_sensor.addItems(["All Sensors", "thermal", "smoke", "gas", "flame", "vision"])
+        sensor_options = list(incident_cfg.get('sensor_options') or ["thermal", "smoke", "gas", "flame", "vision"])
+        self.incident_filter_sensor.addItems(["All Sensors"] + sensor_options)
         self.incident_filter_sensor.currentIndexChanged.connect(self._refresh_incident_cards)
         header_layout.addWidget(self.incident_filter_sensor)
 
@@ -2711,7 +3563,18 @@ class BEMainWindow(QMainWindow):
 
         # Tactical pagination state.
         self._incident_cards_page = 1
-        self._incident_cards_page_size = 12
+        self._incident_cards_page_size = int(incident_cfg.get('page_size', 12) or 12)
+        self._incident_cards_columns = int(incident_cfg.get('columns', 3) or 3)
+        self._incident_allowed_sensors = set(incident_cfg.get('allowed_sensors') or sensor_options)
+
+        # Apply configured default filters.
+        try:
+            self.incident_filter_severity.setCurrentText(str(incident_cfg.get('default_severity', 'All Severity')))
+            self.incident_filter_sensor.setCurrentText(str(incident_cfg.get('default_sensor', 'All Sensors')))
+            self.incident_filter_feedback.setCurrentText(str(incident_cfg.get('default_feedback', 'All Status')))
+            self.incident_search.setText(str(incident_cfg.get('default_search', '') or ''))
+        except Exception:
+            pass
 
         # Storage for full images and metadata
         self._incidents_store = []  # list of dicts {pixmap, loc_id, score, ts}
@@ -2740,6 +3603,65 @@ class BEMainWindow(QMainWindow):
         is_modern = app.property("theme") == "modern" if app and self.theme_manager else False
         self.tabs.addTab(incidents_tab, "INCIDENTS" if is_modern else "Incidents")
         self._refresh_incident_cards()
+
+    def _get_incident_ui_settings(self):
+        """Build incident-tab UI settings from stream config with safe defaults."""
+        cfg = self.config if isinstance(getattr(self, 'config', None), dict) else {}
+        category = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+
+        # Default sensor visibility by active analytics category.
+        if category == 'ppe':
+            default_sensors = ['vision']
+        else:
+            default_sensors = ['thermal', 'smoke', 'gas', 'flame', 'vision']
+
+        raw_allowed = cfg.get('incident_allowed_sensors', default_sensors)
+        allowed = []
+        if isinstance(raw_allowed, (list, tuple, set)):
+            for item in raw_allowed:
+                name = str(item or '').strip().lower()
+                if name and name not in allowed:
+                    allowed.append(name)
+        if not allowed:
+            allowed = list(default_sensors)
+
+        # UI defaults may be overridden in stream_config.json.
+        default_sensor_raw = str(cfg.get('incident_default_sensor', 'All Sensors')).strip()
+        if default_sensor_raw.lower() == 'all':
+            default_sensor_raw = 'All Sensors'
+        elif default_sensor_raw.lower() in allowed:
+            default_sensor_raw = default_sensor_raw.lower()
+        else:
+            default_sensor_raw = 'All Sensors'
+
+        default_severity = str(cfg.get('incident_default_severity', 'All Severity')).strip()
+        if default_severity not in ('All Severity', 'HIGH', 'MEDIUM', 'LOW'):
+            default_severity = 'All Severity'
+
+        default_feedback = str(cfg.get('incident_default_feedback', 'All Status')).strip()
+        if default_feedback not in ('All Status', 'pending', 'valid_alarm', 'false_positive', 'nuisance'):
+            default_feedback = 'All Status'
+
+        try:
+            page_size = max(1, int(cfg.get('incident_cards_page_size', 12)))
+        except Exception:
+            page_size = 12
+        try:
+            columns = max(1, min(6, int(cfg.get('incident_cards_columns', 3))))
+        except Exception:
+            columns = 3
+
+        return {
+            'enabled': bool(cfg.get('incident_tab_enabled', True)),
+            'sensor_options': allowed,
+            'allowed_sensors': allowed,
+            'default_sensor': default_sensor_raw,
+            'default_severity': default_severity,
+            'default_feedback': default_feedback,
+            'default_search': str(cfg.get('incident_default_search', '') or ''),
+            'page_size': page_size,
+            'columns': columns,
+        }
 
     def init_training_manager_tab(self):
         """DISABLED: Training Manager tab is not available in Field Edition.
@@ -3725,7 +4647,11 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _update_incident_count(self):
         try:
             if hasattr(self, 'incident_count_label'):
-                self.incident_count_label.setText(f"Showing {len(self._incidents_store)} incidents")
+                if hasattr(self, 'incident_cards_grid'):
+                    total = len(self._filter_incident_sessions(self._collect_incident_sessions()))
+                else:
+                    total = len(getattr(self, '_incidents_store', []) or [])
+                self.incident_count_label.setText(f"Showing {total} incidents")
         except Exception:
             pass
 
@@ -3806,11 +4732,94 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 return name
         return 'vision'
 
+    def _extract_ppe_violation_counts(self, session):
+        """Extract configured PPE violation evidence counts from session video log."""
+        watched = set(self._get_configured_ppe_violation_classes())
+        if not watched:
+            return {}
+        path = str((session or {}).get('video_log_path', '') or '')
+        if not path or (not os.path.exists(path)):
+            return {k: 0 for k in watched}
+
+        try:
+            mtime = float(os.path.getmtime(path))
+        except Exception:
+            mtime = 0.0
+
+        cache = (session or {}).get('_ppe_violation_cache') if isinstance(session, dict) else None
+        cache_key = (tuple(sorted(watched)), mtime)
+        if isinstance(cache, dict) and cache.get('key') == cache_key:
+            return dict(cache.get('counts', {}))
+
+        try:
+            min_rule_conf = max(0.0, min(1.0, float((self.config or {}).get('rule_min_yolo_conf', 0.6))))
+        except Exception:
+            min_rule_conf = 0.6
+        person_min_conf = min(min_rule_conf, 0.4)
+
+        counts = {k: 0 for k in watched}
+        try:
+            with open(path, 'r', encoding='utf-8') as fp:
+                lines = fp.readlines()[-240:]
+            for line in lines:
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                detections = row.get('detections', []) if isinstance(row, dict) else []
+                if not isinstance(detections, list) or not detections:
+                    continue
+
+                person_bboxes = []
+                for d in detections:
+                    if not isinstance(d, dict):
+                        continue
+                    cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                    if cn != 'person':
+                        continue
+                    try:
+                        conf = float(d.get('confidence', 0.0) or 0.0)
+                    except Exception:
+                        conf = 0.0
+                    bbox = d.get('bbox')
+                    if conf >= person_min_conf and bbox and len(bbox) == 4:
+                        person_bboxes.append(bbox)
+
+                for d in detections:
+                    if not isinstance(d, dict):
+                        continue
+                    cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                    if cn not in watched:
+                        continue
+                    try:
+                        conf = float(d.get('confidence', 0.0) or 0.0)
+                    except Exception:
+                        conf = 0.0
+                    if conf < min_rule_conf:
+                        continue
+                    bbox = d.get('bbox')
+                    if not (bbox and len(bbox) == 4 and person_bboxes and _ppe_overlaps_person(bbox, person_bboxes)):
+                        continue
+                    counts[cn] = int(counts.get(cn, 0)) + 1
+                    if cn == 'head':
+                        counts['no_helmet'] = int(counts.get('no_helmet', 0)) + 1
+                    elif cn == 'no_helmet':
+                        counts['head'] = int(counts.get('head', 0)) + 1
+        except Exception:
+            pass
+
+        if isinstance(session, dict):
+            session['_ppe_violation_cache'] = {'key': cache_key, 'counts': dict(counts)}
+        return counts
+
     def _filter_incident_sessions(self, sessions):
         severity_filter = str(getattr(self, 'incident_filter_severity', QComboBox()).currentText() if hasattr(self, 'incident_filter_severity') else 'All Severity')
         sensor_filter = str(getattr(self, 'incident_filter_sensor', QComboBox()).currentText() if hasattr(self, 'incident_filter_sensor') else 'All Sensors')
         feedback_filter = str(getattr(self, 'incident_filter_feedback', QComboBox()).currentText() if hasattr(self, 'incident_filter_feedback') else 'All Status')
         search_value = str(getattr(self, 'incident_search', QLineEdit()).text() if hasattr(self, 'incident_search') else '').strip().lower()
+        allowed_sensors = set(getattr(self, '_incident_allowed_sensors', []) or [])
+        category = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+        watched_ppe = set(self._get_configured_ppe_violation_classes()) if category == 'ppe' else set()
 
         result = []
         for session in sessions:
@@ -3820,6 +4829,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             token = str(session.get('token', ''))
             loc_id = str(session.get('loc_id', ''))
 
+            if allowed_sensors and sensor_type not in allowed_sensors:
+                continue
+            if watched_ppe and category == 'ppe':
+                counts = self._extract_ppe_violation_counts(session)
+                if sum(int(counts.get(k, 0) or 0) for k in watched_ppe) <= 0:
+                    continue
             if severity_filter != 'All Severity' and severity != severity_filter:
                 continue
             if sensor_filter != 'All Sensors' and sensor_type != sensor_filter:
@@ -4057,19 +5072,34 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         media.addWidget(therm_lbl)
         v.addLayout(media)
 
-        gas, smoke, thermal = self._extract_sensor_series(session)
-        spark_row = QHBoxLayout()
-        for title, series in (("GAS", gas), ("SMOKE", smoke), ("THERM", thermal)):
-            box = QVBoxLayout()
-            lbl = QLabel(title)
-            lbl.setStyleSheet('color:#ffd200; font-weight:700; border:none;')
-            graph = QLabel()
-            graph.setPixmap(self._sparkline_from_values(series or [0.0], 96, 32))
-            graph.setStyleSheet('background:#151b23; border:1px solid #4f5b67;')
-            box.addWidget(lbl)
-            box.addWidget(graph)
-            spark_row.addLayout(box)
-        v.addLayout(spark_row)
+        category = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+        if category == 'ppe':
+            watched = self._get_configured_ppe_violation_classes()
+            counts = self._extract_ppe_violation_counts(session)
+            ppe_row = QHBoxLayout()
+            for cls_name in watched:
+                chip = QLabel(f"{cls_name.upper()}: {int(counts.get(cls_name, 0) or 0)}")
+                chip.setStyleSheet(
+                    'color:#ffd200; border:1px solid #5f6b79; border-radius:6px; '
+                    'padding:4px 8px; font-weight:700; background:#151b23;'
+                )
+                ppe_row.addWidget(chip)
+            ppe_row.addStretch()
+            v.addLayout(ppe_row)
+        else:
+            gas, smoke, thermal = self._extract_sensor_series(session)
+            spark_row = QHBoxLayout()
+            for title, series in (("GAS", gas), ("SMOKE", smoke), ("THERM", thermal)):
+                box = QVBoxLayout()
+                lbl = QLabel(title)
+                lbl.setStyleSheet('color:#ffd200; font-weight:700; border:none;')
+                graph = QLabel()
+                graph.setPixmap(self._sparkline_from_values(series or [0.0], 96, 32))
+                graph.setStyleSheet('background:#151b23; border:1px solid #4f5b67;')
+                box.addWidget(lbl)
+                box.addWidget(graph)
+                spark_row.addLayout(box)
+            v.addLayout(spark_row)
 
         hub = QHBoxLayout()
         play_btn = QPushButton('▶')
@@ -4115,9 +5145,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         end = min(total, start + page_size)
         page_items = sessions[start:end]
 
+        columns = max(1, int(getattr(self, '_incident_cards_columns', 3) or 3))
         for idx, session in enumerate(page_items):
-            row = idx // 3
-            col = idx % 3
+            row = idx // columns
+            col = idx % columns
             self.incident_cards_grid.addWidget(self._build_incident_card(session), row, col)
 
         if hasattr(self, 'incident_footer_range'):
@@ -4126,6 +5157,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.incident_prev_btn.setEnabled(page > 1)
         if hasattr(self, 'incident_next_btn'):
             self.incident_next_btn.setEnabled(page < max_page)
+        if hasattr(self, 'incident_count_label'):
+            self.incident_count_label.setText(f"Showing {total} incidents")
         self._update_incident_storage_usage_label()
         self._update_incident_count()
 
@@ -4484,13 +5517,32 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         session = self._active_incident_sessions.pop(key, None)
         if not session:
             return
-        self._close_incident_video_writer(session)
         session['acked'] = bool(acked)
         session['feedback'] = str(feedback or 'pending')
         session['end_ts'] = time.time()
         session['end_reason'] = str(end_reason or '')
-        self._write_incident_manifest(session)
-        self._append_incident_session_row(session)
+
+        def _bg_finalize(sess):
+            # Heavy I/O on background thread so main thread stays responsive.
+            try:
+                self._close_incident_video_writer(sess)
+            except Exception as e:
+                print(f"[INCIDENT] video writer close error: {e}")
+            try:
+                self._write_incident_manifest(sess)
+            except Exception as e:
+                print(f"[INCIDENT] manifest write error: {e}")
+            # Schedule the UI update back on the main thread.
+            try:
+                QTimer.singleShot(0, lambda: self._append_incident_session_row(sess))
+            except Exception:
+                pass
+
+        import threading
+        threading.Thread(
+            target=_bg_finalize, args=(session,),
+            daemon=True, name=f'finalize_incident_{key}',
+        ).start()
 
     @pyqtSlot(str, object, float, float, object)
     def handle_incident_frame_from_widget(self, loc_id, qimage, score, yolo_score=0.0, detections=None):
@@ -4529,21 +5581,31 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 self._start_incident_session(loc_id, reason=(" | ".join(alarm_reason) or 'alarm'))
             self._record_incident_video_frame(loc_id, qimage, score, yolo_score, detections)
 
-            # Update alarm indicator for this widget
-            for widget in self.get_video_widgets():
-                if getattr(widget, 'loc_id', None) == loc_id:
-                    try:
-                        widget.update_fire_alarm(final_alarm)
-                    except Exception:
-                        pass
-                    break
+            # Alarm visual state is managed by the primary vision/fusion path
+            # (handle_vision_score_from_widget + _handle_alarm_transition).
+            # Avoid forcing per-incident updates here to prevent stale red ACTION states.
+
+            # Debounce expensive incident list/card UI updates while preserving
+            # alarm/session processing to keep video rendering smooth.
+            now = time.time()
+            key = str(loc_id) if loc_id is not None else "_broadcast"
+            ui_min_interval_s = float(getattr(self, '_incident_ui_refresh_min_interval_s', 0.8) or 0.8)
+            if not hasattr(self, '_incident_ui_last_emit_ts_by_loc'):
+                self._incident_ui_last_emit_ts_by_loc = {}
+            last_emit = float(self._incident_ui_last_emit_ts_by_loc.get(key, 0.0) or 0.0)
+            should_update_incident_ui = (now - last_emit) >= ui_min_interval_s
+            if should_update_incident_ui:
+                self._incident_ui_last_emit_ts_by_loc[key] = now
+
             # Check if capture is enabled
             if not getattr(self, 'incident_capture_enabled', True):
                 debug_print(f"[INCIDENT] Capture disabled, skipping")
                 return
+            if not should_update_incident_ui:
+                return
             from PyQt6.QtGui import QPixmap, QIcon
             from PyQt6.QtWidgets import QListWidgetItem
-            import time, os
+            import os
             from datetime import datetime
             # Convert to pixmap in GUI thread
             pixmap = QPixmap.fromImage(qimage)
@@ -4597,10 +5659,19 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.incident_list.addItem(item)
             debug_print(f"[INCIDENT] Added to list: total={self.incident_list.count()}, store={len(self._incidents_store)}")
             self._update_incident_count()
-            self._refresh_incident_cards()
+            # Full card refresh is expensive; avoid doing it when tab is not active.
+            do_refresh_cards = False
+            try:
+                if hasattr(self, 'tabs') and self.tabs is not None:
+                    idx = int(self.tabs.currentIndex())
+                    if 0 <= idx < self.tabs.count():
+                        do_refresh_cards = str(self.tabs.tabText(idx)).strip().upper().startswith('INCIDENT')
+            except Exception:
+                do_refresh_cards = False
+            if do_refresh_cards:
+                self._refresh_incident_cards()
 
             # Periodic retention cleanup (every 60 sec)
-            now = time.time()
             if getattr(self, 'incident_save_enabled', False) and (now - getattr(self, '_last_incident_cleanup', 0) > 60):
                 self._last_incident_cleanup = now
                 self._cleanup_old_incidents()
@@ -4893,55 +5964,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         settings_menu = QMenu()
         self._style_tactical_settings_menu(settings_menu)
-
-        self._add_settings_menu_section(settings_menu, "STREAM MANAGEMENT")
-        settings_menu.addAction("Configure Streams", self.configure_streams)
-        settings_menu.addAction("Analytics & Banner Cards", self.show_analytics_banner_settings)
-        settings_menu.addAction("Reset Streams", self.reset_streams)
-        settings_menu.addAction("Observability", self.show_observability_settings)
-        settings_menu.addSeparator()
-
-        self._add_settings_menu_section(settings_menu, "SYSTEM CONFIGURATION")
-        settings_menu.addAction("Backup Configuration", self.backup_config)
-        settings_menu.addAction("Restore Configuration", self.restore_config)
-        settings_menu.addAction("TCP Server Port", self._request_tcp_port_dialog)
-        settings_menu.addAction("TCP Binding Mode", self.show_tcp_binding_mode_dialog)
-        settings_menu.addSeparator()
-
-        self._add_settings_menu_section(settings_menu, "SENSOR GRID")
-        settings_menu.addAction("Thermal Grid Settings", self.show_thermal_grid_config)
-        self.global_grid_action = settings_menu.addAction("Numeric Grid (All)")
-        self.global_grid_action.setCheckable(True)
-        self.global_grid_action.toggled.connect(self.toggle_all_numeric_grids)
-        settings_menu.addAction("Sensor Configuration", self.show_sensor_config)
-        settings_menu.addAction("Alarm Audio Settings", self.show_alarm_audio_settings)
-        settings_menu.addSeparator()
-
-        self._add_settings_menu_section(settings_menu, "INVENTORY & MAPPINGS")
-        settings_menu.addAction("Class Subclass Manager", self.show_master_class_config)
-        settings_menu.addAction("Log Viewer", self.show_log_viewer_dialog)
-        settings_menu.addAction("IP→Loc Mappings", self.show_ip_loc_mappings_dialog)
-        settings_menu.addSeparator()
-
-        self._add_settings_menu_section(settings_menu, "DATA OPERATIONS")
-        settings_menu.addAction("Import Model", self.import_deployment_model)
-        export_model_menu = settings_menu.addMenu("Export Model")
-        self._style_tactical_settings_menu(export_model_menu)
-        export_model_menu.addAction("Export to ONNX", lambda: self.export_model('onnx'))
-        export_model_menu.addAction("Export to TorchScript", lambda: self.export_model('torchscript'))
-        export_model_menu.addAction("Export to CoreML", lambda: self.export_model('coreml'))
-        export_model_menu.addAction("Export to TensorFlow Lite", lambda: self.export_model('tflite'))
-        settings_menu.addSeparator()
-
-        self._add_settings_menu_section(settings_menu, "LIVE ASSETS")
-        pfds_menu = settings_menu.addMenu("Live PFDS Devices")
-        self._style_tactical_settings_menu(pfds_menu)
-        pfds_menu.addAction("Add Device", self.show_pfds_add_dialog)
-        pfds_menu.addAction("Live PFDS Devices", self._open_live_pfds_tab)
-        settings_menu.addSeparator()
-
-        self._add_settings_menu_section(settings_menu, "DIAGNOSTICS")
-        settings_menu.addAction("Test Error", self.inject_test_stream_error)
+        self._populate_settings_menu(settings_menu)
         
         settings_btn.setMenu(settings_menu)
         settings_btn.setToolTip("Settings")
@@ -5027,6 +6050,72 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         action = menu.addAction(str(title).upper())
         action.setEnabled(False)
         return action
+
+    def _populate_settings_menu(self, menu, include_profile=False, include_logout=False):
+        if menu is None:
+            return
+
+        if include_profile:
+            menu.addAction("Profile", self.show_profile)
+            menu.addSeparator()
+
+        if self._is_superadmin():
+            self._add_settings_menu_section(menu, "STREAM MANAGEMENT")
+            menu.addAction("Configure Streams", self.configure_streams)
+            menu.addAction("Analytics & Banner Cards", self.show_analytics_banner_settings)
+            menu.addAction("Tab Access Control", self.show_tab_access_settings)
+            menu.addAction("Reset Streams", self.reset_streams)
+            menu.addAction("Observability", self.show_observability_settings)
+            menu.addSeparator()
+
+        if self._is_superadmin():
+            self._add_settings_menu_section(menu, "SYSTEM CONFIGURATION")
+            menu.addAction("Backup Configuration", self.backup_config)
+            menu.addAction("Restore Configuration", self.restore_config)
+            menu.addAction("TCP Server Port", self._request_tcp_port_dialog)
+            menu.addAction("TCP Binding Mode", self.show_tcp_binding_mode_dialog)
+            menu.addAction("Inference Performance Tuning", self.show_inference_tuning_settings)
+            menu.addSeparator()
+
+            self._add_settings_menu_section(menu, "SENSOR GRID")
+            menu.addAction("Thermal Grid Settings", self.show_thermal_grid_config)
+            self.global_grid_action = menu.addAction("Numeric Grid (All)")
+            self.global_grid_action.setCheckable(True)
+            self.global_grid_action.toggled.connect(self.toggle_all_numeric_grids)
+            menu.addAction("Sensor Configuration", self.show_sensor_config)
+            menu.addAction("Alarm Audio Settings", self.show_alarm_audio_settings)
+            menu.addAction("Conditional Alarm Rules", self.show_conditional_alarm_rules)
+            menu.addSeparator()
+
+            self._add_settings_menu_section(menu, "INVENTORY & MAPPINGS")
+            menu.addAction("Class Subclass Manager", self.show_master_class_config)
+            menu.addAction("Log Viewer", self.show_log_viewer_dialog)
+            menu.addAction("IP→Loc Mappings", self.show_ip_loc_mappings_dialog)
+            menu.addSeparator()
+
+            self._add_settings_menu_section(menu, "DATA OPERATIONS")
+            menu.addAction("Import Model", self.import_deployment_model)
+            export_model_menu = menu.addMenu("Export Model")
+            self._style_tactical_settings_menu(export_model_menu)
+            export_model_menu.addAction("Export to ONNX", lambda: self.export_model('onnx'))
+            export_model_menu.addAction("Export to TorchScript", lambda: self.export_model('torchscript'))
+            export_model_menu.addAction("Export to CoreML", lambda: self.export_model('coreml'))
+            export_model_menu.addAction("Export to TensorFlow Lite", lambda: self.export_model('tflite'))
+            menu.addSeparator()
+
+            self._add_settings_menu_section(menu, "LIVE ASSETS")
+            pfds_menu = menu.addMenu("Live PFDS Devices")
+            self._style_tactical_settings_menu(pfds_menu)
+            pfds_menu.addAction("Add Device", self.show_pfds_add_dialog)
+            pfds_menu.addAction("Live PFDS Devices", self._open_live_pfds_tab)
+            menu.addSeparator()
+
+            self._add_settings_menu_section(menu, "DIAGNOSTICS")
+            menu.addAction("Test Error", self.inject_test_stream_error)
+
+        if include_logout:
+            menu.addSeparator()
+            menu.addAction("Logout", self.logout)
 
     def _style_tactical_dialog(self, dialog):
         if dialog is None:
@@ -5179,33 +6268,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu()
         self._style_tactical_settings_menu(menu)
-        menu.addAction("Profile", self.show_profile)
-        menu.addAction("Configure Streams", self.configure_streams)
-        menu.addAction("Analytics & Banner Cards", self.show_analytics_banner_settings)
-        menu.addAction("Reset Streams", self.reset_streams)
-        menu.addAction("Observability...", self.show_observability_settings)
-        # Add backup/restore actions
-        menu.addSeparator()
-        menu.addAction("Backup Configuration", self.backup_config)
-        menu.addAction("Restore Configuration", self.restore_config)
-        menu.addSeparator()
-        menu.addAction("TCP Server Port...", self._request_tcp_port_dialog)
-        menu.addAction("TCP Binding Mode...", self.show_tcp_binding_mode_dialog)
-        menu.addAction("Thermal Grid Settings...", self.show_thermal_grid_config)
-        # Global numeric thermal grid toggle (all streams)
-        self.global_grid_action = menu.addAction("Numeric Thermal Grid (All Streams)")
-        self.global_grid_action.setCheckable(True)
-        self.global_grid_action.toggled.connect(self.toggle_all_numeric_grids)
-        menu.addAction("Sensor Configuration...", self.show_sensor_config)
-        menu.addAction("Log Viewer...", self.show_log_viewer_dialog)
-        # Configure PFDS Device submenu
-        pfds_menu = QMenu("Configure Live PFDS Device", menu)
-        pfds_menu.addAction("Add Device...", self.show_pfds_add_dialog)
-        pfds_menu.addAction("View Live PFDS Devices...", self._open_live_pfds_tab)
-        menu.addMenu(pfds_menu)
-        menu.addAction("Inject Test Stream Error", self.inject_test_stream_error)
-        menu.addSeparator()
-        menu.addAction("Logout", self.logout)
+        self._populate_settings_menu(menu, include_profile=True, include_logout=True)
         menu_btn.setMenu(menu)
         title_bar.addWidget(menu_btn)
 
@@ -5266,7 +6329,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         # This can be called before tcp_server_port is initialized in some startup paths.
         cfg = getattr(self, 'config', {}) if isinstance(getattr(self, 'config', {}), dict) else {}
-        port_value = int(getattr(self, 'tcp_server_port', cfg.get('tcp_port', 4888)))
+        port_value = int(getattr(self, 'tcp_server_port', cfg.get('tcp_port', 9001)))
         
         # Create a container widget for the status indicator
         status_widget = QWidget()
@@ -5412,7 +6475,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _refresh_status_tray_icons(self, tcp_running=None):
         """Compatibility hook retained for older call sites (no tray icons)."""
         try:
-            port = int(getattr(self, 'tcp_server_port', self.config.get('tcp_port', 4888)))
+            port = int(getattr(self, 'tcp_server_port', self.config.get('tcp_port', 9001)))
             if hasattr(self, 'tcp_status_label') and self.tcp_status_label is not None:
                 self.tcp_status_label.setToolTip(f"TCP SERVER PORT {port}")
             if hasattr(self, 'device_status_label') and self.device_status_label is not None:
@@ -5435,7 +6498,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         try:
             self._set_tcp_pulse_state(is_running)
 
-            port = int(getattr(self, 'tcp_server_port', self.config.get('tcp_port', 4888)))
+            port = int(getattr(self, 'tcp_server_port', self.config.get('tcp_port', 9001)))
             self._apply_tactical_status_module_style(
                 self.health_status_frame,
                 self.health_status_label,
@@ -5581,7 +6644,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     def _quick_restart_tcp_server(self):
         """One-click tactical restart for the TCP server using current config."""
         import inspect
-        port = int(self.config.get('tcp_port', getattr(self, 'tcp_server_port', 4888)))
+        port = int(self.config.get('tcp_port', getattr(self, 'tcp_server_port', 9001)))
         tcp_mode = self.config.get('tcp_mode', 'async')  # async is the default; threaded is DEPRECATED
         binding_mode = self._get_tcp_binding_mode()
         self.tcp_server_port = port
@@ -5653,6 +6716,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         return 'auto_bind'
 
     def show_tcp_binding_mode_dialog(self):
+        if not self._require_superadmin("TCP binding mode"):
+            return
         from PyQt6.QtWidgets import QInputDialog
 
         current_mode = self._get_tcp_binding_mode()
@@ -5687,6 +6752,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def _request_tcp_port_dialog(self):
         """Allow TCP port prompt only for explicit menu actions."""
+        if not self._require_superadmin("TCP server port configuration"):
+            return
         self._port_dialog_requested = True
         self.show_tcp_port_dialog()
 
@@ -5781,6 +6848,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def show_thermal_grid_config(self):
         """Show thermal grid configuration dialog."""
+        if not self._require_superadmin("Sensor grid configuration"):
+            return
         from embereye_base.app.thermal_grid_config import ThermalGridConfigDialog
         
         # Get current settings from first widget (all widgets will share same config)
@@ -5826,6 +6895,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def show_sensor_config(self):
         """Show sensor configuration dialog."""
+        if not self._require_superadmin("Sensor configuration"):
+            return
         from embereye_base.app.sensor_config_dialog import SensorConfigDialog
 
         available_pfds = sorted({str(getattr(widget, 'loc_id', '')).strip() for widget in self.get_video_widgets() if str(getattr(widget, 'loc_id', '')).strip()})
@@ -5852,7 +6923,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Display settings
             'hot_cell_decay_time': 5.0,
-            'freeze_on_alarm': True,
+            'freeze_on_alarm': False,
             'show_fusion_overlay': True,
             'vision_threshold': float(getattr(self, 'fusion_vision_threshold', self.config.get('vision_threshold', getattr(self, 'vision_threshold', 0.7)))),
             'vision_confidence_weight': float(getattr(self, 'fusion_vision_confidence_weight', self.config.get('vision_confidence_weight', 0.5))),
@@ -5919,12 +6990,13 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             QMessageBox.information(self, "Settings Applied", f"Sensor configuration updated for {target_text} (no restart required).")
 
     def show_alarm_audio_settings(self):
-        """Configure alarm audio: enable/disable, select WAV file, test playback."""
+        """Configure alarm audio, ACK cooldown, and vision fusion interval."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Alarm Audio Settings")
-        dialog.setMinimumSize(480, 220)
+        dialog.setWindowTitle("Alarm Audio & Timing Settings")
+        dialog.setMinimumSize(500, 320)
         layout = QFormLayout(dialog)
 
+        # --- Audio section ---
         enable_cb = QCheckBox("Enable Alarm Audio")
         enable_cb.setChecked(bool(getattr(self, '_alarm_audio_enabled', True)))
         layout.addRow(enable_cb)
@@ -5961,12 +7033,36 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         test_btn.clicked.connect(_test)
         layout.addRow(test_btn)
 
+        # --- Timing section ---
+        sep = QLabel("<b>Alarm Timing</b>")
+        layout.addRow(sep)
+
+        cooldown_spin = QDoubleSpinBox()
+        cooldown_spin.setRange(0.0, 300.0)
+        cooldown_spin.setSuffix(" seconds")
+        cooldown_spin.setDecimals(1)
+        cooldown_spin.setValue(float(getattr(self, '_alarm_ack_cooldown_s', DEFAULT_ALARM_ACK_COOLDOWN_S)))
+        cooldown_spin.setToolTip("After operator acknowledges an alarm, suppress re-triggering for this many seconds.")
+        layout.addRow("ACK Cooldown:", cooldown_spin)
+
+        interval_spin = QDoubleSpinBox()
+        interval_spin.setRange(0.1, 10.0)
+        interval_spin.setSuffix(" seconds")
+        interval_spin.setDecimals(1)
+        interval_spin.setValue(float(getattr(self, '_vision_fusion_interval_s', 1.0)))
+        interval_spin.setToolTip("Minimum interval between vision-fusion evaluations per camera. Lower = more responsive but higher CPU.")
+        layout.addRow("Fusion Interval:", interval_spin)
+
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         def _save():
             self._alarm_audio_enabled = enable_cb.isChecked()
             self._alarm_audio_file = file_input.text().strip()
+            self._alarm_ack_cooldown_s = cooldown_spin.value()
+            self._vision_fusion_interval_s = interval_spin.value()
             self.config['alarm_audio_enabled'] = self._alarm_audio_enabled
             self.config['alarm_audio_file'] = self._alarm_audio_file
+            self.config['alarm_ack_cooldown_s'] = self._alarm_ack_cooldown_s
+            self.config['vision_fusion_interval_s'] = self._vision_fusion_interval_s
             StreamConfig.save_config(self.config)
             self._update_alarm_audio_state()
             dialog.accept()
@@ -5976,8 +7072,193 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         dialog.exec()
 
+    def show_conditional_alarm_rules(self):
+        """Configure alarm trigger rules.
+
+        When rules are configured (any enabled), they exclusively drive alarm
+        decisions, overriding the default card/fusion path.  An alarm fires when
+        a rule's Trigger Classes are detected (and optional Require Classes are
+        also present).  When no rules are enabled, the default card-based alarm
+        behaviour applies.
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Alarm Trigger Rules")
+        dialog.setMinimumSize(700, 520)
+        self._style_tactical_dialog(dialog)
+
+        layout = QVBoxLayout(dialog)
+
+        # --- Mode explanation ---
+        intro = QLabel(
+            "<b>Rule-driven mode</b>: when at least one rule is enabled, rules are the "
+            "sole alarm trigger — card defaults are bypassed.<br>"
+            "<b>Default card mode</b>: when no rules are enabled, alarms fire based on "
+            "the configured banner cards.<br><br>"
+            "A rule fires when <i>any</i> Trigger Class is detected. "
+            "Require Classes (optional) must <i>all</i> be present for the rule to fire."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        # --- Available classes info ---
+        available_classes = self._get_detection_class_options()
+        avail_label = QLabel("Available classes: " + ", ".join(available_classes))
+        avail_label.setWordWrap(True)
+        avail_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        layout.addWidget(avail_label)
+
+        # --- Table of rules ---
+        table = QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["Enable", "Name", "Trigger Classes", "Require Classes", ""])
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(table)
+
+        rules_data = list(getattr(self, '_conditional_alarm_rules', []) or [])
+
+        def _open_class_picker(line_edit, title):
+            """Open a checkable class picker and write result back to line_edit."""
+            current = {c.strip().lower().replace(' ', '_').replace('-', '_')
+                       for c in line_edit.text().split(',') if c.strip()}
+            picker = QDialog(dialog)
+            picker.setWindowTitle(title)
+            picker.setMinimumSize(300, 400)
+            vl = QVBoxLayout(picker)
+            listw = QListWidget()
+            for cls in available_classes:
+                item = QListWidgetItem(cls)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.CheckState.Checked if cls in current else Qt.CheckState.Unchecked
+                )
+                listw.addItem(item)
+            vl.addWidget(listw)
+            bb = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            )
+            bb.accepted.connect(picker.accept)
+            bb.rejected.connect(picker.reject)
+            vl.addWidget(bb)
+            if picker.exec():
+                picked = []
+                for idx in range(listw.count()):
+                    it = listw.item(idx)
+                    if it.checkState() == Qt.CheckState.Checked:
+                        picked.append(it.text())
+                line_edit.setText(', '.join(picked))
+
+        def _make_class_cell(current_text, column_title):
+            """Return (container_widget, line_edit) for a class-list cell."""
+            container = QWidget()
+            lay = QHBoxLayout(container)
+            lay.setContentsMargins(2, 0, 2, 0)
+            lay.setSpacing(2)
+            le = QLineEdit(current_text)
+            le.setPlaceholderText("class1, class2")
+            lay.addWidget(le)
+            btn = QPushButton("...")
+            btn.setFixedWidth(26)
+            btn.setToolTip("Pick classes")
+            btn.clicked.connect(lambda: _open_class_picker(le, column_title))
+            lay.addWidget(btn)
+            return container, le
+
+        # row_line_edits[i] = (trigger_le, require_le)
+        row_line_edits = {}
+
+        def _populate():
+            row_line_edits.clear()
+            table.setRowCount(len(rules_data))
+            for i, rule in enumerate(rules_data):
+                enabled_cb = QCheckBox()
+                enabled_cb.setChecked(bool(rule.get('enabled', True)))
+                table.setCellWidget(i, 0, enabled_cb)
+                table.setItem(i, 1, QTableWidgetItem(str(rule.get('name', ''))))
+                t_widget, t_le = _make_class_cell(
+                    ', '.join(rule.get('trigger_classes', [])), "Trigger Classes"
+                )
+                r_widget, r_le = _make_class_cell(
+                    ', '.join(rule.get('require_classes', [])), "Require Classes"
+                )
+                table.setCellWidget(i, 2, t_widget)
+                table.setCellWidget(i, 3, r_widget)
+                row_line_edits[i] = (t_le, r_le)
+                del_btn = QPushButton("X")
+                del_btn.setFixedWidth(30)
+                del_btn.clicked.connect(lambda checked, idx=i: _delete_rule(idx))
+                table.setCellWidget(i, 4, del_btn)
+
+        def _read_from_table():
+            result = []
+            for i in range(table.rowCount()):
+                enabled_cb = table.cellWidget(i, 0)
+                name_item = table.item(i, 1)
+                t_le, r_le = row_line_edits.get(i, (None, None))
+                result.append({
+                    'enabled': bool(enabled_cb.isChecked()) if enabled_cb else True,
+                    'name': str(name_item.text()).strip() if name_item else '',
+                    'trigger_classes': [
+                        c.strip() for c in (t_le.text() if t_le else '').split(',') if c.strip()
+                    ],
+                    'require_classes': [
+                        c.strip() for c in (r_le.text() if r_le else '').split(',') if c.strip()
+                    ],
+                })
+            return result
+
+        def _add_rule():
+            rules_data.clear()
+            rules_data.extend(_read_from_table())
+            # Pre-populate trigger classes with model-specific defaults
+            _cat = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)).strip().lower()
+            default_triggers = [c for c in available_classes if 'no_' in c] or (['no_helmet'] if available_classes else [])
+            rules_data.append({
+                'name': f'{_cat.upper()} Rule',
+                'enabled': True,
+                'trigger_classes': default_triggers[:2],
+                'require_classes': [],
+            })
+            _populate()
+
+        def _delete_rule(idx):
+            rules_data.clear()
+            rules_data.extend(_read_from_table())
+            if 0 <= idx < len(rules_data):
+                rules_data.pop(idx)
+            _populate()
+
+        _populate()
+
+        add_btn = QPushButton("+ Add Rule")
+        add_btn.clicked.connect(_add_rule)
+        layout.addWidget(add_btn)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        def _save():
+            final_rules = _read_from_table()
+            self._conditional_alarm_rules = final_rules
+            self.config['conditional_alarm_rules'] = final_rules
+            self._sync_ppe_box_filter_from_watch_config()
+            StreamConfig.save_config(self.config)
+            self._refresh_incident_cards()
+            dialog.accept()
+        btn_box.accepted.connect(_save)
+        btn_box.rejected.connect(dialog.reject)
+        layout.addWidget(btn_box)
+
+        dialog.exec()
+
     def show_analytics_banner_settings(self):
         """Configure analytics selection and fusion banner card behavior."""
+        if not self._require_superadmin("Analytics & Banner Cards"):
+            return
         dialog = QDialog(self)
         dialog.setWindowTitle("Analytics & Fusion Banner")
         dialog.setMinimumSize(720, 560)
@@ -6151,6 +7432,219 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         root_layout.addWidget(buttons)
         dialog.exec()
 
+    def show_tab_access_settings(self):
+        """Superadmin UI for role-based tab initialization controls."""
+        if not self._require_superadmin("Tab Access Control"):
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Tab Access Control")
+        dialog.setMinimumSize(560, 360)
+        self._style_tactical_dialog(dialog)
+
+        layout = QVBoxLayout(dialog)
+
+        intro = QLabel(
+            "Control which tabs are initialized at startup and which role can access them. "
+            "If a tab is disabled or restricted, its UI and backend refresh path are not initialized."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+
+        incidents_enabled = QCheckBox("Enable INCIDENTS tab")
+        incidents_enabled.setChecked(bool(self.config.get('tab_incidents_enabled', True)))
+
+        incidents_role = QComboBox()
+        incidents_role.addItem("User (all logged-in users)", "user")
+        incidents_role.addItem("Superadmin only", "superadmin")
+        incidents_role_key = str(self.config.get('tab_incidents_min_role', 'user')).strip().lower()
+        incidents_role.setCurrentIndex(1 if incidents_role_key in ('superadmin', 'sa', 'root') else 0)
+
+        live_pfds_enabled = QCheckBox("Enable LIVE PFDS tab")
+        live_pfds_enabled.setChecked(bool(self.config.get('tab_live_pfds_enabled', True)))
+
+        live_pfds_role = QComboBox()
+        live_pfds_role.addItem("User (all logged-in users)", "user")
+        live_pfds_role.addItem("Superadmin only", "superadmin")
+        live_pfds_role_key = str(self.config.get('tab_live_pfds_min_role', 'user')).strip().lower()
+        live_pfds_role.setCurrentIndex(1 if live_pfds_role_key in ('superadmin', 'sa', 'root') else 0)
+
+        form.addRow("Incidents", incidents_enabled)
+        form.addRow("Incidents Minimum Role", incidents_role)
+        form.addRow("Live PFDS", live_pfds_enabled)
+        form.addRow("Live PFDS Minimum Role", live_pfds_role)
+        layout.addLayout(form)
+
+        note = QLabel("Changes apply immediately to configuration. Restart the app to fully reinitialize tab wiring.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+
+        def _save():
+            self.config['tab_incidents_enabled'] = bool(incidents_enabled.isChecked())
+            self.config['tab_incidents_min_role'] = str(incidents_role.currentData() or 'user').strip().lower()
+            self.config['tab_live_pfds_enabled'] = bool(live_pfds_enabled.isChecked())
+            self.config['tab_live_pfds_min_role'] = str(live_pfds_role.currentData() or 'user').strip().lower()
+            StreamConfig.save_config(self.config)
+            self.statusBar().showMessage("Tab access settings saved. Restart app to apply tab initialization changes.", 5000)
+            dialog.accept()
+
+        buttons.accepted.connect(_save)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def show_inference_tuning_settings(self):
+        """Superadmin UI to tune YOLO batch/latency/resolution for deployment scale."""
+        if not self._require_superadmin("Inference Performance Tuning"):
+            return
+
+        current = self._get_inference_tuning_config()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Inference Performance Tuning")
+        dialog.setMinimumSize(620, 420)
+        self._style_tactical_dialog(dialog)
+
+        layout = QVBoxLayout(dialog)
+        intro = QLabel(
+            "Tune CPU inference behavior for your deployment. "
+            "Auto mode computes batch size / wait / image size from camera count. "
+            "Manual mode lets superadmin set exact values."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        mode_combo = QComboBox()
+        mode_combo.addItem("Auto tune from camera count", "auto")
+        mode_combo.addItem("Manual tuning", "manual")
+        mode_combo.setCurrentIndex(0 if current['mode'] == 'auto' else 1)
+
+        cam_count_spin = QSpinBox()
+        cam_count_spin.setRange(1, 128)
+        cam_count_spin.setValue(int(current['camera_count']))
+
+        auto_preview = QLabel("")
+        auto_preview.setWordWrap(True)
+
+        manual_batch_size = QSpinBox()
+        manual_batch_size.setRange(1, 32)
+        manual_batch_size.setValue(int(current['manual_batch_size']))
+
+        manual_wait_ms = QSpinBox()
+        manual_wait_ms.setRange(0, 200)
+        manual_wait_ms.setValue(int(current['manual_batch_wait_ms']))
+
+        manual_imgsz = QSpinBox()
+        manual_imgsz.setRange(160, 1280)
+        manual_imgsz.setSingleStep(32)
+        manual_imgsz.setValue(int(current['manual_infer_imgsz']))
+
+        # Preserve manual entries so toggling Auto -> Manual restores user intent.
+        manual_snapshot = {
+            'batch_size': int(manual_batch_size.value()),
+            'batch_wait_ms': int(manual_wait_ms.value()),
+            'infer_imgsz': int(manual_imgsz.value()),
+        }
+
+        def _capture_manual_snapshot():
+            if str(mode_combo.currentData() or 'auto') != 'manual':
+                return
+            manual_snapshot['batch_size'] = int(manual_batch_size.value())
+            manual_snapshot['batch_wait_ms'] = int(manual_wait_ms.value())
+            manual_snapshot['infer_imgsz'] = int(manual_imgsz.value())
+
+        manual_batch_size.valueChanged.connect(lambda _v: _capture_manual_snapshot())
+        manual_wait_ms.valueChanged.connect(lambda _v: _capture_manual_snapshot())
+        manual_imgsz.valueChanged.connect(lambda _v: _capture_manual_snapshot())
+
+        _auto_mode_last = {'value': None}
+
+        def _refresh_mode_state():
+            auto_mode = str(mode_combo.currentData() or 'auto') == 'auto'
+            auto_vals = self._auto_inference_tuning_for_camera_count(cam_count_spin.value())
+            auto_preview.setText(
+                f"Auto result: batch={auto_vals['batch_size']}, wait={auto_vals['batch_wait_ms']}ms, imgsz={auto_vals['infer_imgsz']}"
+            )
+
+            if auto_mode:
+                # In auto mode, show currently applied auto values directly in the manual fields
+                # (disabled) so operators can visually confirm what will be used.
+                manual_batch_size.blockSignals(True)
+                manual_wait_ms.blockSignals(True)
+                manual_imgsz.blockSignals(True)
+                manual_batch_size.setValue(int(auto_vals['batch_size']))
+                manual_wait_ms.setValue(int(auto_vals['batch_wait_ms']))
+                manual_imgsz.setValue(int(auto_vals['infer_imgsz']))
+                manual_batch_size.blockSignals(False)
+                manual_wait_ms.blockSignals(False)
+                manual_imgsz.blockSignals(False)
+            else:
+                # On transition back to manual, restore last manual snapshot.
+                if _auto_mode_last['value'] is True:
+                    manual_batch_size.blockSignals(True)
+                    manual_wait_ms.blockSignals(True)
+                    manual_imgsz.blockSignals(True)
+                    manual_batch_size.setValue(int(manual_snapshot['batch_size']))
+                    manual_wait_ms.setValue(int(manual_snapshot['batch_wait_ms']))
+                    manual_imgsz.setValue(int(manual_snapshot['infer_imgsz']))
+                    manual_batch_size.blockSignals(False)
+                    manual_wait_ms.blockSignals(False)
+                    manual_imgsz.blockSignals(False)
+
+            manual_batch_size.setEnabled(not auto_mode)
+            manual_wait_ms.setEnabled(not auto_mode)
+            manual_imgsz.setEnabled(not auto_mode)
+            _auto_mode_last['value'] = auto_mode
+
+        mode_combo.currentIndexChanged.connect(_refresh_mode_state)
+        cam_count_spin.valueChanged.connect(_refresh_mode_state)
+
+        form.addRow("Tuning Mode", mode_combo)
+        form.addRow("Planned Camera Count", cam_count_spin)
+        form.addRow("Auto Recommendation", auto_preview)
+        form.addRow("Manual Batch Size", manual_batch_size)
+        form.addRow("Manual Batch Wait (ms)", manual_wait_ms)
+        form.addRow("Manual YOLO Image Size", manual_imgsz)
+        layout.addLayout(form)
+        _refresh_mode_state()
+
+        note = QLabel(
+            "Values are saved to stream_config.json and applied to process env immediately. "
+            "For already-running workers, callbacks are rebound automatically; app restart is still recommended."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+
+        def _save():
+            self.config['perf_tuning_mode'] = str(mode_combo.currentData() or 'auto').strip().lower()
+            self.config['perf_tuning_camera_count'] = int(cam_count_spin.value())
+            self.config['perf_tuning_manual_batch_size'] = int(manual_batch_size.value())
+            self.config['perf_tuning_manual_batch_wait_ms'] = int(manual_wait_ms.value())
+            self.config['perf_tuning_manual_infer_imgsz'] = int(manual_imgsz.value())
+            StreamConfig.save_config(self.config)
+
+            applied = self._apply_inference_tuning_env_from_config()
+            self._rebind_detection_worker_callbacks()
+            self.statusBar().showMessage(
+                f"Inference tuning applied: batch={applied['batch_size']} wait={applied['batch_wait_ms']}ms imgsz={applied['infer_imgsz']}",
+                5000,
+            )
+            dialog.accept()
+
+        buttons.accepted.connect(_save)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
     def _restart_application(self):
         """Restart current application process."""
         try:
@@ -6251,6 +7745,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         os.environ['EMBEREYE_FORCE_YOLO_EVERY_N'] = str(self.force_yolo_every_n_frames)
         os.environ['EMBEREYE_BBOX_MODE'] = self.detection_box_mode
         os.environ['EMBEREYE_BBOX_CLASSES'] = ';'.join(self.detection_box_classes)
+        os.environ['EMBEREYE_POSSIBLE_CONF'] = str(self.possible_conf_threshold)
 
         # Update global detection worker if running
         try:
@@ -6277,7 +7772,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         # Update display settings for all video widgets
         for widget in self.video_widgets.values():
             widget.hot_cells_decay_time = settings['hot_cell_decay_time']
-            widget.freeze_on_alarm = settings['freeze_on_alarm']
+            # Keep live stream smooth during alarm transitions.
+            widget.freeze_on_alarm = False
             widget.show_fusion_overlay = settings['show_fusion_overlay']
 
         thermal_mode = str(settings.get('thermal_render_mode', self.config.get('thermal_render_mode', 'fixed_scale_inferno')))
@@ -6340,6 +7836,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.config['flame_active_value'] = self.fusion_flame_active_value
         self.config['min_sources'] = self.fusion_min_sources
         self.config['critical_temp_threshold'] = self.fusion_critical_temp_threshold
+        self.config['freeze_on_alarm'] = False
         self.config['anomaly_threshold'] = self.anomaly_threshold
         self.config['anomaly_max_items'] = self._anomaly_max_items
         self.config['anomaly_save_enabled'] = self.anomaly_save_enabled
@@ -6365,6 +7862,12 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         self.config['thermal_target_room'] = thermal_target_pfds
         profile_value = settings.get('detection_default_profile', self.config.get('detection_default_profile', {}))
         self.config['detection_default_profile'] = profile_value if isinstance(profile_value, dict) else {}
+        # Re-enforce PPE class filter BEFORE saving — apply_sensor_config reads
+        # detection_box_mode from the settings dict (which may contain 'all' from
+        # the file on disk) and pushes that to all workers.  Calling sync here
+        # ensures workers end up with 'specific' + the correct class set when in
+        # PPE category, regardless of what was in the saved JSON.
+        self._sync_ppe_box_filter_from_watch_config()
         try:
             StreamConfig.save_config(self.config)
         except Exception as e:
@@ -9374,6 +10877,15 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def toggle_all_numeric_grids(self, enabled):
         """Enable or disable numbers-only thermal grid view on all video streams."""
+        if not self._is_superadmin():
+            try:
+                if hasattr(self, 'global_grid_action') and self.global_grid_action is not None:
+                    self.global_grid_action.blockSignals(True)
+                    self.global_grid_action.setChecked(False)
+                    self.global_grid_action.blockSignals(False)
+            except Exception:
+                pass
+            return
         for widget in self.get_video_widgets():
             try:
                 if hasattr(widget, 'set_display_mode'):
@@ -9392,6 +10904,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 break
 
     def backup_config(self):
+        if not self._require_superadmin("Configuration backup"):
+            return
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Backup",
@@ -9405,6 +10919,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 QMessageBox.critical(self, "Error", "Failed to create backup")
     
     def restore_config(self):
+        if not self._require_superadmin("Configuration restore"):
+            return
         reply = QMessageBox.question(
             self,
             "Confirm Restore",
@@ -9811,6 +11327,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def show_observability_settings(self):
         """Edit observability settings separately from stream configuration."""
+        if not self._require_superadmin("Observability settings"):
+            return
         dialog = QDialog(self)
         dialog.setWindowTitle("Observability Settings")
         dialog.setMinimumWidth(420)
@@ -10670,6 +12188,20 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         self._cleanup_done = True
         
+        # Release per-location tracking dicts to free memory
+        for attr in (
+            '_alarm_state_by_loc_id', '_alarm_ack_by_loc_id',
+            '_alarm_on_sent_by_loc_id', '_alarm_on_retry_ts_by_loc_id',
+            '_alarm_ack_cooldown_ts_by_loc_id', '_vision_fusion_last_ts_by_loc',
+            '_fusion_by_loc_id', '_fusion_ts_by_loc_id',
+            '_sensor_last_packet_ts_by_loc_id', '_last_thermal_matrix_by_loc_id',
+            '_ppe_stats_by_loc_id', '_active_incident_sessions',
+            '_incident_rows_by_token',
+        ):
+            d = getattr(self, attr, None)
+            if isinstance(d, dict):
+                d.clear()
+
         print("Resource cleanup complete")
     
     def __del__(self):
@@ -10713,6 +12245,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 item = self.rtsp_grid.takeAt(0)
                 widget = item.widget()
                 if widget:
+                    # Clean up per-location tracking state for this widget
+                    loc_id = getattr(widget, 'loc_id', None)
+                    if loc_id is not None:
+                        self._cleanup_loc_state(str(loc_id))
                     # Non-blocking stop (already optimized in video_widget.py)
                     if hasattr(widget, 'stop'):
                         try:
@@ -11526,6 +13062,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
     def reset_streams(self):
         """Clear all configured streams and reset to default group layout."""
+        if not self._require_superadmin("Reset Streams"):
+            return
         reply = QMessageBox.question(
             self,
             "Reset Streams",
@@ -11538,7 +13076,6 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         default_config = {k: v for k, v in self.config.items() if k not in ("groups", "streams")}
         default_config["groups"] = ["Default"]
         default_config["streams"] = []
-        default_config.setdefault("tcp_port", 9000)
         if StreamConfig.save_config(default_config):
             self.config = default_config
             self.active_analytics_category = self._normalize_analytics_category(self.config.get('active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
@@ -11559,8 +13096,10 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         profile_dialog.setFixedSize(300, 200)
         self._style_tactical_dialog(profile_dialog)
         layout = QVBoxLayout()
-        layout.addWidget(QLabel("Username: admin"))
-        layout.addWidget(QLabel("Email: admin@example.com"))
+        current_user = str(getattr(self, 'session_username', 'operator') or 'operator')
+        current_role = str(getattr(self, 'session_role', 'user') or 'user').upper()
+        layout.addWidget(QLabel(f"Username: {current_user}"))
+        layout.addWidget(QLabel(f"Role: {current_role}"))
         close_btn = QPushButton("Close", clicked=profile_dialog.close)
         layout.addWidget(close_btn)
         profile_dialog.setLayout(layout)
@@ -11612,9 +13151,24 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if hasattr(self, 'tcp_server') and self.tcp_server:
                     try:
                         print("Stopping TCP sensor server...")
-                        self.tcp_server.stop()
+                        import inspect, asyncio
+                        stop_result = self.tcp_server.stop()
+                        if inspect.isawaitable(stop_result) and self._async_loop is not None:
+                            fut = asyncio.run_coroutine_threadsafe(stop_result, self._async_loop)
+                            fut.result(timeout=5)
                     except Exception as e:
                         print(f"TCP server stop error: {e}")
+                    finally:
+                        self.tcp_server = None
+                        self.tcp_sensor_server = None
+
+                # Shut down the async event loop so the port is fully released
+                if getattr(self, '_async_loop', None) is not None:
+                    try:
+                        self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                        self._async_loop = None
+                    except Exception as e:
+                        print(f"Async loop stop error: {e}")
                 
                 # Stop baseline manager sensor server if it exists
                 if hasattr(self.parent(), 'server') and getattr(self.parent(), 'server'):

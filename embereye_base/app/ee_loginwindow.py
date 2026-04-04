@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QLabel,
-    QWizard,
     QCheckBox,
     QGraphicsDropShadowEffect,
 )
@@ -28,7 +27,6 @@ from ..core.database_manager import DatabaseManager
 from ..utils.theme_manager import ThemeManager
 # from license_dialog import LicenseKeyDialog
 # from user_creation import UserCreationDialog
-from .setup_wizard import SetupWizard
 from .password_reset import PasswordResetDialog
 
 
@@ -423,28 +421,17 @@ class EELoginWindow(QWidget):
             self.db.reset_user(username)
             self._set_status('Login successful', is_error=False)
 
-            # Handle admin flow
-            if username == 'admin':
-                # license_dialog = LicenseKeyDialog(self.db)
-                # if license_dialog.exec() != QDialog.DialogCode.Accepted:
-                #     return
-
-                # user_creation_dialog = UserCreationDialog(self.db)
-                # if user_creation_dialog.exec() == QDialog.DialogCode.Accepted:
-                #     QMessageBox.information(self, 'Success', 
-                #                         'User created successfully! New user can now login.')
-                wizard = SetupWizard(self.db)
-                if wizard.exec() == QWizard.Accepted:
-                    wizard.currentPage().create_user()
-                    QMessageBox.information(self, 'Success', 
-                                        'User created successfully!')
-                return
+            user_role = self.db.get_user_role(username_db)
 
             # Regular user flow - Modern theme is default
             self.theme_manager.set_theme(ThemeManager.MODERN)
             
             self.start_sensor_server()
-            self.dashboard = BEMainWindow(theme_manager=self.theme_manager)
+            self.dashboard = BEMainWindow(
+                theme_manager=self.theme_manager,
+                session_username=username_db,
+                session_role=user_role,
+            )
             self.success.emit(self.dashboard)
             self.hide()
 

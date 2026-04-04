@@ -95,7 +95,7 @@ class SensorConfigDialog(QDialog):
             
             # Display settings
             'hot_cell_decay_time': 5.0,  # Seconds to keep hot cells visible
-            'freeze_on_alarm': True,
+            'freeze_on_alarm': False,
             'show_fusion_overlay': True,
             
             # Vision detection

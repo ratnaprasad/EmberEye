@@ -412,7 +412,11 @@ class TrainingTab(QWidget):
             return
         
         from qc_review_dialog import QCReviewDialog
-        dialog = QCReviewDialog(annotations_dir, parent=self.parent_window)
+        dialog = QCReviewDialog(
+            annotations_dir,
+            active_analytics_category=self._load_active_analytics_category(),
+            parent=self.parent_window,
+        )
         result = dialog.exec()
         
         if result == QDialog.DialogCode.Accepted:
@@ -792,20 +796,42 @@ class TrainingTab(QWidget):
     def _get_files_grouped_by_class(self, annotations_dir: str) -> dict:
         """Group annotation files by detected classes."""
         try:
-            from embereye.core.class_config import load_master_classes
+            from embereye.core.class_config import get_leaf_classes_for_category, load_master_classes
             
             files_by_class = {}
-            flat_classes = []
-            
             classes_dict = load_master_classes()
-            for category in classes_dict.get("IncidentEnvironment", []):
-                for leaf_class in classes_dict.get(category, []):
-                    flat_classes.append(leaf_class)
+            active_category = self._load_active_analytics_category()
+            active_classes = get_leaf_classes_for_category(active_category, classes_dict)
+            active_classes = list(active_classes or [])
             
             if not os.path.exists(annotations_dir):
                 return files_by_class
             
             for root, dirs, files in os.walk(annotations_dir):
+                labels_path = os.path.join(root, 'labels.txt')
+                local_classes = []
+                id_map = {}
+                if os.path.exists(labels_path):
+                    try:
+                        with open(labels_path, 'r', encoding='utf-8') as handle:
+                            local_classes = [line.strip() for line in handle if line.strip()]
+                    except Exception:
+                        local_classes = []
+                else:
+                    id_map_path = os.path.join(root, '_id_map.json')
+                    if not os.path.exists(id_map_path):
+                        parent_id_map = os.path.join(os.path.dirname(root), '_id_map.json')
+                        id_map_path = parent_id_map if os.path.exists(parent_id_map) else id_map_path
+                    if os.path.exists(id_map_path):
+                        try:
+                            # Some legacy exports wrote UTF-8 BOM; utf-8-sig handles both.
+                            with open(id_map_path, 'r', encoding='utf-8-sig') as handle:
+                                raw_map = json.load(handle) or {}
+                            id_map = {int(k): str(v) for k, v in raw_map.items()}
+                        except Exception:
+                            id_map = {}
+                class_space = local_classes or active_classes
+
                 for fname in files:
                     if fname.endswith('.txt') and fname != 'labels.txt':
                         file_path = os.path.join(root, fname)
@@ -815,7 +841,10 @@ class TrainingTab(QWidget):
                                     parts = line.strip().split()
                                     if len(parts) >= 5:
                                         class_id = int(parts[0])
-                                        class_name = flat_classes[class_id] if class_id < len(flat_classes) else f"class_{class_id}"
+                                        if id_map:
+                                            class_name = id_map.get(class_id, f"class_{class_id}")
+                                        else:
+                                            class_name = class_space[class_id] if class_id < len(class_space) else f"class_{class_id}"
                                         if class_name not in files_by_class:
                                             files_by_class[class_name] = []
                                         if file_path not in files_by_class[class_name]:
@@ -826,6 +855,19 @@ class TrainingTab(QWidget):
             return files_by_class
         except Exception:
             return {}
+
+    def _load_active_analytics_category(self) -> str:
+        """Read active analytics category from shared stream_config.json."""
+        stream_cfg_path = Path(__file__).resolve().parent.parent / "stream_config.json"
+        try:
+            with stream_cfg_path.open("r", encoding="utf-8") as fh:
+                stream_cfg = json.load(fh) or {}
+            category = str(stream_cfg.get("active_analytics_category", DEFAULT_ANALYTICS_CATEGORY) or DEFAULT_ANALYTICS_CATEGORY).strip().lower()
+        except Exception:
+            category = DEFAULT_ANALYTICS_CATEGORY
+        if category not in ANALYTICS_CATEGORY_NAMES:
+            category = DEFAULT_ANALYTICS_CATEGORY
+        return category
 
     def _on_training_progress(self, progress: TrainingProgress):
         """Update progress during training."""

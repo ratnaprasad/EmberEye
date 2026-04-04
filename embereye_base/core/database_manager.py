@@ -1,7 +1,11 @@
 import sqlite3
 import bcrypt
+import os
 from datetime import datetime
 from embereye_base.utils.resource_helper import get_writable_path, copy_bundled_resource
+
+DEFAULT_SUPERADMIN_USERNAME = "superadmin"
+DEFAULT_SUPERADMIN_PASSWORD = "EmberEye#SA-2026-Strong!"
 
 class DatabaseManager:
     def __init__(self, db_path=None):
@@ -20,6 +24,7 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
                 first_name TEXT,
                 last_name TEXT,
                 dob TEXT,
@@ -33,6 +38,11 @@ class DatabaseManager:
                 locked INTEGER DEFAULT 0
             )
         ''')
+        # Backward-compatible migration for existing databases that predate role support.
+        cursor.execute("PRAGMA table_info(users)")
+        user_cols = {str(row[1]).strip().lower() for row in cursor.fetchall()}
+        if 'role' not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
         # License table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS license (
@@ -44,32 +54,40 @@ class DatabaseManager:
 
     def create_default_admin(self):
         cursor = self.conn.cursor()
-        
-        # Create default admin user
-        if not self.get_user('admin'):
-            password_hash = bcrypt.hashpw(b"password", bcrypt.gensalt()).decode('utf-8')
+
+        superadmin_username = str(os.getenv('EMBEREYE_SUPERADMIN_USERNAME', DEFAULT_SUPERADMIN_USERNAME) or '').strip()
+        if not superadmin_username:
+            superadmin_username = DEFAULT_SUPERADMIN_USERNAME
+        superadmin_password = str(os.getenv('EMBEREYE_SUPERADMIN_PASSWORD', DEFAULT_SUPERADMIN_PASSWORD) or '')
+        if len(superadmin_password) < 12:
+            superadmin_password = DEFAULT_SUPERADMIN_PASSWORD
+
+        if not self.get_user(superadmin_username):
+            password_hash = bcrypt.hashpw(superadmin_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
             cursor.execute('''
-                INSERT INTO users (username, password_hash)
-                VALUES (?, ?)
-            ''', ('admin', password_hash))
+                INSERT INTO users (username, password_hash, role, first_name, last_name)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (superadmin_username, password_hash, 'superadmin', 'Super', 'Admin'))
+            self.conn.commit()
+        else:
+            cursor.execute('''
+                UPDATE users
+                SET role = 'superadmin', locked = 0
+                WHERE username = ?
+            ''', (superadmin_username,))
             self.conn.commit()
         
-        # Create ratna user
-        if not self.get_user('ratna'):
-            password_hash = bcrypt.hashpw(b"ratna", bcrypt.gensalt()).decode('utf-8')
-            cursor.execute('''
-                INSERT INTO users (username, password_hash, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-            ''', ('ratna', password_hash, 'Ratna', 'User'))
-            self.conn.commit()
+        # Retire legacy bootstrap users.
+        cursor.execute("DELETE FROM users WHERE username IN (?, ?)", ('admin', 'ratna'))
+        self.conn.commit()
         
         # Create s3micro user
         if not self.get_user('s3micro'):
             password_hash = bcrypt.hashpw(b"s3micro", bcrypt.gensalt()).decode('utf-8')
             cursor.execute('''
-                INSERT INTO users (username, password_hash, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-            ''', ('s3micro', password_hash, 'S3Micro', 'User'))
+                INSERT INTO users (username, password_hash, role, first_name, last_name)
+                VALUES (?, ?, ?, ?, ?)
+            ''', ('s3micro', password_hash, 'user', 'S3Micro', 'User'))
             self.conn.commit()
 
     def get_user(self, username):
@@ -83,6 +101,15 @@ class DatabaseManager:
             FROM users WHERE username = ?
         ''', (username,))
         return cursor.fetchone()
+
+    def get_user_role(self, username):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT role FROM users WHERE username = ?', (username,))
+        row = cursor.fetchone()
+        if not row:
+            return 'user'
+        role = str(row[0] or 'user').strip().lower()
+        return 'superadmin' if role in ('superadmin', 'sa', 'root') else 'user'
 
     def increment_failed_attempt(self, username):
         cursor = self.conn.cursor()
@@ -118,12 +145,20 @@ class DatabaseManager:
         try:
             password_hash = bcrypt.hashpw(user_data['password'].encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
             cursor.execute('''
-                INSERT INTO users VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0
+                INSERT INTO users (
+                    username, password_hash, role,
+                    first_name, last_name, dob,
+                    secret_question1, secret_answer1,
+                    secret_question2, secret_answer2,
+                    secret_question3, secret_answer3,
+                    failed_attempts, locked
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0
                 )
             ''', (
                 user_data['username'],
                 password_hash,
+                'user',
                 user_data['first_name'],
                 user_data['last_name'],
                 user_data['dob'],
