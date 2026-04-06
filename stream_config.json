@@ -75,12 +75,15 @@
     "conditional_alarm_rules": [
         {
             "enabled": true,
-            "name": "PPE Rule",
+            "name": "No Helmet only when Vehicle present",
+            "trigger_match": "any",
             "trigger_classes": [
                 "no_helmet"
             ],
             "require_person": true,
-            "require_classes": []
+            "require_classes": [
+                "vehicle"
+            ]
         }
     ],
     "freeze_on_alarm": false,

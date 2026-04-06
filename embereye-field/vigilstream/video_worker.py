@@ -28,6 +28,24 @@ import math
 from embereye_base.core.detection_queue import get_detection_queue, FrameMetadata
 from embereye_base.core.detection_worker import get_detection_worker, stop_detection_worker
 
+
+def _normalize_detection_class_name(name):
+    return str(name or '').strip().lower().replace(' ', '_').replace('-', '_')
+
+
+def _canonicalize_ppe_class_name(name):
+    normalized = _normalize_detection_class_name(name)
+    return {
+        'hardhat': 'helmet',
+        'safety_helmet': 'helmet',
+        'without_helmet': 'no_helmet',
+        'head_no_helmet': 'head',
+        'safety_vest': 'vest',
+        'high_visibility_vest': 'vest',
+        'without_vest': 'no_vest',
+        'worker': 'person',
+    }.get(normalized, normalized)
+
 class VideoWorker(QObject):
     frame_ready = pyqtSignal(QPixmap)
     error_occurred = pyqtSignal(str)
@@ -213,7 +231,7 @@ class VideoWorker(QObject):
         for det in detections:
             if not isinstance(det, dict):
                 continue
-            cls = str(det.get("class", "") or "").strip().lower().replace(" ", "_").replace("-", "_")
+            cls = _canonicalize_ppe_class_name(det.get("class", ""))
             bbox = det.get("bbox")
             if cls not in ppe_classes or not bbox or len(bbox) != 4:
                 filtered.append(det)
@@ -387,7 +405,7 @@ class VideoWorker(QObject):
             person_bboxes = []
             for det in detections:
                 try:
-                    cls_name = str(det.get('class', 'UNKNOWN')).strip().lower().replace(' ', '_').replace('-', '_')
+                    cls_name = _canonicalize_ppe_class_name(det.get('class', 'UNKNOWN'))
                     conf = float(det.get('confidence', 0.0))
                     bbox = det.get('bbox')
                     if cls_name == 'person' and conf >= min(0.4, min_conf) and bbox and len(bbox) == 4:
@@ -431,7 +449,7 @@ class VideoWorker(QObject):
                 if conf < min_conf:
                     continue
 
-                class_key = str(class_name).strip().lower().replace(' ', '_').replace('-', '_')
+                class_key = _canonicalize_ppe_class_name(class_name)
                 if class_key in ppe_classes:
                     if not person_bboxes:
                         continue

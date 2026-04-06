@@ -21,17 +21,16 @@ if getattr(sys, "frozen", False) and sys.platform == "win32":
 _DLL_DIR_HANDLES = []
 
 # --------------------------------------------------------------------------
-# Early CUDA probe for frozen (PyInstaller) builds on Windows.
-# If the NVIDIA driver DLL isn't loadable, set CPU-only flags BEFORE
-# importing torch, so it never attempts to initialise CUDA backends
-# (which would trigger OSError 1114 from broken bundled CUDA DLLs).
+# Early runtime setup for frozen (PyInstaller) builds on Windows.
+# The packaged app runs inference in CPU mode, but the installed torch wheel
+# still depends on its bundled CUDA-adjacent DLL set at import time. Do not
+# quarantine those DLLs unless explicitly requested for debugging.
 # --------------------------------------------------------------------------
 if getattr(sys, "frozen", False) and sys.platform == "win32":
     os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
-    # Field executable is now explicitly CPU-only.
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     os.environ["EMBEREYE_FORCE_CPU"] = "1"
-    os.environ["EMBEREYE_QUARANTINE_CUDA_DLLS"] = "1"
+    os.environ.setdefault("EMBEREYE_QUARANTINE_CUDA_DLLS", "0")
 
 
 def _append_bootstrap_log(message: str) -> None:
@@ -105,16 +104,15 @@ def _restore_quarantined_torch_dlls() -> None:
 
 
 def _disable_bundled_cuda_runtime() -> None:
-    # Disable CUDA DLLs if we're in frozen mode AND either:
-    # 1. Forced to CPU mode (EMBEREYE_FORCE_CPU == "1")
-    # 2. Explicitly requested via EMBEREYE_QUARANTINE_CUDA_DLLS
+    # Optional debugging hook: quarantine CUDA DLLs only when explicitly
+    # requested. The packaged torch wheel still imports several of these DLLs
+    # even in CPU mode, so this must stay opt-in.
     if not (getattr(sys, "frozen", False) and sys.platform == "win32"):
         return
 
-    force_cpu = os.environ.get("EMBEREYE_FORCE_CPU") == "1"
     explicit_quarantine = os.environ.get("EMBEREYE_QUARANTINE_CUDA_DLLS", "").strip().lower() in ("1", "true", "yes")
-    
-    if not (force_cpu or explicit_quarantine):
+
+    if not explicit_quarantine:
         return
 
     _append_bootstrap_log("[BOOTSTRAP] Starting CUDA DLL quarantine...")
@@ -288,10 +286,14 @@ except Exception as e:
 # Preload torch before Qt to avoid DLL conflicts and set device fallback info
 device_label = "CPU"
 try:
-    _check_windows_runtime_dependencies()
-    _append_bootstrap_log("[BOOTSTRAP] Attempting import torch...")
-    import torch  # noqa: F401
-    _append_bootstrap_log("[BOOTSTRAP] torch imported OK")
+    torch_preloaded = os.environ.get("EMBEREYE_TORCH_PRELOADED") == "1"
+    if torch_preloaded:
+        _append_bootstrap_log("[BOOTSTRAP] torch already preloaded by runtime hook")
+    else:
+        _check_windows_runtime_dependencies()
+        _append_bootstrap_log("[BOOTSTRAP] Attempting import torch...")
+        import torch  # noqa: F401
+        _append_bootstrap_log("[BOOTSTRAP] torch imported OK")
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     os.environ["EMBEREYE_FORCE_CPU"] = "1"
     device_label = "CPU (forced)"

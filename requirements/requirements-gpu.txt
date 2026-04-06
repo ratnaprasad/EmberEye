@@ -2,10 +2,11 @@
 # Install this for systems with NVIDIA GPU
 
 # Install PyTorch with CUDA support FIRST (before ultralytics)
---index-url https://download.pytorch.org/whl/cu124
-torch>=2.0.0
-torchvision>=0.15.0
-torchaudio>=2.0.0
+# Pinned for RTX 50-series compatibility (sm_120) on Python 3.12.
+--index-url https://download.pytorch.org/whl/cu130
+torch==2.11.0+cu130
+torchvision==0.26.0+cu130
+torchaudio==2.11.0+cu130
 
 # Then install other requirements
 PyQt6

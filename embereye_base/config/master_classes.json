@@ -16,7 +16,10 @@
     "CLASS B",
     "CLASS C",
     "CLASS D",
-    "CLASS K"
+    "CLASS K",
+    "smoke",
+    "flame",
+    "spark"
   ],
   "SMOKE_CATEGORY": [
     "WHITE SMOKE",
@@ -76,6 +79,7 @@
     "SAFETY_VEST",
     "NO_VEST",
     "HEAD_NO_HELMET",
-    "PERSON"
+    "PERSON",
+    "VEHICLE"
   ]
 }

@@ -66,7 +66,26 @@ def _apply_manual_card_selection(fusion, category, computed_keys, allowed_keys):
 def draw_fusion_overlay(widget, painter, width, height):
     """Render the fusion banner using the VideoWidget instance as context."""
     try:
-        fusion = widget.fusion_data if isinstance(widget.fusion_data, dict) else {}
+        fusion = dict(widget.fusion_data) if isinstance(widget.fusion_data, dict) else {}
+        # Keep card selection stable even when a tile has no fresh fusion payload.
+        # In that case, fall back to current window-level banner preferences.
+        try:
+            window = widget.window() if widget is not None else None
+            if window is not None:
+                if "fusion_banner_enabled" not in fusion and hasattr(window, "fusion_banner_enabled"):
+                    fusion["fusion_banner_enabled"] = bool(getattr(window, "fusion_banner_enabled", True))
+                if "fusion_banner_mode" not in fusion and hasattr(window, "fusion_banner_mode"):
+                    fusion["fusion_banner_mode"] = str(getattr(window, "fusion_banner_mode", "auto"))
+                if "fusion_banner_manual_cards" not in fusion and hasattr(window, "fusion_banner_manual_cards"):
+                    cards = getattr(window, "fusion_banner_manual_cards", {}) or {}
+                    if isinstance(cards, dict):
+                        fusion["fusion_banner_manual_cards"] = dict(cards)
+                if "enabled_analytics_categories" not in fusion and hasattr(window, "enabled_analytics_categories"):
+                    categories = list(getattr(window, "enabled_analytics_categories", []) or [])
+                    if categories:
+                        fusion["enabled_analytics_categories"] = categories
+        except Exception:
+            pass
         category = _resolve_display_category(widget, fusion)
         if not _is_banner_enabled_for_category(fusion, category):
             return

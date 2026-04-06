@@ -124,6 +124,24 @@ def _ppe_overlaps_person(ppe_bbox, person_bboxes, min_containment=0.3):
     return False
 
 
+def _normalize_detection_class_name(name):
+    return str(name or '').strip().lower().replace(' ', '_').replace('-', '_')
+
+
+def _canonicalize_ppe_class_name(name):
+    normalized = _normalize_detection_class_name(name)
+    return {
+        'hardhat': 'helmet',
+        'safety_helmet': 'helmet',
+        'without_helmet': 'no_helmet',
+        'head_no_helmet': 'head',
+        'safety_vest': 'vest',
+        'high_visibility_vest': 'vest',
+        'without_vest': 'no_vest',
+        'worker': 'person',
+    }.get(normalized, normalized)
+
+
 class WebSocketClient(QObject):
     data_received = pyqtSignal(dict)
 
@@ -602,7 +620,7 @@ class BEMainWindow(QMainWindow):
             if not isinstance(rule, dict) or not rule.get('enabled', True):
                 continue
             for c in (rule.get('trigger_classes') or []):
-                name = str(c).strip().lower().replace(' ', '_').replace('-', '_')
+                name = _canonicalize_ppe_class_name(c)
                 if name in base_violation:
                     trigger_violation.add(name)
 
@@ -723,7 +741,7 @@ class BEMainWindow(QMainWindow):
 
         # Check if at least one alarm-triggering detection belongs to an allowed class
         for d in detections:
-            cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+            cn = _canonicalize_ppe_class_name(d.get('class', ''))
             if cn in allowed_classes:
                 return True
         return False
@@ -751,15 +769,18 @@ class BEMainWindow(QMainWindow):
         **No active rules** (empty list or all disabled):
           - Returns True so the default card/fusion path handles alarm decisions.
 
-        Rule schema (stream_config.json ``conditional_alarm_rules``):
+                Rule schema (stream_config.json ``conditional_alarm_rules``):
             {
                 "name":            "No Helmet Alert",
                 "enabled":         true,
+                                "trigger_match":   "any",
                 "trigger_classes": ["no_helmet", "no_vest"],
                 "require_classes": ["person"]
             }
-        An alarm fires when ANY trigger_class is detected.  If require_classes is
-        non-empty, ALL listed classes must also be present for the rule to fire.
+                ``trigger_match`` controls how trigger classes are evaluated:
+                    - ``any``: any listed trigger class may fire the rule
+                    - ``all``: all listed trigger classes must be present
+                ``require_classes`` are always AND-matched when present.
         """
         rules = getattr(self, '_conditional_alarm_rules', None) or []
         enabled_rules = [
@@ -790,7 +811,7 @@ class BEMainWindow(QMainWindow):
             for d in detections:
                 if not isinstance(d, dict):
                     continue
-                cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                cn = _canonicalize_ppe_class_name(d.get('class', ''))
                 if cn != 'person':
                     continue
                 try:
@@ -803,7 +824,7 @@ class BEMainWindow(QMainWindow):
 
         detected_classes = set()
         for d in detections:
-            cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+            cn = _canonicalize_ppe_class_name(d.get('class', ''))
             if not cn:
                 continue
             try:
@@ -831,13 +852,16 @@ class BEMainWindow(QMainWindow):
 
         for rule in enabled_rules:
             trigger_classes = {
-                str(c).strip().lower().replace(' ', '_').replace('-', '_')
+                _canonicalize_ppe_class_name(c)
                 for c in (rule.get('trigger_classes') or [])
             }
             require_classes = {
-                str(c).strip().lower().replace(' ', '_').replace('-', '_')
+                _canonicalize_ppe_class_name(c)
                 for c in (rule.get('require_classes') or [])
             }
+            trigger_match = str(rule.get('trigger_match', 'any') or 'any').strip().lower()
+            if trigger_match not in {'any', 'all'}:
+                trigger_match = 'any'
             if bool(rule.get('require_person', False)):
                 require_classes = set(require_classes)
                 require_classes.add('person')
@@ -848,10 +872,32 @@ class BEMainWindow(QMainWindow):
             if category == 'ppe' and (trigger_classes & ppe_trigger_classes) and ('person' not in require_classes):
                 require_classes = set(require_classes)
                 require_classes.add('person')
-            if trigger_classes & detected_classes:
+            triggers_met = bool(trigger_classes & detected_classes)
+            if trigger_match == 'all':
+                triggers_met = bool(trigger_classes) and (trigger_classes <= detected_classes)
+            if triggers_met:
                 if not require_classes or (require_classes <= detected_classes):
                     return True  # rule fired
         return False  # no rule fired
+
+    def _get_active_model_detection_class_options(self):
+        """Return canonical class names from the active runtime model only."""
+        classes = set()
+        try:
+            detector = getattr(self, '_rule_engine', None)
+            if detector and getattr(detector, 'model_loaded', False):
+                model = getattr(detector, 'model', None)
+                if model is not None:
+                    model_names = getattr(model, 'names', None)
+                    if isinstance(model_names, dict):
+                        for v in model_names.values():
+                            classes.add(_canonicalize_ppe_class_name(v))
+                    elif isinstance(model_names, (list, tuple)):
+                        for v in model_names:
+                            classes.add(_canonicalize_ppe_class_name(v))
+        except Exception:
+            pass
+        return sorted(c for c in classes if c)
 
     def _get_detection_class_options(self):
         """Return a sorted list of detection class names available from the active model.
@@ -861,22 +907,7 @@ class BEMainWindow(QMainWindow):
           2. ``get_leaf_classes()`` from master_classes.json.
           3. Hard-coded PPE fallback.
         """
-        classes = set()
-        # 1. Rule-engine model (the per-category analytics model)
-        try:
-            detector = getattr(self, '_rule_engine', None)
-            if detector and getattr(detector, 'model_loaded', False):
-                model = getattr(detector, 'model', None)
-                if model is not None:
-                    model_names = getattr(model, 'names', None)
-                    if isinstance(model_names, dict):
-                        for v in model_names.values():
-                            classes.add(str(v).strip().lower().replace(' ', '_').replace('-', '_'))
-                    elif isinstance(model_names, (list, tuple)):
-                        for v in model_names:
-                            classes.add(str(v).strip().lower().replace(' ', '_').replace('-', '_'))
-        except Exception:
-            pass
+        classes = set(self._get_active_model_detection_class_options())
         # 2. Fall back to master_classes leaf classes
         if not classes:
             try:
@@ -1142,7 +1173,7 @@ class BEMainWindow(QMainWindow):
                             person_bboxes = []
                             ppe_items = []  # (class_name, detection)
                             for d in raw_dets:
-                                cn = str(d.get('class', '')).strip().lower().replace(' ', '_').replace('-', '_')
+                                cn = _canonicalize_ppe_class_name(d.get('class', ''))
                                 try:
                                     conf = float(d.get('confidence', 0.0) or 0.0)
                                 except Exception:
@@ -3082,6 +3113,20 @@ class BEMainWindow(QMainWindow):
                         if hasattr(widget, 'set_fusion_data'):
                             try:
                                 widget_fusion = dict(fusion_result or {})
+                                widget_fusion['analytics_category'] = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+                                widget_fusion['fusion_display_category'] = str(getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY))
+                                widget_fusion['enabled_analytics_categories'] = list(
+                                    getattr(
+                                        self,
+                                        'enabled_analytics_categories',
+                                        [getattr(self, 'active_analytics_category', DEFAULT_ANALYTICS_CATEGORY)],
+                                    )
+                                )
+                                widget_fusion['fusion_banner_enabled'] = bool(getattr(self, 'fusion_banner_enabled', True))
+                                widget_fusion['fusion_banner_mode'] = str(getattr(self, 'fusion_banner_mode', 'auto'))
+                                widget_fusion['fusion_banner_manual_cards'] = dict(
+                                    getattr(self, 'fusion_banner_manual_cards', self._default_fusion_card_selection())
+                                )
                                 widget_thermal = float(widget_fusion.get('thermal_max', 0.0) or 0.0)
                                 if widget_thermal <= 0.0:
                                     try:
@@ -7077,9 +7122,9 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         When rules are configured (any enabled), they exclusively drive alarm
         decisions, overriding the default card/fusion path.  An alarm fires when
-        a rule's Trigger Classes are detected (and optional Require Classes are
-        also present).  When no rules are enabled, the default card-based alarm
-        behaviour applies.
+        a rule's Trigger Classes are detected according to the selected trigger
+        match mode (and optional Require Classes are also present).  When no
+        rules are enabled, the default card-based alarm behaviour applies.
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("Alarm Trigger Rules")
@@ -7094,29 +7139,38 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             "sole alarm trigger — card defaults are bypassed.<br>"
             "<b>Default card mode</b>: when no rules are enabled, alarms fire based on "
             "the configured banner cards.<br><br>"
-            "A rule fires when <i>any</i> Trigger Class is detected. "
-            "Require Classes (optional) must <i>all</i> be present for the rule to fire."
+            "<b>Trigger Match</b> controls whether <i>any</i> or <i>all</i> Trigger Classes "
+            "must be present. Require Classes (optional) must <i>all</i> be present for the rule to fire."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
         # --- Available classes info ---
-        available_classes = self._get_detection_class_options()
-        avail_label = QLabel("Available classes: " + ", ".join(available_classes))
+        available_classes = self._get_active_model_detection_class_options()
+        available_classes_set = set(available_classes)
+        if available_classes:
+            avail_text = "Active model classes: " + ", ".join(available_classes)
+        else:
+            avail_text = (
+                "Active model classes unavailable. Load the target analytics model first; "
+                "rules cannot be edited safely without runtime model metadata."
+            )
+        avail_label = QLabel(avail_text)
         avail_label.setWordWrap(True)
         avail_label.setStyleSheet("color: #aaa; font-size: 11px;")
         layout.addWidget(avail_label)
 
         # --- Table of rules ---
         table = QTableWidget()
-        table.setColumnCount(5)
-        table.setHorizontalHeaderLabels(["Enable", "Name", "Trigger Classes", "Require Classes", ""])
+        table.setColumnCount(6)
+        table.setHorizontalHeaderLabels(["Enable", "Name", "Trigger Match", "Trigger Classes", "Require Classes", ""])
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(table)
 
         rules_data = list(getattr(self, '_conditional_alarm_rules', []) or [])
@@ -7125,6 +7179,13 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """Open a checkable class picker and write result back to line_edit."""
             current = {c.strip().lower().replace(' ', '_').replace('-', '_')
                        for c in line_edit.text().split(',') if c.strip()}
+            if not available_classes:
+                QMessageBox.warning(
+                    dialog,
+                    "Model Classes Unavailable",
+                    "The active model has not exposed its classes yet. Load the runtime model before editing rules."
+                )
+                return
             picker = QDialog(dialog)
             picker.setWindowTitle(title)
             picker.setMinimumSize(300, 400)
@@ -7159,55 +7220,75 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             lay.setContentsMargins(2, 0, 2, 0)
             lay.setSpacing(2)
             le = QLineEdit(current_text)
-            le.setPlaceholderText("class1, class2")
+            le.setReadOnly(True)
+            le.setPlaceholderText("Pick classes from active model")
             lay.addWidget(le)
             btn = QPushButton("...")
             btn.setFixedWidth(26)
             btn.setToolTip("Pick classes")
             btn.clicked.connect(lambda: _open_class_picker(le, column_title))
+            btn.setEnabled(bool(available_classes))
             lay.addWidget(btn)
             return container, le
 
-        # row_line_edits[i] = (trigger_le, require_le)
-        row_line_edits = {}
+        def _make_trigger_match_cell(current_value):
+            combo = QComboBox()
+            combo.addItem("ANY", "any")
+            combo.addItem("ALL", "all")
+            current = str(current_value or 'any').strip().lower()
+            idx = combo.findData(current if current in {'any', 'all'} else 'any')
+            combo.setCurrentIndex(max(0, idx))
+            return combo
+
+        def _parse_class_list(text):
+            values = []
+            seen = set()
+            for raw_value in str(text or '').split(','):
+                normalized = _canonicalize_ppe_class_name(raw_value)
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    values.append(normalized)
+            return values
+
+        # row_controls[i] = (trigger_match_combo, trigger_le, require_le)
+        row_controls = {}
 
         def _populate():
-            row_line_edits.clear()
+            row_controls.clear()
             table.setRowCount(len(rules_data))
             for i, rule in enumerate(rules_data):
                 enabled_cb = QCheckBox()
                 enabled_cb.setChecked(bool(rule.get('enabled', True)))
                 table.setCellWidget(i, 0, enabled_cb)
                 table.setItem(i, 1, QTableWidgetItem(str(rule.get('name', ''))))
+                trigger_match_combo = _make_trigger_match_cell(rule.get('trigger_match', 'any'))
+                table.setCellWidget(i, 2, trigger_match_combo)
                 t_widget, t_le = _make_class_cell(
                     ', '.join(rule.get('trigger_classes', [])), "Trigger Classes"
                 )
                 r_widget, r_le = _make_class_cell(
                     ', '.join(rule.get('require_classes', [])), "Require Classes"
                 )
-                table.setCellWidget(i, 2, t_widget)
-                table.setCellWidget(i, 3, r_widget)
-                row_line_edits[i] = (t_le, r_le)
+                table.setCellWidget(i, 3, t_widget)
+                table.setCellWidget(i, 4, r_widget)
+                row_controls[i] = (trigger_match_combo, t_le, r_le)
                 del_btn = QPushButton("X")
                 del_btn.setFixedWidth(30)
                 del_btn.clicked.connect(lambda checked, idx=i: _delete_rule(idx))
-                table.setCellWidget(i, 4, del_btn)
+                table.setCellWidget(i, 5, del_btn)
 
         def _read_from_table():
             result = []
             for i in range(table.rowCount()):
                 enabled_cb = table.cellWidget(i, 0)
                 name_item = table.item(i, 1)
-                t_le, r_le = row_line_edits.get(i, (None, None))
+                trigger_match_combo, t_le, r_le = row_controls.get(i, (None, None, None))
                 result.append({
                     'enabled': bool(enabled_cb.isChecked()) if enabled_cb else True,
                     'name': str(name_item.text()).strip() if name_item else '',
-                    'trigger_classes': [
-                        c.strip() for c in (t_le.text() if t_le else '').split(',') if c.strip()
-                    ],
-                    'require_classes': [
-                        c.strip() for c in (r_le.text() if r_le else '').split(',') if c.strip()
-                    ],
+                    'trigger_match': str(trigger_match_combo.currentData() or 'any') if trigger_match_combo else 'any',
+                    'trigger_classes': _parse_class_list(t_le.text() if t_le else ''),
+                    'require_classes': _parse_class_list(r_le.text() if r_le else ''),
                 })
             return result
 
@@ -7220,7 +7301,8 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             rules_data.append({
                 'name': f'{_cat.upper()} Rule',
                 'enabled': True,
-                'trigger_classes': default_triggers[:2],
+                'trigger_match': 'any',
+                'trigger_classes': default_triggers[:1],
                 'require_classes': [],
             })
             _populate()
@@ -7236,6 +7318,7 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         add_btn = QPushButton("+ Add Rule")
         add_btn.clicked.connect(_add_rule)
+        add_btn.setEnabled(bool(available_classes))
         layout.addWidget(add_btn)
 
         btn_box = QDialogButtonBox(
@@ -7243,6 +7326,25 @@ Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         )
         def _save():
             final_rules = _read_from_table()
+            if not available_classes:
+                QMessageBox.warning(
+                    dialog,
+                    "Model Classes Unavailable",
+                    "Rules can only be configured from classes exposed by the active runtime model."
+                )
+                return
+            for rule in final_rules:
+                invalid = [
+                    cls for cls in (rule.get('trigger_classes', []) + rule.get('require_classes', []))
+                    if cls not in available_classes_set
+                ]
+                if invalid:
+                    QMessageBox.warning(
+                        dialog,
+                        "Invalid Rule Classes",
+                        "These classes are not exposed by the active model: " + ", ".join(sorted(set(invalid)))
+                    )
+                    return
             self._conditional_alarm_rules = final_rules
             self.config['conditional_alarm_rules'] = final_rules
             self._sync_ppe_box_filter_from_watch_config()

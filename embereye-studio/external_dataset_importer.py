@@ -81,6 +81,11 @@ class ImportSummary:
 ResolverFn = Callable[[str, List[str], str], Tuple[str, Optional[str]]]
 
 
+def _sanitize_class_name(value: str) -> str:
+    """Normalize class names from external sources to avoid hidden duplicates."""
+    return str(value or "").lstrip("\ufeff").strip()
+
+
 def _timestamp_id(prefix: str) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in prefix).strip("_")
@@ -171,12 +176,12 @@ def _parse_yolo(root: Path) -> ParsedDataset:
 
     if data_yaml and yaml is not None:
         try:
-            y = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+            y = yaml.safe_load(data_yaml.read_text(encoding="utf-8-sig")) or {}
             names = y.get("names", {})
             if isinstance(names, list):
-                names_map = {i: str(v) for i, v in enumerate(names)}
+                names_map = {i: _sanitize_class_name(v) for i, v in enumerate(names)}
             elif isinstance(names, dict):
-                names_map = {int(k): str(v) for k, v in names.items()}
+                names_map = {int(k): _sanitize_class_name(v) for k, v in names.items()}
         except Exception:
             names_map = {}
 
@@ -189,13 +194,17 @@ def _parse_yolo(root: Path) -> ParsedDataset:
             continue
         anns: List[AnnotationNorm] = []
         try:
-            for line in lbl.read_text(encoding="utf-8").splitlines():
+            for line in lbl.read_text(encoding="utf-8-sig").splitlines():
                 parts = line.strip().split()
                 if len(parts) < 5:
                     continue
-                cid = int(float(parts[0]))
-                x, y, w, h = map(float, parts[1:5])
-                cname = names_map.get(cid, f"class_{cid}")
+                try:
+                    cid = int(float(parts[0].lstrip("\ufeff")))
+                    x, y, w, h = map(float, parts[1:5])
+                except Exception:
+                    # Skip malformed rows but keep processing the rest of this file.
+                    continue
+                cname = _sanitize_class_name(names_map.get(cid, f"class_{cid}"))
                 anns.append(AnnotationNorm(cname, x, y, w, h))
                 classes.add(cname)
         except Exception:
@@ -236,8 +245,8 @@ def _parse_coco(root: Path) -> ParsedDataset:
     if coco_json is None:
         raise ValueError("COCO annotations JSON not found")
 
-    data = json.loads(coco_json.read_text(encoding="utf-8"))
-    cat_map = {int(c["id"]): str(c["name"]) for c in data.get("categories", []) if "id" in c and "name" in c}
+    data = json.loads(coco_json.read_text(encoding="utf-8-sig"))
+    cat_map = {int(c["id"]): _sanitize_class_name(c["name"]) for c in data.get("categories", []) if "id" in c and "name" in c}
 
     image_by_id = {}
     for img in data.get("images", []):
@@ -288,7 +297,7 @@ def _parse_coco(root: Path) -> ParsedDataset:
         anns: List[AnnotationNorm] = []
         for ann in anns_by_image.get(iid, []):
             cid = int(ann.get("category_id", -1))
-            cname = cat_map.get(cid, f"class_{cid}")
+            cname = _sanitize_class_name(cat_map.get(cid, f"class_{cid}"))
             bbox = ann.get("bbox") or [0, 0, 0, 0]
             x, y, w, h = [float(v) for v in bbox[:4]]
             nx, ny, nw, nh = _normalize_bbox_abs(x, y, w, h, iw, ih)
@@ -333,7 +342,7 @@ def _parse_voc(root: Path) -> ParsedDataset:
 
             anns: List[AnnotationNorm] = []
             for obj in root_el.findall("object"):
-                cname = (obj.findtext("name") or "").strip()
+                cname = _sanitize_class_name(obj.findtext("name") or "")
                 box = obj.find("bndbox")
                 if not cname or box is None:
                     continue
@@ -426,13 +435,14 @@ def import_external_dataset(
         current_leaf = get_leaf_classes_for_category(active_domain, classes_dict)
         if not current_leaf:
             current_leaf = flatten_classes(classes_dict)
-        case_map = {c.lower(): c for c in current_leaf}
+        case_map = {_sanitize_class_name(c).lower(): _sanitize_class_name(c) for c in current_leaf}
         class_mapping: Dict[str, str] = {}
         created_classes: List[str] = []
         skipped_classes: List[str] = []
 
         # Resolve class names
         for ext_name in parsed.class_names:
+            ext_name = _sanitize_class_name(ext_name)
             hit = case_map.get(ext_name.lower())
             if hit:
                 class_mapping[ext_name] = hit
@@ -450,7 +460,7 @@ def import_external_dataset(
                 class_mapping[ext_name] = value
                 continue
 
-            new_name = (value or ext_name).strip()
+            new_name = _sanitize_class_name(value or ext_name)
             if new_name not in classes_dict[target_category]:
                 classes_dict[target_category].append(new_name)
                 created_classes.append(new_name)

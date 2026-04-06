@@ -64,7 +64,7 @@ if (-not $NvidiaSmi) {
 Write-Host ""
 Write-Host "This will:" -ForegroundColor Yellow
 Write-Host "  1. Uninstall CPU-only PyTorch" -ForegroundColor White
-Write-Host "  2. Install PyTorch with CUDA 12.4 support" -ForegroundColor White
+Write-Host "  2. Install PyTorch with CUDA 13.0 support" -ForegroundColor White
 Write-Host "  3. Keep all other packages intact" -ForegroundColor White
 Write-Host ""
 $Confirm = Read-Host "Proceed with installation? (y/N)"
@@ -85,11 +85,11 @@ if ($LASTEXITCODE -ne 0) {
 
 # Install PyTorch with CUDA
 Write-Host ""
-Write-Host "Installing PyTorch with CUDA 12.4 support..." -ForegroundColor Cyan
+Write-Host "Installing PyTorch with CUDA 13.0 support..." -ForegroundColor Cyan
 Write-Host "(This may take several minutes depending on your connection)" -ForegroundColor Yellow
 Write-Host ""
 
-& pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+& pip install torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130 --index-url https://download.pytorch.org/whl/cu130
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
@@ -117,6 +117,8 @@ Write-Host "CUDA available: $CudaAvailable" -ForegroundColor Green
 Write-Host "CUDA version: $CudaVersion" -ForegroundColor Green
 
 if ($CudaAvailable -eq "True") {
+    Remove-Item Env:EMBEREYE_FORCE_CPU -ErrorAction SilentlyContinue
+    Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
     $GpuName = & python -c "import torch; print(torch.cuda.get_device_name(0))" 2>&1
     $GpuCount = & python -c "import torch; print(torch.cuda.device_count())" 2>&1
     Write-Host "GPU detected: $GpuName" -ForegroundColor Green

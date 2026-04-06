@@ -814,7 +814,7 @@ class TrainingTab(QWidget):
                 if os.path.exists(labels_path):
                     try:
                         with open(labels_path, 'r', encoding='utf-8') as handle:
-                            local_classes = [line.strip() for line in handle if line.strip()]
+                            local_classes = [line.lstrip('\ufeff').strip() for line in handle if line.strip()]
                     except Exception:
                         local_classes = []
                 else:
@@ -845,6 +845,7 @@ class TrainingTab(QWidget):
                                             class_name = id_map.get(class_id, f"class_{class_id}")
                                         else:
                                             class_name = class_space[class_id] if class_id < len(class_space) else f"class_{class_id}"
+                                        class_name = str(class_name).lstrip('\ufeff').strip()
                                         if class_name not in files_by_class:
                                             files_by_class[class_name] = []
                                         if file_path not in files_by_class[class_name]:

@@ -80,8 +80,6 @@
     "NO_VEST",
     "HEAD_NO_HELMET",
     "PERSON",
-    "No helmet",
-    "No vest",
-    "vest"
+    "VEHICLE"
   ]
 }

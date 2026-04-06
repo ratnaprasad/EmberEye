@@ -387,6 +387,32 @@ function Install-Dependencies {
             return $false
         }
         
+        # Prefer CUDA-enabled PyTorch on NVIDIA systems so Studio/Field do not
+        # silently fall back to CPU-only torch from transitive dependencies.
+        $hasNvidia = $false
+        $nvidiaCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if ($nvidiaCmd) {
+            & nvidia-smi -L 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $hasNvidia = $true
+            }
+        }
+
+        if ($hasNvidia) {
+            Write-Host "NVIDIA GPU detected. Installing pinned CUDA PyTorch (cu130)..." -ForegroundColor Cyan
+            & python -m pip install --upgrade --force-reinstall torch==2.11.0+cu130 torchvision==0.26.0+cu130 torchaudio==2.11.0+cu130 --index-url https://download.pytorch.org/whl/cu130 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
+
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "CUDA PyTorch installation failed with exit code: $LASTEXITCODE" "ERROR"
+                Write-Log "Use scripts\\windows\\install_pytorch_cuda.bat to retry after setup." "ERROR"
+                Pop-Location
+                return $false
+            }
+
+            Remove-Item Env:EMBEREYE_FORCE_CPU -ErrorAction SilentlyContinue
+            Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
+        }
+
         Write-Host "Installing project dependencies (this may take 3-5 minutes)..." -ForegroundColor Cyan
         & pip install -r requirements.txt 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
         
@@ -453,9 +479,9 @@ function Verify-Installation {
             Write-Log "EmberEye import test failed" "WARNING"
         }
         
-        # Check GPU/CPU detection
+        # Check GPU/CPU detection and CUDA build details
         Write-Host "Checking GPU/CPU detection..." -ForegroundColor Cyan
-        & .\.venv\Scripts\python -c "import torch; print('GPU Available: ' + str(torch.cuda.is_available()))" 2>&1 | Tee-Object -FilePath $LogFile -Append
+        & .\.venv\Scripts\python -c "import torch; print('Torch: ' + str(torch.__version__)); print('CUDA Built: ' + str(torch.version.cuda)); print('GPU Available: ' + str(torch.cuda.is_available())); print('GPU Count: ' + str(torch.cuda.device_count())); print('GPU Name: ' + (torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A'))" 2>&1 | Tee-Object -FilePath $LogFile -Append
         
         if ($LASTEXITCODE -eq 0) {
             Write-Log "GPU/CPU detection check passed" "SUCCESS"

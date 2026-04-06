@@ -176,15 +176,37 @@ class DeviceManager:
         # Respect explicit CPU-only override
         if os.environ.get("EMBEREYE_FORCE_CPU", "0") == "1":
             logger.info("CPU-only mode forced by EMBEREYE_FORCE_CPU")
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
             return devices
+
+        # If CUDA visibility was accidentally blanked in a parent shell, clear it
+        # before importing torch so CUDA discovery initializes correctly.
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None and cvd.strip().lower() in {"", "none", "all"}:
+            logger.warning(
+                "Ignoring invalid CUDA_VISIBLE_DEVICES='%s'; restoring default visibility.",
+                cvd,
+            )
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         
         try:
             import torch
             
             # Check CUDA (NVIDIA GPUs) - auto-detect at runtime
             try:
-                if torch.cuda.is_available():
+                cuda_available = torch.cuda.is_available()
+                if not cuda_available:
+                    # Self-heal when parent shell polluted CUDA visibility (empty/-1).
+                    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                    if cvd is not None and cvd.strip().lower() in {"", "-1", "none"}:
+                        logger.warning(
+                            "CUDA not visible with CUDA_VISIBLE_DEVICES='%s'; retrying after clearing it.",
+                            cvd,
+                        )
+                        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                        cuda_available = torch.cuda.is_available()
+
+                if cuda_available:
                     # Check device capability against supported arch list
                     try:
                         cap = torch.cuda.get_device_capability(0)
@@ -196,7 +218,6 @@ class DeviceManager:
                             )
                             devices['gpu'] = False
                             devices['recommended'] = 'cpu'
-                            os.environ["CUDA_VISIBLE_DEVICES"] = ""
                         else:
                             devices['gpu'] = True
                             devices['gpu_count'] = torch.cuda.device_count()
@@ -234,7 +255,7 @@ class DeviceManager:
             logger.warning(f"Device detection error: {e}")
             logger.info("Falling back to CPU")
             os.environ["EMBEREYE_FORCE_CPU"] = "1"
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
         
         return devices
     
@@ -474,7 +495,7 @@ class DatasetManager:
             labels_txt = path.parent / "labels.txt"
             if labels_txt.exists():
                 try:
-                    return [line.strip() for line in labels_txt.read_text().splitlines() if line.strip()]
+                    return [line.lstrip("\ufeff").strip() for line in labels_txt.read_text(encoding="utf-8").splitlines() if line.strip()]
                 except Exception:
                     return None
             return None
@@ -659,7 +680,7 @@ class DatasetManager:
             if not labels_txt.exists():
                 return {}
             try:
-                rows = [line.strip() for line in labels_txt.read_text(encoding='utf-8').splitlines() if line.strip()]
+                rows = [line.lstrip('\ufeff').strip() for line in labels_txt.read_text(encoding='utf-8').splitlines() if line.strip()]
                 return {idx: name for idx, name in enumerate(rows)}
             except Exception:
                 return {}
